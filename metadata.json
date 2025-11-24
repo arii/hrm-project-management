@@ -1,0 +1,5 @@
+{
+  "name": "RepoAuditor AI",
+  "description": "An intelligent GitHub repository analyzer powered by Gemini 2.5. It identifies redundancies, evaluates PR health, and generates triage reports for the arii/hrm repository.",
+  "requestFramePermissions": []
+}
