@@ -48,6 +48,20 @@ export interface GithubPullRequest {
   base: {
     ref: string;
   };
+  // Detailed fields (may require fetching single PR endpoint)
+  mergeable?: boolean | null;
+  mergeable_state?: string;
+  changed_files?: number;
+  additions?: number;
+  deletions?: number;
+  comments?: number;
+}
+
+export interface EnrichedPullRequest extends GithubPullRequest {
+  testStatus: 'passed' | 'failed' | 'pending' | 'unknown';
+  isBig: boolean;
+  isReadyToMerge: boolean;
+  isLeaderBranch: boolean;
 }
 
 export interface RepoStats {

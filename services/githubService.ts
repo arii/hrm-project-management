@@ -1,5 +1,5 @@
 
-import { GithubIssue, GithubPullRequest, RepoStats } from '../types';
+import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest } from '../types';
 
 const BASE_URL = 'https://api.github.com';
 
@@ -61,6 +61,106 @@ export const fetchPullRequests = async (repo: string, token?: string, state: 'op
   return await response.json();
 };
 
+export const fetchPrDetails = async (repo: string, number: number, token?: string): Promise<GithubPullRequest> => {
+  const response = await fetch(`${BASE_URL}/repos/${repo}/pulls/${number}`, {
+    headers: getHeaders(token),
+  });
+  if (!response.ok) throw new Error("Failed to fetch PR details");
+  return await response.json();
+};
+
+// NEW: Fetch Enriched PRs (Details + Comments for Tests)
+export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
+  // 1. Get List
+  const list = await fetchPullRequests(repo, token, 'open');
+  
+  // 2. Fetch Details & Comments in parallel, with Retry for Mergeability
+  const subset = list.slice(0, 20); 
+
+  const enriched = await Promise.all(subset.map(async (pr) => {
+    try {
+      // Fetch details first to handle potential retries for mergeable status
+      let details = await fetchPrDetails(repo, pr.number, token);
+
+      // Retry logic: If mergeable is null, GitHub is computing it. Wait and retry.
+      let retries = 0;
+      while (details.mergeable === null && retries < 3) {
+         await new Promise(r => setTimeout(r, 1500)); // Wait 1.5s
+         details = await fetchPrDetails(repo, pr.number, token);
+         retries++;
+      }
+
+      // Fetch comments for test status
+      const comments = await fetchComments(repo, pr.number, token);
+
+      // Logic: Check comments for test results (Newest first)
+      const sortedComments = Array.isArray(comments) 
+        ? comments.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) 
+        : [];
+      
+      let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
+      
+      for (const c of sortedComments) {
+        const body = (c.body || '').toLowerCase();
+        // Check for common CI/CD bot messages
+        if (body.includes('test failed') || body.includes('tests failed') || body.includes('build failed') || body.includes('checks failed') || body.includes('failure')) {
+           testStatus = 'failed';
+           break;
+        }
+        if (body.includes('test passed') || body.includes('tests passed') || body.includes('all checks passed') || body.includes('build success') || body.includes('successful')) {
+           testStatus = 'passed';
+           break;
+        }
+      }
+
+      // Logic: Big PR?
+      const filesChanged = details.changed_files || 0;
+      const isBig = filesChanged > 15 || (details.additions || 0) > 500;
+
+      // Logic: Ready to Merge?
+      // Expanded Leader branch definition to include typical production/staging branches
+      const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release'].includes(details.base.ref.toLowerCase());
+      const noConflicts = details.mergeable === true;
+      
+      let isReadyToMerge = false;
+      
+      if (noConflicts) {
+        if (testStatus === 'failed') {
+          // If tests explicitly failed, it is NEVER ready, regardless of branch
+          isReadyToMerge = false;
+        } else if (!isLeaderBranch) {
+          // Non-leader branches are ready if no conflicts (unless tests failed)
+          isReadyToMerge = true;
+        } else {
+          // Leader branches MUST have passing tests
+          isReadyToMerge = testStatus === 'passed';
+        }
+      }
+
+      return {
+        ...details,
+        testStatus,
+        isBig,
+        isReadyToMerge,
+        isLeaderBranch
+      } as EnrichedPullRequest;
+
+    } catch (e) {
+      console.warn(`Failed to enrich PR #${pr.number}`, e);
+      // Fallback to basic info
+      return {
+         ...pr,
+         testStatus: 'unknown',
+         isBig: false,
+         isReadyToMerge: false,
+         isLeaderBranch: false
+      } as EnrichedPullRequest;
+    }
+  }));
+
+  return enriched;
+};
+
 // NEW: Fetch recent activity for charts (Issues updated in last X days)
 export const fetchRecentActivity = async (repo: string, token?: string, days = 30): Promise<GithubIssue[]> => {
   const date = new Date();
@@ -119,7 +219,7 @@ export const addLabels = async (repo: string, token: string, number: number, lab
   const response = await fetch(`${BASE_URL}/repos/${repo}/issues/${number}/labels`, {
     method: 'POST',
     headers: getHeaders(token),
-    body: JSON.stringify({ labels }), // Github API expects { labels: ["Label 1"] }
+    body: JSON.stringify({ labels }), 
   });
 
   if (!response.ok) {
