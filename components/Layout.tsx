@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, FileText, CheckCircle, Upload, Bot } from 'lucide-react';
+import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, CheckCircle, Upload, Bot, TerminalSquare } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 
@@ -10,13 +10,20 @@ interface LayoutProps {
   setRepoName: (name: string) => void;
   githubToken: string;
   setGithubToken: (token: string) => void;
+  julesApiKey: string;
+  setJulesApiKey: (key: string) => void;
 }
 
-const Layout: React.FC<LayoutProps> = ({ repoName, setRepoName, githubToken, setGithubToken }) => {
+const Layout: React.FC<LayoutProps> = ({ 
+  repoName, setRepoName, 
+  githubToken, setGithubToken,
+  julesApiKey, setJulesApiKey
+}) => {
   const location = useLocation();
 
   const navItems = [
     { path: '/', label: 'Overview', icon: LayoutDashboard },
+    { path: '/sessions', label: 'Jules Sessions', icon: TerminalSquare },
     { path: '/issues', label: 'Issue Analysis', icon: AlertCircle },
     { path: '/pull-requests', label: 'Pull Requests', icon: GitPullRequest },
     { path: '/agent', label: 'AI Agent', icon: Bot },
@@ -27,7 +34,7 @@ const Layout: React.FC<LayoutProps> = ({ repoName, setRepoName, githubToken, set
   return (
     <div className="min-h-screen bg-background flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-surface border-r border-slate-700 flex flex-col fixed h-full">
+      <aside className="w-64 bg-surface border-r border-slate-700 flex flex-col fixed h-full z-10">
         <div className="p-6 border-b border-slate-700">
           <div className="flex items-center gap-2 text-primary mb-1">
             <GitMerge className="w-6 h-6" />
@@ -36,7 +43,7 @@ const Layout: React.FC<LayoutProps> = ({ repoName, setRepoName, githubToken, set
           <p className="text-xs text-slate-500 font-medium tracking-wider">AI-POWERED ANALYSIS</p>
         </div>
 
-        <nav className="flex-1 p-4 space-y-2">
+        <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -75,6 +82,8 @@ const Layout: React.FC<LayoutProps> = ({ repoName, setRepoName, githubToken, set
             setRepoName={setRepoName}
             githubToken={githubToken}
             setGithubToken={setGithubToken}
+            julesApiKey={julesApiKey}
+            setJulesApiKey={setJulesApiKey}
           />
         </header>
 

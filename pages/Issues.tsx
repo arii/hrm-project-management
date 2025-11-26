@@ -2,14 +2,19 @@
 import React, { useState, useEffect } from 'react';
 import { fetchIssues, updateIssue, createIssue, addLabels } from '../services/githubService';
 import { analyzeIssueRedundancy, generateTriageReport, identifyRedundantCandidates } from '../services/geminiService';
-import { GithubIssue, AnalysisStatus, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction } from '../types';
+import { GithubIssue, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction } from '../types';
+import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import AnalysisCard from '../components/AnalysisCard';
-import { AlertCircle, Tag, ExternalLink, Sparkles, CheckSquare, Trash2, Loader2, Plus, Copy, Check, Play, Gauge, Box } from 'lucide-react';
+import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
+import { AlertCircle, Tag, Sparkles, Trash2, Plus, Box, Gauge, Loader2, TerminalSquare } from 'lucide-react';
 import clsx from 'clsx';
+import { useNavigate } from 'react-router-dom';
 
 interface IssuesProps {
   repoName: string;
   token: string;
+  julesApiKey?: string;
 }
 
 // Local types for UI interaction
@@ -17,18 +22,19 @@ type ConsolidatedIssueUI = RedundancyAnalysisResult['consolidatedIssues'][0] & {
 type RedundantIssueUI = RedundancyAnalysisResult['redundantIssues'][0] & { _id: string };
 type TriageActionUI = TriageAction & { _id: string };
 
-const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
+const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
   const [issues, setIssues] = useState<GithubIssue[]>([]);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
   
   // Selection State (Main List)
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<number>>(new Set());
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [autoSelectLoading, setAutoSelectLoading] = useState(false);
   
-  // Analysis State
-  const [redundancyStatus, setRedundancyStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
-  const [redundancyData, setRedundancyData] = useState<RedundancyAnalysisResult | null>(null);
+  // Hooks for Analysis
+  const redundancyAnalysis = useGeminiAnalysis(analyzeIssueRedundancy);
+  const triageAnalysis = useGeminiAnalysis(generateTriageReport);
   
   // Redundancy Action State
   const [createCandidates, setCreateCandidates] = useState<ConsolidatedIssueUI[]>([]);
@@ -39,8 +45,6 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
   const [activeRedundancyTab, setActiveRedundancyTab] = useState<'consolidate' | 'prune'>('consolidate');
 
   // Triage State
-  const [triageStatus, setTriageStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
-  const [triageData, setTriageData] = useState<TriageAnalysisResult | null>(null);
   const [triageActions, setTriageActions] = useState<TriageActionUI[]>([]);
   const [selectedTriageIds, setSelectedTriageIds] = useState<Set<string>>(new Set());
 
@@ -62,51 +66,41 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
   };
 
   const handleRedundancyCheck = async () => {
-    setRedundancyStatus(AnalysisStatus.LOADING);
     setCreateCandidates([]);
     setCloseCandidates([]);
-    try {
-      const result = await analyzeIssueRedundancy(issues);
-      setRedundancyData(result);
-      
-      // Init UI state
-      setCreateCandidates(result.consolidatedIssues.map(i => ({...i, _id: Math.random().toString(36).substr(2,9)})));
-      setCloseCandidates(result.redundantIssues.map(i => ({...i, _id: Math.random().toString(36).substr(2,9)})));
-      
-      setRedundancyStatus(AnalysisStatus.COMPLETE);
-    } catch (e) {
-      setRedundancyStatus(AnalysisStatus.ERROR);
-    }
+    await redundancyAnalysis.run(issues);
   };
+
+  // Sync redundancy results to local state when analysis completes
+  useEffect(() => {
+    if (redundancyAnalysis.result) {
+      setCreateCandidates(redundancyAnalysis.result.consolidatedIssues.map(i => ({...i, _id: Math.random().toString(36).substr(2,9)})));
+      setCloseCandidates(redundancyAnalysis.result.redundantIssues.map(i => ({...i, _id: Math.random().toString(36).substr(2,9)})));
+    }
+  }, [redundancyAnalysis.result]);
 
   const handleTriageReport = async () => {
-    setTriageStatus(AnalysisStatus.LOADING);
     setTriageActions([]);
-    try {
-      const result = await generateTriageReport(issues);
-      setTriageData(result);
-      // Init UI state for actions
-      setTriageActions(result.actions.map(a => ({...a, _id: Math.random().toString(36).substr(2,9)})));
-      setSelectedTriageIds(new Set());
-      setTriageStatus(AnalysisStatus.COMPLETE);
-    } catch (e) {
-      setTriageStatus(AnalysisStatus.ERROR);
-    }
+    await triageAnalysis.run(issues);
   };
 
-  // --- Bulk Action Handlers (Main List) ---
+  // Sync triage results to local state
+  useEffect(() => {
+    if (triageAnalysis.result) {
+      setTriageActions(triageAnalysis.result.actions.map(a => ({...a, _id: Math.random().toString(36).substr(2,9)})));
+      setSelectedTriageIds(new Set());
+    }
+  }, [triageAnalysis.result]);
 
+  // --- Bulk Action Handlers (Main List) ---
   const toggleSelection = (id: number) => {
     const newSelection = new Set(selectedIssueIds);
-    if (newSelection.has(id)) {
-      newSelection.delete(id);
-    } else {
-      newSelection.add(id);
-    }
+    if (newSelection.has(id)) newSelection.delete(id);
+    else newSelection.add(id);
     setSelectedIssueIds(newSelection);
   };
 
-  const toggleSelectAll = () => {
+  const toggleSelectAllIssues = () => {
     if (selectedIssueIds.size === issues.length) {
       setSelectedIssueIds(new Set());
     } else {
@@ -119,13 +113,10 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
     try {
       const redundantIds = await identifyRedundantCandidates(issues);
       const newSelection = new Set(selectedIssueIds);
-      
       if (Array.isArray(redundantIds)) {
         redundantIds.forEach((val: unknown) => {
           const id = Number(val);
-          if (!isNaN(id) && issues.find(i => i.number === id)) {
-             newSelection.add(id);
-          }
+          if (!isNaN(id) && issues.find(i => i.number === id)) newSelection.add(id);
         });
       }
       setSelectedIssueIds(newSelection);
@@ -137,26 +128,31 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
   };
 
   const handleBulkClose = async () => {
-    if (!token) return alert("GitHub Token required in settings.");
-    if (!window.confirm(`Are you sure you want to close ${selectedIssueIds.size} issues?`)) return;
+    if (!token) return alert("GitHub Token required.");
+    if (!window.confirm(`Close ${selectedIssueIds.size} issues?`)) return;
 
     setIsBulkProcessing(true);
     const ids = Array.from(selectedIssueIds);
-    
     for (const id of ids) {
-      try {
-        await updateIssue(repoName, token, id as number, { state: 'closed' });
-      } catch (e) {
-        console.error(`Failed to close #${id}`, e);
-      }
+      await updateIssue(repoName, token, id as number, { state: 'closed' }).catch(console.error);
     }
-    
     setIsBulkProcessing(false);
     loadIssues();
   };
 
-  // --- Redundancy Card Actions ---
+  const startJulesSession = (issue: GithubIssue) => {
+    navigate('/sessions', { 
+      state: { 
+        createFromIssue: { 
+          title: issue.title, 
+          number: issue.number, 
+          body: issue.body 
+        } 
+      } 
+    });
+  };
 
+  // --- Redundancy Card Actions ---
   const executeConsolidate = async () => {
     if (!token) return alert("GitHub token required.");
     setActionProcessing(true);
@@ -171,17 +167,11 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
           labels: item.labels
         });
         successIds.push(item._id);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
 
     setCreateCandidates(prev => prev.filter(c => !successIds.includes(c._id)));
-    setSelectedCreateIds(prev => {
-       const next = new Set(prev);
-       successIds.forEach(id => next.delete(id));
-       return next;
-    });
+    setSelectedCreateIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setActionProcessing(false);
   };
 
@@ -195,34 +185,15 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
       try {
         await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
         successIds.push(item._id);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
 
     setCloseCandidates(prev => prev.filter(c => !successIds.includes(c._id)));
-    setSelectedCloseIds(prev => {
-       const next = new Set(prev);
-       successIds.forEach(id => next.delete(id));
-       return next;
-    });
+    setSelectedCloseIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setActionProcessing(false);
   };
 
-  const toggleRedundancySelection = (setIds: Set<string>, setFunction: (s: Set<string>) => void, id: string) => {
-     const next = new Set(setIds);
-     if (next.has(id)) next.delete(id);
-     else next.add(id);
-     setFunction(next);
-  };
-
-  const toggleRedundancyAll = (ids: string[], currentSet: Set<string>, setFunction: (s: Set<string>) => void) => {
-     if (currentSet.size === ids.length && ids.length > 0) setFunction(new Set());
-     else setFunction(new Set(ids));
-  };
-
   // --- Triage Actions ---
-
   const executeTriageUpdates = async () => {
     if (!token) return alert("GitHub token required.");
     setActionProcessing(true);
@@ -233,32 +204,28 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
       try {
         await addLabels(repoName, token, item.issueNumber, item.suggestedLabels);
         successIds.push(item._id);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
 
     setTriageActions(prev => prev.filter(a => !successIds.includes(a._id)));
-    setSelectedTriageIds(prev => {
-      const next = new Set(prev);
-      successIds.forEach(id => next.delete(id));
-      return next;
-    });
+    setSelectedTriageIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setActionProcessing(false);
   };
 
-  const toggleTriageSelection = (id: string) => {
-    const next = new Set(selectedTriageIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelectedTriageIds(next);
+  const toggleSet = (setIds: Set<string>, setFunction: (s: Set<string>) => void, id: string) => {
+    const next = new Set(setIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setFunction(next);
   };
 
-  const toggleTriageAll = () => {
-    if (selectedTriageIds.size === triageActions.length && triageActions.length > 0) setSelectedTriageIds(new Set());
-    else setSelectedTriageIds(new Set(triageActions.map(a => a._id)));
+  // Generic toggle all for analysis results
+  const toggleAllInSet = (items: { _id: string }[], setIds: Set<string>, setFunction: (s: Set<string>) => void) => {
+    if (setIds.size === items.length) {
+      setFunction(new Set());
+    } else {
+      setFunction(new Set(items.map(i => i._id)));
+    }
   };
-
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-20">
@@ -267,36 +234,24 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
         <p className="text-slate-400">Detect duplicates, organize backlog, and prioritize work.</p>
       </div>
       
-      {/* 1. REDUNDANCY ANALYSIS CARD */}
+      {/* 1. REDUNDANCY ANALYSIS */}
       <AnalysisCard 
         title="Redundancy Detector"
         description="Identify duplicate issues and consolidation opportunities."
-        status={redundancyStatus}
-        result={redundancyData?.summary || null}
+        status={redundancyAnalysis.status}
+        result={redundancyAnalysis.result?.summary || null}
         onAnalyze={handleRedundancyCheck}
         repoName={repoName}
       />
       
-      {/* Redundancy Action Area */}
+      {/* Redundancy Actions */}
       {(createCandidates.length > 0 || closeCandidates.length > 0) && (
-        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 mb-8">
+        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden mb-8">
            <div className="flex border-b border-slate-700">
-             <button 
-               onClick={() => setActiveRedundancyTab('consolidate')}
-               className={clsx(
-                 "flex-1 py-3 text-sm font-medium border-b-2 transition-colors",
-                 activeRedundancyTab === 'consolidate' ? "border-primary text-primary bg-primary/5" : "border-transparent text-slate-400 hover:text-white"
-               )}
-             >
+             <button onClick={() => setActiveRedundancyTab('consolidate')} className={clsx("flex-1 py-3 text-sm font-medium border-b-2 transition-colors", activeRedundancyTab === 'consolidate' ? "border-primary text-primary bg-primary/5" : "border-transparent text-slate-400 hover:text-white")}>
                Consolidate ({createCandidates.length})
              </button>
-             <button 
-               onClick={() => setActiveRedundancyTab('prune')}
-               className={clsx(
-                 "flex-1 py-3 text-sm font-medium border-b-2 transition-colors",
-                 activeRedundancyTab === 'prune' ? "border-red-500 text-red-500 bg-red-500/5" : "border-transparent text-slate-400 hover:text-white"
-               )}
-             >
+             <button onClick={() => setActiveRedundancyTab('prune')} className={clsx("flex-1 py-3 text-sm font-medium border-b-2 transition-colors", activeRedundancyTab === 'prune' ? "border-red-500 text-red-500 bg-red-500/5" : "border-transparent text-slate-400 hover:text-white")}>
                Prune Duplicates ({closeCandidates.length})
              </button>
            </div>
@@ -305,46 +260,28 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
              {activeRedundancyTab === 'consolidate' && (
                 <div className="space-y-4">
                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <input 
-                           type="checkbox"
+                      <div className="flex items-center gap-3">
+                         <input 
+                           type="checkbox" 
                            checked={createCandidates.length > 0 && selectedCreateIds.size === createCandidates.length}
-                           onChange={() => toggleRedundancyAll(createCandidates.map(c => c._id), selectedCreateIds, setSelectedCreateIds)}
-                           className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-primary focus:ring-0 cursor-pointer"
-                        />
-                        <span className="text-sm text-slate-400">Select All</span>
+                           onChange={() => toggleAllInSet(createCandidates, selectedCreateIds, setSelectedCreateIds)}
+                           className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer"
+                           title="Select All"
+                         />
+                         <div className="text-sm text-slate-400">{selectedCreateIds.size} selected</div>
                       </div>
-                      <button 
-                        onClick={executeConsolidate}
-                        disabled={selectedCreateIds.size === 0 || actionProcessing}
-                        className={clsx(
-                          "px-4 py-1.5 rounded text-sm font-bold flex items-center gap-2",
-                          selectedCreateIds.size > 0 ? "bg-primary text-white hover:bg-blue-600" : "bg-slate-700 text-slate-500 cursor-not-allowed"
-                        )}
-                      >
-                         {actionProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-                         Create Issues
-                      </button>
+                      <Button variant="primary" size="sm" onClick={executeConsolidate} disabled={selectedCreateIds.size === 0 || actionProcessing} isLoading={actionProcessing} icon={Plus}>Create Issues</Button>
                    </div>
                    <div className="grid gap-3">
                      {createCandidates.map(item => (
-                       <div key={item._id} className={clsx("p-4 border rounded-lg transition-colors", selectedCreateIds.has(item._id) ? "bg-blue-900/20 border-blue-500/50" : "bg-slate-800/50 border-slate-700")}>
-                          <div className="flex gap-3">
-                             <input 
-                                type="checkbox"
-                                checked={selectedCreateIds.has(item._id)}
-                                onChange={() => toggleRedundancySelection(selectedCreateIds, setSelectedCreateIds, item._id)}
-                                className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-primary focus:ring-0 cursor-pointer shrink-0"
-                             />
-                             <div>
-                               <h4 className="font-bold text-white">{item.title}</h4>
-                               <p className="text-sm text-slate-400 mt-1">{item.reason}</p>
-                               <div className="flex flex-wrap gap-2 mt-2">
-                                 {item.replacesIssueNumbers.map(n => (
-                                   <span key={n} className="text-xs bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded">Replaces #{n}</span>
-                                 ))}
-                               </div>
-                             </div>
+                       <div key={item._id} className={clsx("p-4 border rounded-lg transition-colors flex gap-3", selectedCreateIds.has(item._id) ? "bg-blue-900/20 border-blue-500/50" : "bg-slate-800/50 border-slate-700")}>
+                          <input type="checkbox" checked={selectedCreateIds.has(item._id)} onChange={() => toggleSet(selectedCreateIds, setSelectedCreateIds, item._id)} className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer shrink-0" />
+                          <div>
+                            <h4 className="font-bold text-white">{item.title}</h4>
+                            <p className="text-sm text-slate-400 mt-1">{item.reason}</p>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              {item.replacesIssueNumbers.map(n => <Badge key={n} variant="gray">Replaces #{n}</Badge>)}
+                            </div>
                           </div>
                        </div>
                      ))}
@@ -355,44 +292,28 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
              {activeRedundancyTab === 'prune' && (
                 <div className="space-y-4">
                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <input 
-                           type="checkbox"
+                      <div className="flex items-center gap-3">
+                         <input 
+                           type="checkbox" 
                            checked={closeCandidates.length > 0 && selectedCloseIds.size === closeCandidates.length}
-                           onChange={() => toggleRedundancyAll(closeCandidates.map(c => c._id), selectedCloseIds, setSelectedCloseIds)}
-                           className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-0 cursor-pointer"
-                        />
-                        <span className="text-sm text-slate-400">Select All</span>
+                           onChange={() => toggleAllInSet(closeCandidates, selectedCloseIds, setSelectedCloseIds)}
+                           className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer"
+                           title="Select All"
+                         />
+                         <div className="text-sm text-slate-400">{selectedCloseIds.size} selected</div>
                       </div>
-                      <button 
-                        onClick={executePrune}
-                        disabled={selectedCloseIds.size === 0 || actionProcessing}
-                        className={clsx(
-                          "px-4 py-1.5 rounded text-sm font-bold flex items-center gap-2",
-                          selectedCloseIds.size > 0 ? "bg-red-600 text-white hover:bg-red-500" : "bg-slate-700 text-slate-500 cursor-not-allowed"
-                        )}
-                      >
-                         {actionProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                         Close Duplicates
-                      </button>
+                      <Button variant="danger" size="sm" onClick={executePrune} disabled={selectedCloseIds.size === 0 || actionProcessing} isLoading={actionProcessing} icon={Trash2}>Close Duplicates</Button>
                    </div>
                    <div className="grid gap-3">
                      {closeCandidates.map(item => (
-                       <div key={item._id} className={clsx("p-4 border rounded-lg transition-colors", selectedCloseIds.has(item._id) ? "bg-red-900/10 border-red-500/50" : "bg-slate-800/50 border-slate-700")}>
-                          <div className="flex gap-3">
-                             <input 
-                                type="checkbox"
-                                checked={selectedCloseIds.has(item._id)}
-                                onChange={() => toggleRedundancySelection(selectedCloseIds, setSelectedCloseIds, item._id)}
-                                className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-0 cursor-pointer shrink-0"
-                             />
-                             <div>
-                               <div className="flex items-center gap-2">
-                                 <span className="text-sm font-mono text-slate-500">#{item.issueNumber}</span>
-                                 <span className="text-red-400 text-sm font-medium">Duplicate / Stale</span>
-                               </div>
-                               <p className="text-sm text-slate-300 mt-1">{item.reason}</p>
+                       <div key={item._id} className={clsx("p-4 border rounded-lg transition-colors flex gap-3", selectedCloseIds.has(item._id) ? "bg-red-900/10 border-red-500/50" : "bg-slate-800/50 border-slate-700")}>
+                          <input type="checkbox" checked={selectedCloseIds.has(item._id)} onChange={() => toggleSet(selectedCloseIds, setSelectedCloseIds, item._id)} className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer shrink-0" />
+                          <div>
+                             <div className="flex items-center gap-2">
+                               <span className="text-sm font-mono text-slate-500">#{item.issueNumber}</span>
+                               <span className="text-red-400 text-sm font-medium">Duplicate</span>
                              </div>
+                             <p className="text-sm text-slate-300 mt-1">{item.reason}</p>
                           </div>
                        </div>
                      ))}
@@ -403,101 +324,53 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
         </div>
       )}
 
-      {/* 2. TRIAGE ANALYSIS CARD */}
+      {/* 2. TRIAGE ANALYSIS */}
       <AnalysisCard 
         title="Smart Triage"
         description="Auto-label issues by priority, effort, and category."
-        status={triageStatus}
-        result={triageData?.report || null}
+        status={triageAnalysis.status}
+        result={triageAnalysis.result?.report || null}
         onAnalyze={handleTriageReport}
         repoName={repoName}
       />
 
-      {/* Triage Action Area */}
+      {/* Triage Actions */}
       {triageActions.length > 0 && (
-        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 mb-8">
+        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden mb-8">
           <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
-            <div className="flex items-center gap-4">
-               <h3 className="font-semibold text-white">Recommended Label Updates ({triageActions.length})</h3>
-               <div className="flex items-center gap-2">
-                  <input 
-                    type="checkbox"
-                    checked={triageActions.length > 0 && selectedTriageIds.size === triageActions.length}
-                    onChange={toggleTriageAll}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-primary focus:ring-0 cursor-pointer"
-                  />
-                  <span className="text-xs text-slate-400">Select All</span>
-               </div>
+            <div className="flex items-center gap-3">
+               <input 
+                 type="checkbox" 
+                 checked={triageActions.length > 0 && selectedTriageIds.size === triageActions.length}
+                 onChange={() => toggleAllInSet(triageActions, selectedTriageIds, setSelectedTriageIds)}
+                 className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer"
+                 title="Select All"
+               />
+               <h3 className="font-semibold text-white">Recommended Updates ({triageActions.length})</h3>
             </div>
-            <button 
-              onClick={executeTriageUpdates}
-              disabled={selectedTriageIds.size === 0 || actionProcessing}
-              className={clsx(
-                "px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-colors",
-                selectedTriageIds.size > 0 
-                  ? "bg-green-600 text-white hover:bg-green-500 shadow-lg shadow-green-900/20" 
-                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
-              )}
-            >
-              {actionProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Tag className="w-4 h-4"/>}
-              Apply Labels
-            </button>
+            <Button variant="success" size="sm" onClick={executeTriageUpdates} disabled={selectedTriageIds.size === 0 || actionProcessing} isLoading={actionProcessing} icon={Tag}>Apply Labels</Button>
           </div>
           
           <div className="divide-y divide-slate-700 max-h-[500px] overflow-y-auto">
              {triageActions.map(action => (
-               <div key={action._id} className={clsx(
-                 "p-4 flex gap-4 transition-colors",
-                 selectedTriageIds.has(action._id) ? "bg-slate-800/40" : "hover:bg-slate-800/20"
-               )}>
+               <div key={action._id} className={clsx("p-4 flex gap-4", selectedTriageIds.has(action._id) ? "bg-slate-800/40" : "hover:bg-slate-800/20")}>
                  <div className="pt-1">
-                    <input 
-                      type="checkbox"
-                      checked={selectedTriageIds.has(action._id)}
-                      onChange={() => toggleTriageSelection(action._id)}
-                      className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary focus:ring-0 cursor-pointer"
-                    />
+                    <input type="checkbox" checked={selectedTriageIds.has(action._id)} onChange={() => toggleSet(selectedTriageIds, setSelectedTriageIds, action._id)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer" />
                  </div>
                  <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-mono text-slate-500 text-sm">#{action.issueNumber}</span>
                       <span className="text-white font-medium truncate">{action.title}</span>
                     </div>
-                    
-                    {/* Metrics Badges */}
                     <div className="flex flex-wrap gap-2 my-2">
-                       <span className={clsx(
-                         "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border",
-                         action.priority === 'High' ? "bg-red-500/10 text-red-400 border-red-500/20" :
-                         action.priority === 'Medium' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
-                         "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                       )}>
-                         <AlertCircle className="w-3 h-3" /> {action.priority} Priority
-                       </span>
-
-                       <span className={clsx(
-                         "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border",
-                         action.effort === 'Large' ? "bg-purple-500/10 text-purple-400 border-purple-500/20" :
-                         action.effort === 'Medium' ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/20" :
-                         "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
-                       )}>
-                         <Gauge className="w-3 h-3" /> {action.effort} Effort
-                       </span>
-
-                       <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border bg-slate-700/50 text-slate-300 border-slate-600">
-                         <Box className="w-3 h-3" /> {action.category}
-                       </span>
+                       <Badge variant={action.priority === 'High' ? 'red' : action.priority === 'Medium' ? 'yellow' : 'blue'} icon={AlertCircle}>{action.priority} Priority</Badge>
+                       <Badge variant="purple" icon={Gauge}>{action.effort} Effort</Badge>
+                       <Badge variant="gray" icon={Box}>{action.category}</Badge>
                     </div>
-
                     <div className="flex items-center gap-2 mt-2">
-                       <span className="text-xs text-slate-500">Adding Labels:</span>
-                       {action.suggestedLabels.map(l => (
-                         <span key={l} className="text-xs bg-blue-900/30 text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/20 font-mono">
-                           {l}
-                         </span>
-                       ))}
+                       <span className="text-xs text-slate-500">Adding:</span>
+                       {action.suggestedLabels.map(l => <Badge key={l} variant="blue" className="font-mono">{l}</Badge>)}
                     </div>
-                    <p className="text-xs text-slate-400 mt-2 italic">{action.reason}</p>
                  </div>
                </div>
              ))}
@@ -505,76 +378,60 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token }) => {
         </div>
       )}
 
-      {/* 3. MAIN ISSUE LIST (BULK ACTIONS) */}
+      {/* 3. MAIN ISSUE LIST */}
       <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
         <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div className="flex items-center gap-4">
-             <h3 className="font-semibold text-white">Open Issues ({issues.length})</h3>
+             <div className="flex items-center gap-3">
+               <input 
+                 type="checkbox" 
+                 checked={issues.length > 0 && selectedIssueIds.size === issues.length} 
+                 onChange={toggleSelectAllIssues}
+                 className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer"
+                 title="Select All Issues"
+               />
+               <h3 className="font-semibold text-white">Open Issues ({issues.length})</h3>
+             </div>
              {selectedIssueIds.size > 0 && (
-               <div className="flex items-center gap-2 animate-in fade-in zoom-in duration-200">
-                  <span className="bg-primary text-white text-xs px-2 py-0.5 rounded-full">{selectedIssueIds.size} Selected</span>
-                  <button 
-                    onClick={handleBulkClose}
-                    disabled={isBulkProcessing}
-                    className="text-xs bg-red-900/30 hover:bg-red-900/50 text-red-400 px-3 py-1 rounded border border-red-800 flex items-center gap-1 transition-colors"
-                  >
-                    {isBulkProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : <Trash2 className="w-3 h-3" />}
-                    Close Selected
-                  </button>
+               <div className="flex items-center gap-2 animate-in fade-in ml-2">
+                  <Badge variant="blue">{selectedIssueIds.size} Selected</Badge>
+                  <Button variant="danger" size="sm" onClick={handleBulkClose} disabled={isBulkProcessing} isLoading={isBulkProcessing} icon={Trash2}>Close</Button>
                </div>
              )}
           </div>
-          
-          <button 
-            onClick={handleAutoSelect}
-            disabled={autoSelectLoading}
-            className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded flex items-center gap-2 transition-colors border border-slate-600"
-          >
-            {autoSelectLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3 text-yellow-400" />}
-            Auto-Select Redundant (AI)
-          </button>
+          <Button variant="secondary" size="sm" onClick={handleAutoSelect} disabled={autoSelectLoading} isLoading={autoSelectLoading} icon={Sparkles}>Auto-Select (AI)</Button>
         </div>
 
         {loading ? (
-          <div className="p-12 text-center text-slate-500">Loading issues...</div>
+          <div className="p-12 text-center text-slate-500"><Loader2 className="w-8 h-8 mx-auto animate-spin mb-2"/>Loading issues...</div>
         ) : (
           <div className="divide-y divide-slate-700">
             {issues.map(issue => (
-              <div key={issue.id} className={clsx("p-4 transition-colors hover:bg-slate-800/30", selectedIssueIds.has(issue.number) && "bg-blue-900/10")}>
+              <div key={issue.id} className={clsx("p-4 hover:bg-slate-800/30 group", selectedIssueIds.has(issue.number) && "bg-blue-900/10")}>
                 <div className="flex items-start gap-4">
-                  <div className="pt-1">
-                    <input 
-                      type="checkbox"
-                      checked={selectedIssueIds.has(issue.number)}
-                      onChange={() => toggleSelection(issue.number)}
-                      className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-primary focus:ring-offset-0 focus:ring-0 cursor-pointer"
-                    />
-                  </div>
-                  <div className="pt-1">
-                    <AlertCircle className="w-5 h-5 text-green-500" />
-                  </div>
+                  <input type="checkbox" checked={selectedIssueIds.has(issue.number)} onChange={() => toggleSelection(issue.number)} className="w-4 h-4 mt-1 rounded border-slate-600 bg-slate-700 text-primary cursor-pointer" />
+                  <AlertCircle className="w-5 h-5 text-green-500 mt-1" />
                   <div className="flex-1 min-w-0">
                     <div className="flex justify-between items-start gap-4">
                       <h4 className="text-base font-medium text-slate-200 truncate">
-                        <a href={issue.html_url} target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
-                          {issue.title}
-                        </a>
+                        <a href={issue.html_url} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{issue.title}</a>
                       </h4>
-                      <span className="text-sm font-mono text-slate-500 whitespace-nowrap">#{issue.number}</span>
+                      <div className="flex items-center gap-2">
+                        {julesApiKey && (
+                          <button 
+                            onClick={() => startJulesSession(issue)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-purple-500/20 text-purple-300 rounded hover:bg-purple-500 hover:text-white flex items-center gap-1 text-xs"
+                            title="Start Jules Session for this issue"
+                          >
+                            <TerminalSquare className="w-3 h-3" /> Work with Jules
+                          </button>
+                        )}
+                        <span className="text-sm font-mono text-slate-500">#{issue.number}</span>
+                      </div>
                     </div>
-                    
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                       <span>Opened by {issue.user.login} on {new Date(issue.created_at).toLocaleDateString()}</span>
-                       {issue.labels.length > 0 && <span className="text-slate-600">|</span>}
-                       {issue.labels.map(label => (
-                         <span 
-                           key={label.id} 
-                           className="px-1.5 py-0.5 rounded font-medium"
-                           style={{ backgroundColor: `#${label.color}20`, color: `#${label.color}`, border: `1px solid #${label.color}40` }}
-                         >
-                           {label.name}
-                         </span>
-                       ))}
+                       <span>{issue.user.login}</span>
+                       {issue.labels.map(l => <span key={l.id} className="px-1.5 py-0.5 rounded" style={{ backgroundColor: `#${l.color}20`, color: `#${l.color}`, border: `1px solid #${l.color}40` }}>{l.name}</span>)}
                     </div>
                   </div>
                 </div>

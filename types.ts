@@ -64,6 +64,15 @@ export interface EnrichedPullRequest extends GithubPullRequest {
   isLeaderBranch: boolean;
 }
 
+export interface GithubBranch {
+  name: string;
+  commit: {
+    sha: string;
+    url: string;
+  };
+  protected: boolean;
+}
+
 export interface RepoStats {
   openIssuesCount: number;
   openPRsCount: number;
@@ -159,4 +168,57 @@ export interface CleanupRecommendation {
 export interface CleanupAnalysisResult {
   report: string;
   actions: CleanupRecommendation[];
+}
+
+export interface BranchCleanupRecommendation {
+  branchName: string;
+  reason: string;
+  type: 'merged' | 'stale' | 'abandoned';
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface BranchCleanupResult {
+  report: string;
+  candidates: BranchCleanupRecommendation[];
+}
+
+// Jules API Types
+export interface JulesSource {
+  name: string;
+  displayName?: string;
+}
+
+export interface JulesSession {
+  name: string; // Resource name: projects/.../sessions/...
+  state: 
+    | 'STATE_UNSPECIFIED' 
+    | 'PENDING' 
+    | 'RUNNING' 
+    | 'SUCCEEDED' 
+    | 'FAILED' 
+    | 'CANCELLED' 
+    | 'TERMINATED'
+    // Granular states
+    | 'IN_PROGRESS'
+    | 'AWAITING_USER_FEEDBACK'
+    | 'AWAITING_PLAN_APPROVAL'
+    | 'COMPLETED';
+  createTime: string;
+  updateTime?: string;
+  title?: string;
+  outputs?: Array<{
+    pullRequest?: {
+      url: string;
+    };
+  }>;
+  sourceContext?: {
+    source: string;
+    githubRepoContext?: {
+      startingBranch?: string;
+    };
+  };
+  error?: {
+    code: number;
+    message: string;
+  };
 }

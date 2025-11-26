@@ -1,33 +1,124 @@
 
-import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest } from '../types';
+import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch } from '../types';
 
 const BASE_URL = 'https://api.github.com';
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const CACHE_PREFIX = 'gh_cache_';
 
-// Helper for headers
-const getHeaders = (token?: string) => {
+const clearCache = () => {
+  try {
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith(CACHE_PREFIX)) {
+        localStorage.removeItem(key);
+      }
+    });
+    console.log('[Cache] Cleared all GitHub cache entries due to mutation.');
+  } catch (e) {
+    console.warn('Failed to clear cache', e);
+  }
+};
+
+// --- Internal Helper for Requests ---
+const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}): Promise<T> => {
+  const isGet = !options.method || options.method === 'GET';
+  
+  // Handle X-Skip-Cache safely
+  const customHeaders = options.headers as Record<string, string> | undefined;
+  const skipCache = customHeaders?.['X-Skip-Cache'] === 'true';
+  
+  const cacheKey = `${CACHE_PREFIX}${endpoint}`;
+
+  // 1. Try to read from cache
+  if (isGet && !skipCache) {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const { timestamp, data } = JSON.parse(cached);
+        if (Date.now() - timestamp < CACHE_DURATION) {
+          // console.debug(`[Cache] Hit: ${endpoint}`);
+          return data as T;
+        }
+      } catch (e) {
+        localStorage.removeItem(cacheKey);
+      }
+    }
+  }
+
   const headers: HeadersInit = {
     'Accept': 'application/vnd.github.v3+json',
     'Content-Type': 'application/json',
   };
-  if (token) {
-    headers['Authorization'] = `token ${token}`;
-  }
-  return headers;
-};
-
-export const fetchRepoStats = async (repo: string, token?: string): Promise<RepoStats> => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}`, {
-    headers: getHeaders(token),
-  });
   
+  // Trim token to prevent "Invalid Header Value" errors from copy-paste whitespace
+  if (token && token.trim()) {
+    headers['Authorization'] = `token ${token.trim()}`;
+  }
+
+  // Prepare options for fetch, removing our internal X-Skip-Cache header
+  const fetchOptions = { ...options };
+  if (fetchOptions.headers) {
+     const h = { ...(fetchOptions.headers as any) };
+     if (h['X-Skip-Cache']) delete h['X-Skip-Cache'];
+     fetchOptions.headers = h;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${endpoint}`, {
+      ...fetchOptions,
+      headers: { ...headers, ...fetchOptions.headers },
+    });
+  } catch (e: any) {
+    console.error(`[GitHub] Fetch failed for ${endpoint}:`, e);
+    throw new Error(`Network error: Failed to reach GitHub. Check your connection or API token.`);
+  }
+
   if (!response.ok) {
-    throw new Error(`Failed to fetch repo info: ${response.statusText}`);
+    let errorMessage = `GitHub API Error: ${response.status} ${response.statusText}`;
+    try {
+      const errorBody = await response.json();
+      if (errorBody.message) errorMessage = errorBody.message;
+    } catch (e) {
+      // Ignore json parse error
+    }
+    throw new Error(errorMessage);
+  }
+
+  // If we performed a mutation (POST, PATCH, DELETE), clear cache to ensure freshness
+  if (!isGet) {
+    clearCache();
+    // Handle 204 No Content (often returned by DELETE or some updates)
+    if (response.status === 204) {
+      return {} as T;
+    }
+    return response.json();
   }
 
   const data = await response.json();
+
+  // 2. Save to cache (even if we skipped reading, we update the cache with fresh data)
+  if (isGet) {
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify({
+        timestamp: Date.now(),
+        data
+      }));
+    } catch (e) {
+      // Handle quota exceeded
+      console.warn('Failed to cache request (likely quota exceeded)', e);
+    }
+  }
+
+  return data;
+};
+
+// --- API Methods ---
+
+export const fetchRepoStats = async (repo: string, token?: string): Promise<RepoStats> => {
+  const data = await request<any>(`/repos/${repo}`, token);
   return {
-    openIssuesCount: data.open_issues_count, // Note: this includes PRs in the API
-    openPRsCount: 0, // Need to fetch separately to be accurate or calculate
+    openIssuesCount: data.open_issues_count,
+    openPRsCount: 0, // Calculated separately
     lastUpdated: data.updated_at,
     stars: data.stargazers_count,
     forks: data.forks_count,
@@ -35,65 +126,92 @@ export const fetchRepoStats = async (repo: string, token?: string): Promise<Repo
 };
 
 export const fetchIssues = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GithubIssue[]> => {
-  // Fetch only actual issues, not PRs
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues?state=${state}&per_page=100`, {
-    headers: getHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch issues: ${response.statusText}`);
-  }
-
-  const data: GithubIssue[] = await response.json();
-  // Filter out PRs (GitHub API returns PRs in the issues endpoint)
+  const data = await request<GithubIssue[]>(`/repos/${repo}/issues?state=${state}&per_page=100`, token);
   return data.filter(item => !item.pull_request);
 };
 
 export const fetchPullRequests = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GithubPullRequest[]> => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/pulls?state=${state}&per_page=100`, {
-    headers: getHeaders(token),
-  });
+  return request<GithubPullRequest[]>(`/repos/${repo}/pulls?state=${state}&per_page=100`, token);
+};
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch PRs: ${response.statusText}`);
+export const fetchPrDetails = async (repo: string, number: number, token?: string, skipCache = false): Promise<GithubPullRequest> => {
+  const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
+  return request<GithubPullRequest>(`/repos/${repo}/pulls/${number}`, token, options);
+};
+
+export const fetchComments = async (repo: string, issueNumber: number, token?: string) => {
+  try {
+    return await request<any[]>(`/repos/${repo}/issues/${issueNumber}/comments`, token);
+  } catch (e) {
+    return [];
   }
-
-  return await response.json();
 };
 
-export const fetchPrDetails = async (repo: string, number: number, token?: string): Promise<GithubPullRequest> => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/pulls/${number}`, {
-    headers: getHeaders(token),
+export const fetchBranches = async (repo: string, token: string): Promise<GithubBranch[]> => {
+  return request<GithubBranch[]>(`/repos/${repo}/branches?per_page=100`, token);
+};
+
+export const deleteBranch = async (repo: string, token: string, branchName: string) => {
+  // GitHub API deletes a branch by deleting the Ref
+  return request(`/repos/${repo}/git/refs/heads/${branchName}`, token, { method: 'DELETE' });
+};
+
+export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
+  return request(`/repos/${repo}/issues`, token, {
+    method: 'POST',
+    body: JSON.stringify(issue),
   });
-  if (!response.ok) throw new Error("Failed to fetch PR details");
-  return await response.json();
 };
 
-// NEW: Fetch Enriched PRs (Details + Comments for Tests)
-export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
-  // 1. Get List
-  const list = await fetchPullRequests(repo, token, 'open');
-  
-  // 2. Fetch Details & Comments in parallel, with Retry for Mergeability
-  const subset = list.slice(0, 20); 
+export const updateIssue = async (repo: string, token: string, number: number, updates: { state?: 'open' | 'closed'; labels?: string[] }) => {
+  return request(`/repos/${repo}/issues/${number}`, token, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  });
+};
 
-  const enriched = await Promise.all(subset.map(async (pr) => {
+export const addLabels = async (repo: string, token: string, number: number, labels: string[]) => {
+  return request(`/repos/${repo}/issues/${number}/labels`, token, {
+    method: 'POST',
+    body: JSON.stringify({ labels }),
+  });
+};
+
+export const addComment = async (repo: string, token: string, number: number, body: string) => {
+  return request(`/repos/${repo}/issues/${number}/comments`, token, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+};
+
+export const fetchRecentActivity = async (repo: string, token?: string, days = 30): Promise<GithubIssue[]> => {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  const since = date.toISOString();
+  const data = await request<GithubIssue[]>(`/repos/${repo}/issues?state=all&since=${since}&per_page=100`, token);
+  return data.filter(item => !item.pull_request);
+};
+
+// Complex Aggregation Logic
+export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
+  const list = await fetchPullRequests(repo, token, 'open');
+  const subset = list.slice(0, 20); // Limit to avoid rate limits
+
+  return Promise.all(subset.map(async (pr) => {
     try {
-      // Fetch details first to handle potential retries for mergeable status
       let details = await fetchPrDetails(repo, pr.number, token);
 
-      // Retry logic: If mergeable is null, GitHub is computing it. Wait and retry.
+      // Retry logic for mergeability
       let retries = 0;
       while (details.mergeable === null && retries < 3) {
-         await new Promise(r => setTimeout(r, 1500)); // Wait 1.5s
-         details = await fetchPrDetails(repo, pr.number, token);
+         await new Promise(r => setTimeout(r, 1500));
+         // Force skip cache on retry to get fresh mergeable status
+         details = await fetchPrDetails(repo, pr.number, token, true);
          retries++;
       }
 
-      // Fetch comments for test status
       const comments = await fetchComments(repo, pr.number, token);
-
-      // Logic: Check comments for test results (Newest first)
+      
       const sortedComments = Array.isArray(comments) 
         ? comments.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) 
         : [];
@@ -102,7 +220,6 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
       
       for (const c of sortedComments) {
         const body = (c.body || '').toLowerCase();
-        // Check for common CI/CD bot messages
         if (body.includes('test failed') || body.includes('tests failed') || body.includes('build failed') || body.includes('checks failed') || body.includes('failure')) {
            testStatus = 'failed';
            break;
@@ -113,12 +230,8 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
         }
       }
 
-      // Logic: Big PR?
       const filesChanged = details.changed_files || 0;
       const isBig = filesChanged > 15 || (details.additions || 0) > 500;
-
-      // Logic: Ready to Merge?
-      // Expanded Leader branch definition to include typical production/staging branches
       const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release'].includes(details.base.ref.toLowerCase());
       const noConflicts = details.mergeable === true;
       
@@ -126,13 +239,10 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
       
       if (noConflicts) {
         if (testStatus === 'failed') {
-          // If tests explicitly failed, it is NEVER ready, regardless of branch
           isReadyToMerge = false;
         } else if (!isLeaderBranch) {
-          // Non-leader branches are ready if no conflicts (unless tests failed)
           isReadyToMerge = true;
         } else {
-          // Leader branches MUST have passing tests
           isReadyToMerge = testStatus === 'passed';
         }
       }
@@ -147,7 +257,6 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
 
     } catch (e) {
       console.warn(`Failed to enrich PR #${pr.number}`, e);
-      // Fallback to basic info
       return {
          ...pr,
          testStatus: 'unknown',
@@ -157,86 +266,4 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
       } as EnrichedPullRequest;
     }
   }));
-
-  return enriched;
-};
-
-// NEW: Fetch recent activity for charts (Issues updated in last X days)
-export const fetchRecentActivity = async (repo: string, token?: string, days = 30): Promise<GithubIssue[]> => {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  const since = date.toISOString();
-
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues?state=all&since=${since}&per_page=100`, {
-    headers: getHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch activity: ${response.statusText}`);
-  }
-  
-  const data: GithubIssue[] = await response.json();
-  return data.filter(item => !item.pull_request);
-};
-
-export const fetchComments = async (repo: string, issueNumber: number, token?: string) => {
-   const response = await fetch(`${BASE_URL}/repos/${repo}/issues/${issueNumber}/comments`, {
-    headers: getHeaders(token),
-  });
-  if (!response.ok) return [];
-  return await response.json();
-};
-
-export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify(issue),
-  });
-
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.message || 'Failed to create issue');
-  }
-
-  return await response.json();
-};
-
-export const updateIssue = async (repo: string, token: string, number: number, updates: { state?: 'open' | 'closed'; labels?: string[] }) => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues/${number}`, {
-    method: 'PATCH',
-    headers: getHeaders(token),
-    body: JSON.stringify(updates),
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to update issue/PR');
-  }
-  return await response.json();
-};
-
-export const addLabels = async (repo: string, token: string, number: number, labels: string[]) => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues/${number}/labels`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify({ labels }), 
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to add labels');
-  }
-  return await response.json();
-};
-
-export const addComment = async (repo: string, token: string, number: number, body: string) => {
-  const response = await fetch(`${BASE_URL}/repos/${repo}/issues/${number}/comments`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify({ body }),
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to add comment');
-  }
-  return await response.json();
 };

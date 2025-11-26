@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult } from '../types';
 
 const getClient = () => {
   const apiKey = process.env.API_KEY;
@@ -12,6 +12,9 @@ const getClient = () => {
 
 // Analyze Issues for Redundancies (Structured)
 export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<RedundancyAnalysisResult> => {
+  if (!issues || issues.length === 0) {
+    return { summary: "No issues to analyze.", redundantIssues: [], consolidatedIssues: [] };
+  }
   const client = getClient();
   
   // Prepare data for the prompt (minimized to save tokens)
@@ -86,6 +89,7 @@ export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<Red
 
 // Identify Redundant Candidates (Structured for Auto-Select)
 export const identifyRedundantCandidates = async (issues: GithubIssue[]): Promise<number[]> => {
+  if (!issues || issues.length === 0) return [];
   const client = getClient();
   
   const issueSummary = issues.map(i => ({
@@ -118,6 +122,7 @@ export const identifyRedundantCandidates = async (issues: GithubIssue[]): Promis
 
 // Analyze PRs for Health and Mergeability
 export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<string> => {
+  if (!prs || prs.length === 0) return "No Pull Requests to analyze.";
   const client = getClient();
 
   const prSummary = prs.map(p => ({
@@ -156,6 +161,9 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<str
 
 // Cleanup Report: Match Closed PRs to Open Issues
 export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs: GithubPullRequest[]): Promise<CleanupAnalysisResult> => {
+  if (!openIssues || openIssues.length === 0 || !closedPrs || closedPrs.length === 0) {
+    return { report: "Insufficient data for cleanup analysis.", actions: [] };
+  }
   const client = getClient();
 
   // We only need recently closed PRs to check against current open issues
@@ -231,8 +239,73 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
   return JSON.parse(text) as CleanupAnalysisResult;
 };
 
+// Branch Cleanup Analysis
+export const analyzeBranchCleanup = async (branches: string[], mergedPrs: { ref: string, number: number }[]): Promise<BranchCleanupResult> => {
+  if (!branches || branches.length === 0) {
+    return { report: "No branches found to analyze.", candidates: [] };
+  }
+  const client = getClient();
+  
+  const context = {
+    branches,
+    mergedPrs
+  };
+
+  const prompt = `
+    You are a Git Repository Janitor.
+    
+    I have a list of remote branches and a list of recently merged PRs (including their branch names).
+    
+    Your task:
+    1. Identify "Zombie" branches: Branches that still exist but match the head ref of a MERGED PR. These are safe to delete.
+    2. Identify "Stale" branches: Branches that look like temporary feature branches (e.g., 'patch-1', 'temp/fix') but are not in the list of protected branches (main, master, dev, staging).
+    3. Be careful NOT to recommend deleting core branches like 'main', 'master', 'develop', 'release'.
+
+    Generate a structured response:
+    - 'report': A markdown summary of branch hygiene.
+    - 'candidates': A list of branches to delete.
+
+    Data:
+    ${JSON.stringify(context)}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          report: { type: Type.STRING },
+          candidates: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                branchName: { type: Type.STRING },
+                reason: { type: Type.STRING },
+                type: { type: Type.STRING, enum: ['merged', 'stale', 'abandoned'] },
+                confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] }
+              },
+              required: ['branchName', 'reason', 'type', 'confidence']
+            }
+          }
+        },
+        required: ['report', 'candidates']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  return JSON.parse(text) as BranchCleanupResult;
+};
+
 // Generate Triage Report (Structured)
 export const generateTriageReport = async (issues: GithubIssue[]): Promise<TriageAnalysisResult> => {
+  if (!issues || issues.length === 0) {
+    return { report: "No open issues to triage.", actions: [] };
+  }
   const client = getClient();
 
   const issueData = issues.map(i => ({
@@ -378,6 +451,7 @@ export const suggestStrategicIssues = async (
 
 // 2. Audit Pull Requests (Actions)
 export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrActionRecommendation[]> => {
+  if (!prs || prs.length === 0) return [];
   const client = getClient();
   
   const prData = prs.map(p => ({
@@ -423,6 +497,7 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
 
 // 3. Find Issue Links
 export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullRequest[]): Promise<LinkSuggestion[]> => {
+  if (!issues || issues.length === 0 || !prs || prs.length === 0) return [];
   const client = getClient();
   
   const issueData = issues.map(i => ({ id: i.number, title: i.title }));

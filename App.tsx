@@ -8,12 +8,16 @@ import PullRequests from './pages/PullRequests';
 import Cleanup from './pages/Cleanup';
 import BatchCreate from './pages/BatchCreate';
 import Agent from './pages/Agent';
+import JulesSessions from './pages/JulesSessions';
 
 const App: React.FC = () => {
   // Global State for Repo context
   // Initialize from localStorage to persist across reloads
   const [repoName, setRepoNameState] = useState(() => localStorage.getItem('audit_repo_name') || 'arii/hrm');
+  
+  // Securely load from localStorage, defaulting to empty string if not found
   const [githubToken, setGithubTokenState] = useState(() => localStorage.getItem('audit_gh_token') || '');
+  const [julesApiKey, setJulesApiKeyState] = useState(() => localStorage.getItem('audit_jules_key') || '');
 
   const setRepoName = (name: string) => {
     setRepoNameState(name);
@@ -25,6 +29,11 @@ const App: React.FC = () => {
     localStorage.setItem('audit_gh_token', token);
   };
 
+  const setJulesApiKey = (key: string) => {
+    setJulesApiKeyState(key);
+    localStorage.setItem('audit_jules_key', key);
+  };
+
   return (
     <HashRouter>
       <Routes>
@@ -34,14 +43,17 @@ const App: React.FC = () => {
             setRepoName={setRepoName}
             githubToken={githubToken}
             setGithubToken={setGithubToken}
+            julesApiKey={julesApiKey}
+            setJulesApiKey={setJulesApiKey}
           />
         }>
           <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
-          <Route path="issues" element={<Issues repoName={repoName} token={githubToken} />} />
+          <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} />} />
           <Route path="agent" element={<Agent repoName={repoName} token={githubToken} />} />
           <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} />} />
           <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
+          <Route path="sessions" element={<JulesSessions repoName={repoName} julesApiKey={julesApiKey} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

@@ -1,10 +1,11 @@
-
 import React, { useState, useEffect } from 'react';
 import { fetchEnrichedPullRequests } from '../services/githubService';
 import { analyzePullRequests } from '../services/geminiService';
-import { EnrichedPullRequest, AnalysisStatus } from '../types';
+import { EnrichedPullRequest } from '../types';
+import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import AnalysisCard from '../components/AnalysisCard';
-import { GitPullRequest, GitMerge, Clock, User, CheckCircle2, AlertTriangle, FileCode, Check, X, ShieldAlert, FlaskConical, AlertCircle, HelpCircle } from 'lucide-react';
+import Badge from '../components/ui/Badge';
+import { GitPullRequest, GitMerge, Clock, User, CheckCircle2, AlertTriangle, FileCode, Check, X, ShieldAlert, FlaskConical, AlertCircle, HelpCircle, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 
 interface PullRequestsProps {
@@ -16,8 +17,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
   const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
   const [loading, setLoading] = useState(true);
   
-  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
-  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
+  const analysis = useGeminiAnalysis(analyzePullRequests);
 
   useEffect(() => {
     const loadPrs = async () => {
@@ -32,63 +32,27 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
       }
     };
     loadPrs();
-    setAnalysisResult(null);
-    setAnalysisStatus(AnalysisStatus.IDLE);
+    analysis.reset();
   }, [repoName, token]);
 
   const handleAnalyze = async () => {
-    setAnalysisStatus(AnalysisStatus.LOADING);
-    try {
-      const result = await analyzePullRequests(prs);
-      setAnalysisResult(result);
-      setAnalysisStatus(AnalysisStatus.COMPLETE);
-    } catch (e) {
-      setAnalysisStatus(AnalysisStatus.ERROR);
-    }
+    await analysis.run(prs);
   };
 
   const getReadyStatusBadge = (pr: EnrichedPullRequest) => {
-    // Priority 1: Test Failures block everything
     if (pr.testStatus === 'failed') {
-        return (
-          <span className="flex items-center gap-1 bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider" title="Tests failed. Fix before merging.">
-            <AlertTriangle className="w-3 h-3" /> Fix Tests
-          </span>
-        );
+      return <Badge variant="red" icon={AlertTriangle}>Fix Tests</Badge>;
     }
-
-    // Priority 2: Explicit Merge Conflicts
     if (pr.mergeable === false) {
-       return (
-        <span className="flex items-center gap-1 bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">
-          <X className="w-3 h-3" /> Conflict
-        </span>
-       );
+       return <Badge variant="red" icon={X}>Conflict</Badge>;
     }
-
-    // Priority 3: Ready to Merge (Clean + Tests OK or Not Required)
     if (pr.isReadyToMerge) {
-      return (
-        <span className="flex items-center gap-1 bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">
-          <CheckCircle2 className="w-3 h-3" /> Ready
-        </span>
-      );
+      return <Badge variant="green" icon={CheckCircle2}>Ready</Badge>;
     }
-
-    // Priority 4: Leader Branch waiting for tests
     if (pr.isLeaderBranch && pr.testStatus !== 'passed') {
-        return (
-          <span className="flex items-center gap-1 bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">
-            <FlaskConical className="w-3 h-3" /> Testing
-          </span>
-        );
+      return <Badge variant="yellow" icon={FlaskConical}>Testing</Badge>;
     }
-
-    return (
-       <span className="flex items-center gap-1 bg-slate-700 text-slate-400 border border-slate-600 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">
-          Review
-       </span>
-    );
+    return <Badge variant="slate">Review</Badge>;
   };
 
   return (
@@ -101,8 +65,8 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
       <AnalysisCard 
         title="PR Health Check (AI)"
         description="Identify stale PRs, potential conflicts, and redundant work."
-        status={analysisStatus}
-        result={analysisResult}
+        status={analysis.status}
+        result={analysis.result}
         onAnalyze={handleAnalyze}
         repoName={repoName}
       />
@@ -113,13 +77,13 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
             <GitPullRequest className="w-5 h-5 text-blue-500" />
             Active PRs
           </h3>
-          <span className="bg-slate-700 text-xs px-2 py-1 rounded-full text-white">{prs.length} Open</span>
+          <Badge variant="blue">{prs.length} Open</Badge>
         </div>
         
         {loading ? (
           <div className="p-12 text-center text-slate-500">
-            <div className="animate-pulse flex flex-col items-center">
-               <div className="h-4 w-48 bg-slate-800 rounded mb-4"></div>
+            <div className="flex flex-col items-center">
+               <Loader2 className="w-8 h-8 animate-spin mb-4" />
                <p>Fetching PR details & status checks...</p>
             </div>
           </div>
@@ -160,11 +124,9 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
                      {/* 2. Target Branch */}
                      <td className="px-6 py-4">
                         <div className="flex items-center gap-2 text-xs font-mono">
-                          <span className="bg-slate-800 px-2 py-1 rounded text-slate-300 border border-slate-700">
-                            {pr.base.ref}
-                          </span>
+                          <span className="bg-slate-800 px-2 py-1 rounded text-slate-300 border border-slate-700">{pr.base.ref}</span>
                           {pr.isLeaderBranch && (
-                            <span title="Protected Leader Branch">
+                            <span title="Protected Branch">
                               <ShieldAlert className="w-3 h-3 text-amber-500" />
                             </span>
                           )}
@@ -174,52 +136,29 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
                      {/* 3. Merge Status */}
                      <td className="px-6 py-4">
                         {pr.mergeable === true ? (
-                          <div className="flex items-center gap-2 text-green-400 text-sm">
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span className="text-xs">No Conflicts</span>
-                          </div>
+                          <div className="flex items-center gap-2 text-green-400 text-sm"><CheckCircle2 className="w-4 h-4" /><span className="text-xs">No Conflicts</span></div>
                         ) : pr.mergeable === false ? (
-                          <div className="flex items-center gap-2 text-red-400 text-sm">
-                             <X className="w-4 h-4" />
-                             <span className="text-xs">Conflicts</span>
-                          </div>
+                          <div className="flex items-center gap-2 text-red-400 text-sm"><X className="w-4 h-4" /><span className="text-xs">Conflicts</span></div>
                         ) : (
-                          <div className="flex items-center gap-2 text-slate-500 text-sm" title="Status unknown or API rate limited">
-                             <HelpCircle className="w-4 h-4" />
-                             <span className="text-xs">Unknown</span>
-                          </div>
+                          <div className="flex items-center gap-2 text-slate-500 text-sm"><HelpCircle className="w-4 h-4" /><span className="text-xs">Unknown</span></div>
                         )}
                      </td>
 
-                     {/* 4. Test Results - Always Show Status */}
+                     {/* 4. Test Results */}
                      <td className="px-6 py-4">
-                          <div className={clsx(
-                             "flex items-center gap-2 text-sm",
-                             pr.testStatus === 'passed' ? "text-green-400" :
-                             pr.testStatus === 'failed' ? "text-red-400" : "text-slate-400"
-                          )}>
+                          <div className={clsx("flex items-center gap-2 text-sm", pr.testStatus === 'passed' ? "text-green-400" : pr.testStatus === 'failed' ? "text-red-400" : "text-slate-400")}>
                              {pr.testStatus === 'passed' && <Check className="w-4 h-4" />}
                              {pr.testStatus === 'failed' && <AlertCircle className="w-4 h-4" />}
                              {(pr.testStatus === 'pending' || pr.testStatus === 'unknown') && <Clock className="w-4 h-4" />}
-                             
-                             <span className="text-xs capitalize">
-                               {pr.testStatus}
-                             </span>
+                             <span className="text-xs capitalize">{pr.testStatus}</span>
                           </div>
                      </td>
 
                      {/* 5. Size */}
                      <td className="px-6 py-4">
                         <div className="flex flex-col gap-1">
-                          <span className={clsx(
-                             "text-xs font-bold uppercase",
-                             pr.isBig ? "text-purple-400" : "text-slate-400"
-                          )}>
-                            {pr.isBig ? 'Large' : 'Small'}
-                          </span>
-                          <span className="text-[10px] text-slate-500">
-                             {pr.changed_files} files
-                          </span>
+                          <Badge variant={pr.isBig ? 'purple' : 'gray'}>{pr.isBig ? 'Large' : 'Small'}</Badge>
+                          <span className="text-[10px] text-slate-500">{pr.changed_files} files</span>
                         </div>
                      </td>
 
@@ -229,11 +168,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token }) => {
                      </td>
                    </tr>
                  ))}
-                 {prs.length === 0 && (
-                   <tr>
-                     <td colSpan={6} className="text-center py-12 text-slate-500">No active pull requests found.</td>
-                   </tr>
-                 )}
+                 {prs.length === 0 && <tr><td colSpan={6} className="text-center py-12 text-slate-500">No active pull requests found.</td></tr>}
                </tbody>
              </table>
           </div>
