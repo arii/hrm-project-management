@@ -155,6 +155,13 @@ export interface LinkSuggestion {
   reason: string;
 }
 
+export interface JulesAgentAction {
+  sessionName: string; // Full name
+  action: 'delete' | 'recover' | 'publish' | 'message';
+  reason: string;
+  suggestedCommand?: string;
+}
+
 // Cleanup Types
 export interface CleanupRecommendation {
   issueNumber: number;

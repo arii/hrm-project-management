@@ -1,10 +1,11 @@
 
 import React, { useState } from 'react';
-import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box } from 'lucide-react';
+import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box, TerminalSquare, MessageSquare, Send } from 'lucide-react';
 import clsx from 'clsx';
-import { fetchIssues, fetchPullRequests, createIssue, updateIssue, addComment } from '../services/githubService';
-import { suggestStrategicIssues, auditPullRequests, findIssuePrLinks } from '../services/geminiService';
-import { ProposedIssue, PrActionRecommendation, LinkSuggestion } from '../types';
+import { fetchIssues, fetchPullRequests, createIssue, updateIssue, addComment, fetchEnrichedPullRequests } from '../services/githubService';
+import { suggestStrategicIssues, auditPullRequests, findIssuePrLinks, analyzeJulesSessions } from '../services/geminiService';
+import { listSessions, deleteSession, sendMessage } from '../services/julesService';
+import { ProposedIssue, PrActionRecommendation, LinkSuggestion, JulesAgentAction } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -12,15 +13,18 @@ import Badge from '../components/ui/Badge';
 interface AgentProps {
   repoName: string;
   token: string;
+  julesApiKey?: string;
 }
 
 type ProposedIssueWithId = ProposedIssue & { _id: string };
 type PrActionWithId = PrActionRecommendation & { _id: string };
 type LinkSuggestionWithId = LinkSuggestion & { _id: string };
+type OperatorActionWithId = JulesAgentAction & { _id: string };
+
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
-const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
-  const [activeTab, setActiveTab] = useState<'architect' | 'overseer' | 'janitor'>('architect');
+const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
+  const [activeTab, setActiveTab] = useState<'architect' | 'overseer' | 'janitor' | 'operator'>('architect');
   const [bulkProcessing, setBulkProcessing] = useState(false);
   
   // Architect State
@@ -36,6 +40,10 @@ const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
   // Janitor State
   const [links, setLinks] = useState<LinkSuggestionWithId[]>([]);
   const [selectedLinkIds, setSelectedLinkIds] = useState<Set<string>>(new Set());
+
+  // Operator State
+  const [operatorActions, setOperatorActions] = useState<OperatorActionWithId[]>([]);
+  const [selectedOperatorIds, setSelectedOperatorIds] = useState<Set<string>>(new Set());
 
   // Use custom analysis hooks
   const architectAnalysis = useGeminiAnalysis(async () => {
@@ -63,6 +71,19 @@ const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
      setLinks(withIds);
      setSelectedLinkIds(new Set());
      return withIds;
+  });
+
+  const operatorAnalysis = useGeminiAnalysis(async () => {
+    if (!julesApiKey) throw new Error("Jules API Key required");
+    const [sessions, prs] = await Promise.all([
+      listSessions(julesApiKey),
+      fetchEnrichedPullRequests(repoName, token) // Fetch enriched PRs to check for conflicts
+    ]);
+    const actions = await analyzeJulesSessions(sessions, prs);
+    const withIds = actions.map(a => ({ ...a, _id: generateId() }));
+    setOperatorActions(withIds);
+    setSelectedOperatorIds(new Set());
+    return withIds;
   });
 
   // --- Actions ---
@@ -128,6 +149,31 @@ const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
     setBulkProcessing(false);
   };
 
+  const executeBulkOperator = async () => {
+    if (!julesApiKey) return alert("Jules API Key required");
+    setBulkProcessing(true);
+    const selected = operatorActions.filter(i => selectedOperatorIds.has(i._id));
+    const successIds: string[] = [];
+
+    for (const item of selected) {
+      try {
+        const shortName = item.sessionName.split('/').pop() || item.sessionName;
+        if (item.action === 'delete') {
+           await deleteSession(julesApiKey, shortName);
+        } else if (item.action === 'message' || item.action === 'recover') {
+           const msg = item.suggestedCommand || "Please check status.";
+           await sendMessage(julesApiKey, shortName, msg);
+        } else if (item.action === 'publish') {
+           await sendMessage(julesApiKey, shortName, "Please publish the pull request now.");
+        }
+        successIds.push(item._id);
+      } catch (e) { console.error(e); }
+    }
+    setOperatorActions(prev => prev.filter(i => !successIds.includes(i._id)));
+    setSelectedOperatorIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
+    setBulkProcessing(false);
+  };
+
   // Helper
   const toggleSet = (setIds: Set<string>, setFunction: (s: Set<string>) => void, id: string) => {
     const next = new Set(setIds);
@@ -162,6 +208,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
           { id: 'architect', label: 'Architect (Discovery)', icon: Sparkles },
           { id: 'overseer', label: 'Overseer (PR Triage)', icon: AlertTriangle },
           { id: 'janitor', label: 'Janitor (Cleanup)', icon: Trash2 },
+          { id: 'operator', label: 'Operator (Session Ops)', icon: TerminalSquare },
         ].map((tab) => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={clsx("flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap", activeTab === tab.id ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white")}>
             <tab.icon className="w-4 h-4" />{tab.label}
@@ -313,6 +360,59 @@ const Agent: React.FC<AgentProps> = ({ repoName, token }) => {
                        <p className="text-sm text-slate-300">{link.reason}</p>
                        <span className="text-xs text-green-500 font-medium">Confidence: {link.confidence}</span>
                      </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- OPERATOR TAB --- */}
+      {activeTab === 'operator' && (
+        <div className="space-y-6">
+          <div className="bg-surface border border-slate-700 rounded-xl p-6">
+            <div className="flex justify-between items-center mb-6">
+               <h3 className="text-xl font-bold text-white">Session Analysis & Ops</h3>
+               <div className="flex gap-3">
+                 <Button variant="secondary" onClick={() => operatorAnalysis.run()} isLoading={operatorAnalysis.status === 'LOADING' || bulkProcessing} icon={TerminalSquare}>Analyze Sessions</Button>
+               </div>
+            </div>
+
+            {/* Actions Bar */}
+            {operatorActions.length > 0 && (
+               <div className="flex items-center justify-between mb-4 bg-slate-800/30 p-3 rounded-lg border border-slate-700/50">
+                  <div className="flex items-center gap-3">
+                     <div className="flex items-center gap-2">
+                       <input type="checkbox" checked={operatorActions.length > 0 && selectedOperatorIds.size === operatorActions.length} onChange={() => toggleAll(operatorActions.map(i => i._id), selectedOperatorIds, setSelectedOperatorIds)} className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-purple-600 cursor-pointer" />
+                       <span className="text-sm text-slate-300">Select All</span>
+                     </div>
+                     <span className="text-sm text-slate-400">Found {operatorActions.length} recommendations</span>
+                  </div>
+                  <Button variant="success" size="sm" onClick={executeBulkOperator} disabled={selectedOperatorIds.size === 0 || bulkProcessing} isLoading={bulkProcessing} icon={Play}>Run Recommended Actions</Button>
+               </div>
+            )}
+
+            <div className="space-y-3">
+              {operatorActions.map((item) => (
+                <div key={item._id} className={clsx("border rounded-lg p-4 flex gap-4", selectedOperatorIds.has(item._id) ? "bg-purple-900/10 border-purple-500/50" : "bg-slate-900/50 border-slate-700")}>
+                  <div className="pt-1">
+                    <input type="checkbox" checked={selectedOperatorIds.has(item._id)} onChange={() => toggleSet(selectedOperatorIds, setSelectedOperatorIds, item._id)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-purple-600 cursor-pointer shrink-0" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-2">
+                       <div className="flex items-center gap-3">
+                         <span className="font-mono text-xs text-slate-500">{item.sessionName.split('/').pop()}</span>
+                         <Badge variant={item.action === 'delete' ? 'red' : item.action === 'publish' ? 'green' : 'blue'}>{item.action}</Badge>
+                       </div>
+                    </div>
+                    <p className="text-slate-300 text-sm mb-2">{item.reason}</p>
+                    {item.suggestedCommand && (
+                       <div className="bg-black/30 p-2 rounded border border-slate-800 font-mono text-xs text-green-400 flex items-start gap-2">
+                          <TerminalSquare className="w-3 h-3 mt-0.5 shrink-0" />
+                          <span className="break-all">{item.suggestedCommand}</span>
+                       </div>
+                    )}
                   </div>
                 </div>
               ))}

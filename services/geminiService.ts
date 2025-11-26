@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest } from '../types';
 
 const getClient = () => {
   const apiKey = process.env.API_KEY;
@@ -534,7 +534,93 @@ export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullReq
   return JSON.parse(text) as LinkSuggestion[];
 };
 
-// 4. Generate Repo Briefing (Dashboard)
+// 4. Analyze Jules Sessions (Operator)
+export const analyzeJulesSessions = async (sessions: JulesSession[], prs: EnrichedPullRequest[]): Promise<JulesAgentAction[]> => {
+  if (!sessions || sessions.length === 0) return [];
+  const client = getClient();
+  
+  // Create a map of PR URL -> PR Details for lookup
+  const prMap = new Map(prs.map(p => [p.html_url, p]));
+
+  const sessionData = sessions.map(s => {
+    const prUrl = s.outputs?.find(o => o.pullRequest)?.pullRequest?.url;
+    let prContext = "No PR linked";
+    let hasConflicts = false;
+
+    if (prUrl) {
+      const pr = prMap.get(prUrl);
+      if (pr) {
+        prContext = `Linked PR #${pr.number} is ${pr.state.toUpperCase()}.`;
+        if (pr.mergeable === false) {
+           hasConflicts = true;
+           prContext += " HAS MERGE CONFLICTS.";
+        } else if (pr.merged_at) {
+           prContext += " MERGED.";
+        }
+      } else {
+        // If we don't have PR data (maybe it's closed/merged and not in the 'open' list we fetched, or we fetched limited list)
+        // We assume it exists if URL exists.
+        prContext = "PR exists but status unknown (likely closed/merged if not in open list).";
+      }
+    }
+
+    return {
+      name: s.name,
+      title: s.title,
+      state: s.state,
+      createTime: s.createTime,
+      prContext: prContext,
+      hasConflicts: hasConflicts,
+      lastStatus: s.state // We rely on state as primary indicator + PR context
+    };
+  });
+
+  const prompt = `
+    You are an AI Operator for autonomous coding sessions.
+    Analyze these sessions and suggest ONE action per session if necessary.
+    
+    Session Data provided includes: State, Title, Creation Time, and Linked PR Context (including merge conflicts or merge status).
+
+    Rules for Recommendations:
+    1. **Recover**: If session 'hasConflicts' is true, OR state is FAILED/TERMINATED. Suggest a rebase command.
+    2. **Delete**: If session's linked PR is MERGED. This is a cleanup action.
+    3. **Delete**: If session is very old (> 7 days) and FAILED/STALE with no active PR.
+    4. **Publish**: If session SUCCEEDED and "No PR linked".
+    5. **Message**: If session is SUCCEEDED but PR is OPEN (not merged). Suggest nudging for review or asking if updates are needed.
+    6. **Message**: If session is AWAITING_USER_FEEDBACK or RUNNING > 24h.
+
+    Return a list of actionable items.
+
+    Sessions: ${JSON.stringify(sessionData)}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            sessionName: { type: Type.STRING },
+            action: { type: Type.STRING, enum: ['delete', 'recover', 'publish', 'message'] },
+            reason: { type: Type.STRING },
+            suggestedCommand: { type: Type.STRING }
+          },
+          required: ['sessionName', 'action', 'reason']
+        }
+      }
+    }
+  });
+
+  const text = response.text || "[]";
+  return JSON.parse(text) as JulesAgentAction[];
+};
+
+
+// 5. Generate Repo Briefing (Dashboard)
 export const generateRepoBriefing = async (
   stats: any, 
   velocity: { opened: number, closed: number }, 

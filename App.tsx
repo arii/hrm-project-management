@@ -50,7 +50,7 @@ const App: React.FC = () => {
           <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
           <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} />} />
-          <Route path="agent" element={<Agent repoName={repoName} token={githubToken} />} />
+          <Route path="agent" element={<Agent repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} />} />
           <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
           <Route path="sessions" element={<JulesSessions repoName={repoName} julesApiKey={julesApiKey} />} />

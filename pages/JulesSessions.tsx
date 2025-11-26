@@ -640,7 +640,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
                     </div>
 
                     {/* 2. Timeline Outputs */}
-                    {(activeSession.outputs as any[])?.map((output: any, idx: number) => {
+                    {((activeSession.outputs as any[]) || []).map((output: any, idx: number) => {
                        // PR Output
                        if (output.pullRequest) {
                          return (
