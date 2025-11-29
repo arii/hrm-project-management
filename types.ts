@@ -85,7 +85,8 @@ export enum AnalysisStatus {
   IDLE = 'IDLE',
   LOADING = 'LOADING',
   COMPLETE = 'COMPLETE',
-  ERROR = 'ERROR'
+  ERROR = 'ERROR',
+  RETRYING = 'RETRYING'
 }
 
 export interface AnalysisResult {
@@ -157,7 +158,7 @@ export interface LinkSuggestion {
 
 export interface JulesAgentAction {
   sessionName: string; // Full name
-  action: 'delete' | 'recover' | 'publish' | 'message';
+  action: 'delete' | 'recover' | 'publish' | 'message' | 'start_over';
   reason: string;
   suggestedCommand?: string;
 }
@@ -187,6 +188,44 @@ export interface BranchCleanupRecommendation {
 export interface BranchCleanupResult {
   report: string;
   candidates: BranchCleanupRecommendation[];
+}
+
+export interface JulesCleanupRecommendation {
+  sessionName: string;
+  reason: string;
+  linkedPrNumber?: number;
+  status: 'merged' | 'closed' | 'stale' | 'failed';
+}
+
+export interface JulesCleanupResult {
+  report: string;
+  candidates: JulesCleanupRecommendation[];
+}
+
+// PR Health Types
+export interface PrHealthAction {
+  prNumber: number;
+  title: string;
+  action: 'close' | 'comment' | 'label';
+  label?: string; // If action is label
+  reason: string;
+  suggestedComment?: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface PrHealthAnalysisResult {
+  report: string;
+  actions: PrHealthAction[];
+}
+
+// Integrator (Merge Ops) Types
+export interface MergeProposal {
+  groupName: string;
+  prNumbers: number[];
+  branches: string[];
+  reason: string;
+  risk: 'Low' | 'Medium' | 'High';
+  targetBranch: string;
 }
 
 // Jules API Types

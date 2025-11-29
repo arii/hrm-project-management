@@ -62,16 +62,31 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
      fetchOptions.headers = h;
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`${BASE_URL}${endpoint}`, {
-      ...fetchOptions,
-      headers: { ...headers, ...fetchOptions.headers },
-    });
-  } catch (e: any) {
-    console.error(`[GitHub] Fetch failed for ${endpoint}:`, e);
-    throw new Error(`Network error: Failed to reach GitHub. Check your connection or API token.`);
+  let response: Response | undefined;
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      response = await fetch(`${BASE_URL}${endpoint}`, {
+        ...fetchOptions,
+        headers: { ...headers, ...fetchOptions.headers },
+      });
+
+      // Handle Rate Limiting explicitly
+      if (response.status === 429) {
+        throw new Error("Rate limit exceeded");
+      }
+      
+      break;
+    } catch (e: any) {
+      console.warn(`[GitHub] Fetch failed for ${endpoint} (retries left: ${retries - 1}):`, e.message);
+      retries--;
+      if (retries === 0) throw new Error(`Network error: Failed to reach GitHub. ${e.message}`);
+      // Exponential Backoff: 1s, 2s, 4s
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, 3 - retries))); 
+    }
   }
+
+  if (!response) throw new Error("Unknown network error");
 
   if (!response.ok) {
     let errorMessage = `GitHub API Error: ${response.status} ${response.statusText}`;
@@ -148,12 +163,37 @@ export const fetchComments = async (repo: string, issueNumber: number, token?: s
 };
 
 export const fetchBranches = async (repo: string, token: string): Promise<GithubBranch[]> => {
-  return request<GithubBranch[]>(`/repos/${repo}/branches?per_page=100`, token);
+  let allBranches: GithubBranch[] = [];
+  let page = 1;
+  const PER_PAGE = 100;
+
+  // Pagination loop to fetch all branches
+  while (true) {
+    try {
+      const batch = await request<GithubBranch[]>(`/repos/${repo}/branches?per_page=${PER_PAGE}&page=${page}`, token);
+      if (!batch || batch.length === 0) break;
+      allBranches = [...allBranches, ...batch];
+      
+      if (batch.length < PER_PAGE) break; // Reached last page
+      
+      page++;
+      // Safety break to prevent infinite loops on massive repos
+      if (page > 30) {
+        console.warn('Branch fetch limit reached (3000 branches). Stopping pagination.');
+        break;
+      }
+    } catch (e) {
+      console.error('Failed to fetch branch page', page, e);
+      break;
+    }
+  }
+  return allBranches;
 };
 
 export const deleteBranch = async (repo: string, token: string, branchName: string) => {
   // GitHub API deletes a branch by deleting the Ref
-  return request(`/repos/${repo}/git/refs/heads/${branchName}`, token, { method: 'DELETE' });
+  // This needs to be URL encoded properly for branches with slashes (e.g. feature/abc)
+  return request(`/repos/${repo}/git/refs/heads/${encodeURIComponent(branchName)}`, token, { method: 'DELETE' });
 };
 
 export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
@@ -195,75 +235,87 @@ export const fetchRecentActivity = async (repo: string, token?: string, days = 3
 // Complex Aggregation Logic
 export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
   const list = await fetchPullRequests(repo, token, 'open');
-  const subset = list.slice(0, 20); // Limit to avoid rate limits
+  // Process up to 20 PRs to avoid hitting limits, but do it in batches of 5 to respect browser concurrency
+  const subset = list.slice(0, 20); 
+  
+  const results: EnrichedPullRequest[] = [];
+  const BATCH_SIZE = 5;
 
-  return Promise.all(subset.map(async (pr) => {
-    try {
-      let details = await fetchPrDetails(repo, pr.number, token);
+  for (let i = 0; i < subset.length; i += BATCH_SIZE) {
+    const batch = subset.slice(i, i + BATCH_SIZE);
+    
+    const batchResults = await Promise.all(batch.map(async (pr) => {
+      try {
+        let details = await fetchPrDetails(repo, pr.number, token);
 
-      // Retry logic for mergeability
-      let retries = 0;
-      while (details.mergeable === null && retries < 3) {
-         await new Promise(r => setTimeout(r, 1500));
-         // Force skip cache on retry to get fresh mergeable status
-         details = await fetchPrDetails(repo, pr.number, token, true);
-         retries++;
-      }
-
-      const comments = await fetchComments(repo, pr.number, token);
-      
-      const sortedComments = Array.isArray(comments) 
-        ? comments.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) 
-        : [];
-      
-      let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
-      
-      for (const c of sortedComments) {
-        const body = (c.body || '').toLowerCase();
-        if (body.includes('test failed') || body.includes('tests failed') || body.includes('build failed') || body.includes('checks failed') || body.includes('failure')) {
-           testStatus = 'failed';
-           break;
+        // Retry logic for mergeability
+        let retries = 0;
+        while (details.mergeable === null && retries < 3) {
+           await new Promise(r => setTimeout(r, 1500));
+           // Force skip cache on retry to get fresh mergeable status
+           details = await fetchPrDetails(repo, pr.number, token, true);
+           retries++;
         }
-        if (body.includes('test passed') || body.includes('tests passed') || body.includes('all checks passed') || body.includes('build success') || body.includes('successful')) {
-           testStatus = 'passed';
-           break;
+
+        const comments = await fetchComments(repo, pr.number, token);
+        
+        const sortedComments = Array.isArray(comments) 
+          ? comments.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) 
+          : [];
+        
+        let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
+        
+        for (const c of sortedComments) {
+          const body = (c.body || '').toLowerCase();
+          if (body.includes('test failed') || body.includes('tests failed') || body.includes('build failed') || body.includes('checks failed') || body.includes('failure')) {
+             testStatus = 'failed';
+             break;
+          }
+          if (body.includes('test passed') || body.includes('tests passed') || body.includes('all checks passed') || body.includes('build success') || body.includes('successful')) {
+             testStatus = 'passed';
+             break;
+          }
         }
-      }
 
-      const filesChanged = details.changed_files || 0;
-      const isBig = filesChanged > 15 || (details.additions || 0) > 500;
-      const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release'].includes(details.base.ref.toLowerCase());
-      const noConflicts = details.mergeable === true;
-      
-      let isReadyToMerge = false;
-      
-      if (noConflicts) {
-        if (testStatus === 'failed') {
-          isReadyToMerge = false;
-        } else if (!isLeaderBranch) {
-          isReadyToMerge = true;
-        } else {
-          isReadyToMerge = testStatus === 'passed';
+        const filesChanged = details.changed_files || 0;
+        const isBig = filesChanged > 15 || (details.additions || 0) > 500;
+        const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release', 'leader'].includes(details.base.ref.toLowerCase());
+        const noConflicts = details.mergeable === true;
+        
+        let isReadyToMerge = false;
+        
+        if (noConflicts) {
+          if (testStatus === 'failed') {
+            isReadyToMerge = false;
+          } else if (!isLeaderBranch) {
+            isReadyToMerge = true;
+          } else {
+            isReadyToMerge = testStatus === 'passed';
+          }
         }
+
+        return {
+          ...details,
+          testStatus,
+          isBig,
+          isReadyToMerge,
+          isLeaderBranch
+        } as EnrichedPullRequest;
+
+      } catch (e) {
+        console.warn(`Failed to enrich PR #${pr.number}`, e);
+        return {
+           ...pr,
+           testStatus: 'unknown',
+           isBig: false,
+           isReadyToMerge: false,
+           isLeaderBranch: false
+        } as EnrichedPullRequest;
       }
+    }));
+    
+    results.push(...batchResults);
+  }
 
-      return {
-        ...details,
-        testStatus,
-        isBig,
-        isReadyToMerge,
-        isLeaderBranch
-      } as EnrichedPullRequest;
-
-    } catch (e) {
-      console.warn(`Failed to enrich PR #${pr.number}`, e);
-      return {
-         ...pr,
-         testStatus: 'unknown',
-         isBig: false,
-         isReadyToMerge: false,
-         isLeaderBranch: false
-      } as EnrichedPullRequest;
-    }
-  }));
+  return results;
 };

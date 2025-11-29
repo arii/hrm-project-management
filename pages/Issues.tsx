@@ -2,12 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import { fetchIssues, updateIssue, createIssue, addLabels } from '../services/githubService';
 import { analyzeIssueRedundancy, generateTriageReport, identifyRedundantCandidates } from '../services/geminiService';
-import { GithubIssue, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction } from '../types';
+import { listSessions } from '../services/julesService';
+import { GithubIssue, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction, JulesSession } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import AnalysisCard from '../components/AnalysisCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import { AlertCircle, Tag, Sparkles, Trash2, Plus, Box, Gauge, Loader2, TerminalSquare } from 'lucide-react';
+import { AlertCircle, Tag, Sparkles, Trash2, Plus, Box, Gauge, Loader2, TerminalSquare, Eye } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
 
@@ -32,9 +33,9 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [autoSelectLoading, setAutoSelectLoading] = useState(false);
   
-  // Hooks for Analysis
-  const redundancyAnalysis = useGeminiAnalysis(analyzeIssueRedundancy);
-  const triageAnalysis = useGeminiAnalysis(generateTriageReport);
+  // Hooks for Analysis (Cached)
+  const redundancyAnalysis = useGeminiAnalysis(analyzeIssueRedundancy, 'redundancy_report');
+  const triageAnalysis = useGeminiAnalysis(generateTriageReport, 'triage_report');
   
   // Redundancy Action State
   const [createCandidates, setCreateCandidates] = useState<ConsolidatedIssueUI[]>([]);
@@ -48,9 +49,18 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
   const [triageActions, setTriageActions] = useState<TriageActionUI[]>([]);
   const [selectedTriageIds, setSelectedTriageIds] = useState<Set<string>>(new Set());
 
+  // Jules Sessions State
+  const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
+
   useEffect(() => {
     loadIssues();
   }, [repoName, token]);
+
+  useEffect(() => {
+    if (julesApiKey) {
+      listSessions(julesApiKey).then(setJulesSessions).catch(console.error);
+    }
+  }, [julesApiKey]);
 
   const loadIssues = async () => {
     setLoading(true);
@@ -140,16 +150,40 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
     loadIssues();
   };
 
-  const startJulesSession = (issue: GithubIssue) => {
-    navigate('/sessions', { 
-      state: { 
-        createFromIssue: { 
-          title: issue.title, 
-          number: issue.number, 
-          body: issue.body 
-        } 
-      } 
+  const getActiveSessionForIssue = (issueNumber: number) => {
+    return julesSessions.find(s => {
+      // Must be in an active state
+      const isActive = ['RUNNING', 'PENDING', 'IN_PROGRESS', 'AWAITING_USER_FEEDBACK', 'AWAITING_PLAN_APPROVAL'].includes(s.state);
+      if (!isActive) return false;
+
+      // Check title for issue number
+      const titleHasId = s.title?.includes(`#${issueNumber}`);
+      
+      // Check branch for issue number pattern (issue-123 or issue/123)
+      const branch = s.sourceContext?.githubRepoContext?.startingBranch || '';
+      const branchHasId = branch.includes(`issue-${issueNumber}`) || branch.includes(`issue/${issueNumber}`);
+
+      return titleHasId || branchHasId;
     });
+  };
+
+  const handleJulesClick = (issue: GithubIssue) => {
+    const activeSession = getActiveSessionForIssue(issue.number);
+    if (activeSession) {
+      // View existing
+      navigate('/sessions', { state: { viewSessionName: activeSession.name } });
+    } else {
+      // Create new
+      navigate('/sessions', { 
+        state: { 
+          createFromIssue: { 
+            title: issue.title, 
+            number: issue.number, 
+            body: issue.body 
+          } 
+        } 
+      });
+    }
   };
 
   // --- Redundancy Card Actions ---
@@ -406,37 +440,50 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
           <div className="p-12 text-center text-slate-500"><Loader2 className="w-8 h-8 mx-auto animate-spin mb-2"/>Loading issues...</div>
         ) : (
           <div className="divide-y divide-slate-700">
-            {issues.map(issue => (
-              <div key={issue.id} className={clsx("p-4 hover:bg-slate-800/30 group", selectedIssueIds.has(issue.number) && "bg-blue-900/10")}>
-                <div className="flex items-start gap-4">
-                  <input type="checkbox" checked={selectedIssueIds.has(issue.number)} onChange={() => toggleSelection(issue.number)} className="w-4 h-4 mt-1 rounded border-slate-600 bg-slate-700 text-primary cursor-pointer" />
-                  <AlertCircle className="w-5 h-5 text-green-500 mt-1" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex justify-between items-start gap-4">
-                      <h4 className="text-base font-medium text-slate-200 truncate">
-                        <a href={issue.html_url} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{issue.title}</a>
-                      </h4>
-                      <div className="flex items-center gap-2">
-                        {julesApiKey && (
-                          <button 
-                            onClick={() => startJulesSession(issue)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-purple-500/20 text-purple-300 rounded hover:bg-purple-500 hover:text-white flex items-center gap-1 text-xs"
-                            title="Start Jules Session for this issue"
-                          >
-                            <TerminalSquare className="w-3 h-3" /> Work with Jules
-                          </button>
-                        )}
-                        <span className="text-sm font-mono text-slate-500">#{issue.number}</span>
+            {issues.map(issue => {
+              const activeSession = getActiveSessionForIssue(issue.number);
+              return (
+                <div key={issue.id} className={clsx("p-4 hover:bg-slate-800/30 group", selectedIssueIds.has(issue.number) && "bg-blue-900/10")}>
+                  <div className="flex items-start gap-4">
+                    <input type="checkbox" checked={selectedIssueIds.has(issue.number)} onChange={() => toggleSelection(issue.number)} className="w-4 h-4 mt-1 rounded border-slate-600 bg-slate-700 text-primary cursor-pointer" />
+                    <AlertCircle className="w-5 h-5 text-green-500 mt-1" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-start gap-4">
+                        <h4 className="text-base font-medium text-slate-200 truncate">
+                          <a href={issue.html_url} target="_blank" rel="noopener noreferrer" className="hover:text-primary">{issue.title}</a>
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          {julesApiKey && (
+                            activeSession ? (
+                              <button 
+                                onClick={() => handleJulesClick(issue)}
+                                className="px-2 py-1 bg-green-900/30 text-green-400 border border-green-800/50 rounded hover:bg-green-900/50 flex items-center gap-1.5 text-xs font-medium animate-pulse"
+                                title="View active session"
+                              >
+                                <Loader2 className="w-3 h-3 animate-spin" /> View Session
+                              </button>
+                            ) : (
+                              <button 
+                                onClick={() => handleJulesClick(issue)}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-purple-500/20 text-purple-300 rounded hover:bg-purple-500 hover:text-white flex items-center gap-1 text-xs"
+                                title="Start Jules Session for this issue"
+                              >
+                                <TerminalSquare className="w-3 h-3" /> Work with Jules
+                              </button>
+                            )
+                          )}
+                          <span className="text-sm font-mono text-slate-500">#{issue.number}</span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                       <span>{issue.user.login}</span>
-                       {issue.labels.map(l => <span key={l.id} className="px-1.5 py-0.5 rounded" style={{ backgroundColor: `#${l.color}20`, color: `#${l.color}`, border: `1px solid #${l.color}40` }}>{l.name}</span>)}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                         <span>{issue.user.login}</span>
+                         {issue.labels.map(l => <span key={l.id} className="px-1.5 py-0.5 rounded" style={{ backgroundColor: `#${l.color}20`, color: `#${l.color}`, border: `1px solid #${l.color}40` }}>{l.name}</span>)}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

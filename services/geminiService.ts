@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult } from '../types';
 
 const getClient = () => {
   const apiKey = process.env.API_KEY;
@@ -120,9 +120,11 @@ export const identifyRedundantCandidates = async (issues: GithubIssue[]): Promis
   return JSON.parse(text) as number[];
 };
 
-// Analyze PRs for Health and Mergeability
-export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<string> => {
-  if (!prs || prs.length === 0) return "No Pull Requests to analyze.";
+// Analyze PRs for Health and Mergeability (Structured)
+export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrHealthAnalysisResult> => {
+  if (!prs || prs.length === 0) {
+    return { report: "No Pull Requests to analyze.", actions: [] };
+  }
   const client = getClient();
 
   const prSummary = prs.map(p => ({
@@ -138,15 +140,17 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<str
   const prompt = `
     You are a Lead DevOps Engineer. Analyze these Pull Requests.
     
-    Focus on:
-    1. Identifying "Stale" PRs (old, no recent activity).
-    2. Identifying "Redundant" branches (e.g., multiple PRs fixing the same thing).
-    3. Assessing PR quality based on descriptions (vague vs detailed).
-    4. Determine if any PRs seem to overlap in purpose.
-
-    Provide a concise Markdown executive summary. Use tables if helpful.
-    Highlight PRs that need immediate attention.
-
+    1. Identify "Stale" PRs (old, no recent activity).
+    2. Identify "Redundant" branches (e.g., multiple PRs fixing the same thing).
+    3. Assess PR quality.
+    
+    OUTPUT JSON:
+    - 'report': A markdown executive summary of the PR health state.
+    - 'actions': Specific, actionable recommendations.
+      - Suggest 'close' for stale/abandoned PRs.
+      - Suggest 'comment' to nudge reviewers or ask for updates.
+      - Suggest 'label' to tag PRs (e.g., 'stale', 'needs-review').
+      
     PR Data:
     ${JSON.stringify(prSummary)}
   `;
@@ -154,9 +158,36 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<str
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          report: { type: Type.STRING },
+          actions: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                prNumber: { type: Type.INTEGER },
+                title: { type: Type.STRING },
+                action: { type: Type.STRING, enum: ['close', 'comment', 'label'] },
+                label: { type: Type.STRING, nullable: true },
+                reason: { type: Type.STRING },
+                suggestedComment: { type: Type.STRING, nullable: true },
+                confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] }
+              },
+              required: ['prNumber', 'title', 'action', 'reason', 'confidence']
+            }
+          }
+        },
+        required: ['report', 'actions']
+      }
+    }
   });
 
-  return response.text || "No analysis generated.";
+  const text = response.text || "{}";
+  return JSON.parse(text) as PrHealthAnalysisResult;
 };
 
 // Cleanup Report: Match Closed PRs to Open Issues
@@ -166,8 +197,16 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
   }
   const client = getClient();
 
-  // We only need recently closed PRs to check against current open issues
-  const recentClosedPrs = closedPrs.slice(0, 30).map(p => ({
+  // STRICTLY FILTER for MERGED PRs only. 
+  // A closed PR that wasn't merged (merged_at is null) didn't fix anything.
+  const mergedPrs = closedPrs.filter(p => p.merged_at !== null);
+
+  if (mergedPrs.length === 0) {
+    return { report: "No recently merged PRs found to check against issues.", actions: [] };
+  }
+
+  // We only need recently merged PRs to check against current open issues
+  const recentMergedPrs = mergedPrs.slice(0, 30).map(p => ({
     number: p.number,
     title: p.title,
     merged_at: p.merged_at,
@@ -183,14 +222,14 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
   const prompt = `
     You are a GitHub Repository Maintainer.
     
-    I have a list of OPEN Issues and a list of recently CLOSED/MERGED Pull Requests.
+    I have a list of OPEN Issues and a list of recently MERGED Pull Requests.
     
     Your task:
-    Determine if any of the OPEN issues should likely be closed because they were addressed by the CLOSED Pull Requests.
+    Determine if any of the OPEN issues should likely be closed because they were addressed by the MERGED Pull Requests.
     Look for keywords like "fixes", "resolves", "closes" in the PR body, or semantic similarity between the PR title and Issue title.
 
     Generate a structured response:
-    1. 'report': A markdown executive summary of your findings.
+    1. 'report': A markdown executive summary of the findings.
     2. 'actions': A list of specific actions to take.
        - If you are confident an issue is fixed, suggest 'close'.
        - If you suspect it's fixed but need verification, suggest 'comment' with a question asking if it's resolved.
@@ -198,8 +237,8 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
     Open Issues:
     ${JSON.stringify(currentOpenIssues)}
 
-    Recently Closed PRs:
-    ${JSON.stringify(recentClosedPrs)}
+    Recently Merged PRs:
+    ${JSON.stringify(recentMergedPrs)}
   `;
 
   const response = await client.models.generateContent({
@@ -258,8 +297,10 @@ export const analyzeBranchCleanup = async (branches: string[], mergedPrs: { ref:
     
     Your task:
     1. Identify "Zombie" branches: Branches that still exist but match the head ref of a MERGED PR. These are safe to delete.
-    2. Identify "Stale" branches: Branches that look like temporary feature branches (e.g., 'patch-1', 'temp/fix') but are not in the list of protected branches (main, master, dev, staging).
-    3. Be careful NOT to recommend deleting core branches like 'main', 'master', 'develop', 'release'.
+    2. Identify "Stale" branches: Branches that look like temporary feature branches (e.g., 'patch-1', 'temp/fix') but are not in the list of protected branches (leader, main, master, dev, staging).
+    3. Be careful NOT to recommend deleting core branches like 'leader', 'main', 'master', 'develop', 'release'.
+    
+    Ensure the "report" is pure Markdown without any JSON escaping artifacts (e.g., use real line breaks, not \\n).
 
     Generate a structured response:
     - 'report': A markdown summary of branch hygiene.
@@ -299,6 +340,85 @@ export const analyzeBranchCleanup = async (branches: string[], mergedPrs: { ref:
 
   const text = response.text || "{}";
   return JSON.parse(text) as BranchCleanupResult;
+};
+
+// Jules Session Cleanup Analysis
+export const analyzeJulesCleanup = async (sessions: JulesSession[], closedPrs: GithubPullRequest[]): Promise<JulesCleanupResult> => {
+  if (!sessions || sessions.length === 0) {
+    return { report: "No Jules sessions to analyze.", candidates: [] };
+  }
+  const client = getClient();
+
+  // Create lookup for closed PRs (merged or closed)
+  const closedPrSet = new Set(closedPrs.map(p => p.number));
+  
+  // Format sessions for analysis
+  const sessionData = sessions.map(s => {
+    const prUrl = s.outputs?.find(o => o.pullRequest)?.pullRequest?.url;
+    let prNumber: number | null = null;
+    if (prUrl) {
+      const match = prUrl.match(/pull\/(\d+)/);
+      if (match) prNumber = parseInt(match[1]);
+    }
+    
+    return {
+      name: s.name,
+      title: s.title,
+      state: s.state,
+      createTime: s.createTime,
+      linkedPr: prNumber,
+      isLinkedPrClosed: prNumber ? closedPrSet.has(prNumber) : false
+    };
+  });
+
+  const prompt = `
+    You are a Housekeeping Bot for Jules Sessions.
+    
+    Your task: Identify sessions that are candidates for deletion (cleanup).
+    
+    Criteria for deletion:
+    1. **Merged/Closed PR**: The session created a PR that has since been MERGED or CLOSED. The work is done or abandoned.
+    2. **Stale & Failed**: The session is > 7 days old and ended in a FAILED/TERMINATED state.
+    3. **Stale & No PR**: The session is > 7 days old, SUCCEEDED, but has no linked PR and hasn't been touched.
+    
+    OUTPUT JSON:
+    - 'report': A markdown summary of the cleanup analysis.
+    - 'candidates': List of session names to delete.
+
+    Session Data:
+    ${JSON.stringify(sessionData)}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          report: { type: Type.STRING },
+          candidates: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                sessionName: { type: Type.STRING },
+                reason: { type: Type.STRING },
+                linkedPrNumber: { type: Type.INTEGER, nullable: true },
+                status: { type: Type.STRING, enum: ['merged', 'closed', 'stale', 'failed'] }
+              },
+              required: ['sessionName', 'reason', 'status']
+            }
+          }
+        },
+        required: ['report', 'candidates']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  return JSON.parse(text) as JulesCleanupResult;
 };
 
 // Generate Triage Report (Structured)
@@ -378,9 +498,13 @@ export const suggestStrategicIssues = async (
   userGuidance?: string
 ): Promise<ProposedIssue[]> => {
   const client = getClient();
+  
+  // Use a larger context to prevent duplicates.
+  // We include ALL issue titles to ensure the model knows what exists.
+  // Gemini 2.5 Flash has a large context window, so we can afford this.
   const context = {
-    issues: issues.slice(0, 30).map(i => i.title),
-    prs: prs.slice(0, 20).map(p => p.title),
+    existingIssueTitles: issues.map(i => i.title),
+    existingPrTitles: prs.map(p => p.title),
   };
 
   let specificPrompt = "";
@@ -417,9 +541,12 @@ export const suggestStrategicIssues = async (
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: `
-      Based on the current list of issues and pull requests, suggest new issues to create.
+      Based on the current list of "existingIssueTitles" and "existingPrTitles", suggest NEW issues to create.
       
-      CRITICAL: Do NOT suggest issues that are duplicates of the existing "Issues" list provided in the context.
+      STRICT DEDUPLICATION RULES:
+      1. Review the "existingIssueTitles" list carefully.
+      2. If a proposed issue is semantically similar to ANY existing issue title, DO NOT suggest it.
+      3. Do NOT suggest issues that are subsets of existing work (e.g. if "Fix all typos" exists, don't suggest "Fix typo in README").
       
       FOCUS: ${specificPrompt}
       
@@ -470,6 +597,10 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
       - 'close' if it looks like a test, stale (> 30 days), or duplicate.
       - 'prioritize' if it looks important or quick to win.
       - 'comment' if it needs a gentle nudge.
+      
+      IMPORTANT:
+      1. If recommending 'comment', prefix the comment body with "@jules".
+      2. If recommending 'prioritize', explicitly check (or mention checking) for merge conflicts and build/test errors in your reasoning or suggested comment.
       
       PRs: ${JSON.stringify(prData)}
     `,
@@ -546,6 +677,7 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
     const prUrl = s.outputs?.find(o => o.pullRequest)?.pullRequest?.url;
     let prContext = "No PR linked";
     let hasConflicts = false;
+    let prMerged = false;
 
     if (prUrl) {
       const pr = prMap.get(prUrl);
@@ -555,6 +687,7 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
            hasConflicts = true;
            prContext += " HAS MERGE CONFLICTS.";
         } else if (pr.merged_at) {
+           prMerged = true;
            prContext += " MERGED.";
         }
       } else {
@@ -571,7 +704,8 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
       createTime: s.createTime,
       prContext: prContext,
       hasConflicts: hasConflicts,
-      lastStatus: s.state // We rely on state as primary indicator + PR context
+      prMerged: prMerged,
+      lastStatus: s.state 
     };
   });
 
@@ -579,15 +713,17 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
     You are an AI Operator for autonomous coding sessions.
     Analyze these sessions and suggest ONE action per session if necessary.
     
-    Session Data provided includes: State, Title, Creation Time, and Linked PR Context (including merge conflicts or merge status).
+    Session Data provided includes: State, Title, Creation Time, and Linked PR Context.
 
     Rules for Recommendations:
     1. **Recover**: If session 'hasConflicts' is true, OR state is FAILED/TERMINATED. Suggest a rebase command.
-    2. **Delete**: If session's linked PR is MERGED. This is a cleanup action.
-    3. **Delete**: If session is very old (> 7 days) and FAILED/STALE with no active PR.
-    4. **Publish**: If session SUCCEEDED and "No PR linked".
-    5. **Message**: If session is SUCCEEDED but PR is OPEN (not merged). Suggest nudging for review or asking if updates are needed.
-    6. **Message**: If session is AWAITING_USER_FEEDBACK or RUNNING > 24h.
+    2. **Start Over**: If session is FAILED/TERMINATED and appears urgent/important (e.g. "Critical", "Fix", "Blocker" in title), OR if 'hasConflicts' is true but session is FAILED. Suggest 'start_over' to delete and retry.
+    3. **Delete**: If session's linked PR is 'prMerged' (true). This is a cleanup action.
+    4. **Delete**: If session is very old (> 7 days) and FAILED/STALE with no active PR.
+    5. **Publish**: If session SUCCEEDED and "No PR linked".
+    6. **Message**: If session is SUCCEEDED or AWAITING_USER_FEEDBACK but PR is OPEN (not merged). Do NOT suggest generic nudges. Suggest a verification message.
+       - Recommended Command Text: "Please git fetch, rebase off origin/leader, and ensure the following pass: npm run lint, npm run build, npm test, npm run test:all, npm run dev, and ./start_production.sh"
+    7. **Message**: If session is RUNNING > 24h.
 
     Return a list of actionable items.
 
@@ -605,7 +741,7 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
           type: Type.OBJECT,
           properties: {
             sessionName: { type: Type.STRING },
-            action: { type: Type.STRING, enum: ['delete', 'recover', 'publish', 'message'] },
+            action: { type: Type.STRING, enum: ['delete', 'recover', 'publish', 'message', 'start_over'] },
             reason: { type: Type.STRING },
             suggestedCommand: { type: Type.STRING }
           },
@@ -619,8 +755,67 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
   return JSON.parse(text) as JulesAgentAction[];
 };
 
+// 5. Suggest Mergeable Branches (Integrator)
+export const suggestMergeableBranches = async (prs: EnrichedPullRequest[]): Promise<MergeProposal[]> => {
+  if (!prs || prs.length === 0) return [];
+  
+  // Filter for viable candidates FIRST to save tokens and improve quality
+  const candidates = prs.filter(pr => 
+    pr.mergeable === true &&  // No Conflicts
+    !pr.draft &&              // Not Draft
+    (pr.testStatus === 'passed' || pr.testStatus === 'unknown') // Tests passed or skipped (not failed)
+  ).map(pr => ({
+    number: pr.number,
+    title: pr.title,
+    branch: pr.head.ref,
+    base: pr.base.ref,
+    files: pr.changed_files
+  }));
 
-// 5. Generate Repo Briefing (Dashboard)
+  if (candidates.length === 0) return [];
+
+  const client = getClient();
+  const prompt = `
+    You are a Release Manager.
+    Review these mergeable Pull Requests.
+    
+    Group them into logical "Merge Batches" to be dispatched to an autonomous agent for merging.
+    Example groups: "Dependency Updates", "UI Fixes", "Core Refactors", "Documentation".
+    
+    If a PR is standalone or critical, it can be its own group.
+    Target branch for all is origin/leader unless specified otherwise.
+    
+    Candidates: ${JSON.stringify(candidates)}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            groupName: { type: Type.STRING },
+            prNumbers: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+            branches: { type: Type.ARRAY, items: { type: Type.STRING } },
+            reason: { type: Type.STRING },
+            risk: { type: Type.STRING, enum: ['Low', 'Medium', 'High'] },
+            targetBranch: { type: Type.STRING }
+          },
+          required: ['groupName', 'prNumbers', 'branches', 'reason', 'risk', 'targetBranch']
+        }
+      }
+    }
+  });
+
+  const text = response.text || "[]";
+  return JSON.parse(text) as MergeProposal[];
+};
+
+// 6. Generate Repo Briefing (Dashboard)
 export const generateRepoBriefing = async (
   stats: any, 
   velocity: { opened: number, closed: number }, 

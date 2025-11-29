@@ -34,6 +34,18 @@ const App: React.FC = () => {
     localStorage.setItem('audit_jules_key', key);
   };
 
+  // Pre-fetch data if credentials exist
+  React.useEffect(() => {
+    if (repoName && githubToken) {
+       // Lazy import to avoid circular dependencies if any, but direct import is fine here
+       import('./services/githubService').then(service => {
+         service.fetchIssues(repoName, githubToken, 'open').catch(() => {});
+         service.fetchPullRequests(repoName, githubToken, 'open').catch(() => {});
+         service.fetchBranches(repoName, githubToken).catch(() => {});
+       });
+    }
+  }, [repoName, githubToken]);
+
   return (
     <HashRouter>
       <Routes>
@@ -49,9 +61,9 @@ const App: React.FC = () => {
         }>
           <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
           <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} />} />
+          <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="agent" element={<Agent repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} />} />
+          <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
           <Route path="sessions" element={<JulesSessions repoName={repoName} julesApiKey={julesApiKey} />} />
           <Route path="*" element={<Navigate to="/" replace />} />

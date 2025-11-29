@@ -3,10 +3,11 @@ import React, { useEffect, useState } from 'react';
 import { fetchRepoStats, fetchIssues, fetchPullRequests, fetchRecentActivity } from '../services/githubService';
 import { generateRepoBriefing } from '../services/geminiService';
 import { RepoStats, GithubIssue, GithubPullRequest, AnalysisStatus } from '../types';
-import { Activity, GitFork, AlertCircle, GitPullRequest, TrendingUp, AlertTriangle, Calendar, Star, Zap, Loader2, CheckCircle2 } from 'lucide-react';
+import { Activity, GitFork, AlertCircle, GitPullRequest, TrendingUp, AlertTriangle, Calendar, Star, Zap, CheckCircle2 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import AnalysisCard from '../components/AnalysisCard';
 import clsx from 'clsx';
+import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 
 interface DashboardProps {
   repoName: string;
@@ -24,9 +25,8 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName, token }) => {
   const [velocityData, setVelocityData] = useState<{ date: string, opened: number, closed: number }[]>([]);
   const [stalePrs, setStalePrs] = useState<GithubPullRequest[]>([]);
   
-  // AI Insight State
-  const [briefingStatus, setBriefingStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
-  const [briefing, setBriefing] = useState<string | null>(null);
+  // AI Insight Hook (Cached)
+  const briefingAnalysis = useGeminiAnalysis(generateRepoBriefing, 'dashboard_briefing');
 
   useEffect(() => {
     loadData();
@@ -100,25 +100,18 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName, token }) => {
 
   const handleGenerateBriefing = async () => {
     if (!stats) return;
-    setBriefingStatus(AnalysisStatus.LOADING);
-    try {
-      const openedCount = velocityData.reduce((acc, cur) => acc + cur.opened, 0);
-      const closedCount = velocityData.reduce((acc, cur) => acc + cur.closed, 0);
+    const openedCount = velocityData.reduce((acc, cur) => acc + cur.opened, 0);
+    const closedCount = velocityData.reduce((acc, cur) => acc + cur.closed, 0);
       
-      // Pass a simplified issue list to the AI to save tokens
-      const recentContext = urgentIssues.concat(stalePrs as any).slice(0, 10);
+    // Pass a simplified issue list to the AI to save tokens
+    const recentContext = urgentIssues.concat(stalePrs as any).slice(0, 10);
       
-      const result = await generateRepoBriefing(
-        stats, 
-        { opened: openedCount, closed: closedCount },
-        recentContext,
-        stalePrs
-      );
-      setBriefing(result);
-      setBriefingStatus(AnalysisStatus.COMPLETE);
-    } catch (e) {
-      setBriefingStatus(AnalysisStatus.ERROR);
-    }
+    await briefingAnalysis.run(
+      stats, 
+      { opened: openedCount, closed: closedCount },
+      recentContext,
+      stalePrs
+    );
   };
 
   // Helper to calculate health grade
@@ -167,8 +160,8 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName, token }) => {
            <AnalysisCard 
              title="Executive Briefing"
              description="Daily AI-generated standup report on repo activity."
-             status={briefingStatus}
-             result={briefing}
+             status={briefingAnalysis.status}
+             result={briefingAnalysis.result}
              onAnalyze={handleGenerateBriefing}
              repoName={repoName}
            />

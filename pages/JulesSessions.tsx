@@ -32,7 +32,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   // Create Modal State
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newPrompt, setNewPrompt] = useState('');
-  const [newBranch, setNewBranch] = useState('main');
+  const [newBranch, setNewBranch] = useState('leader');
   const [newTitle, setNewTitle] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
@@ -67,6 +67,38 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
       loadSessions();
     }
   }, [julesApiKey]);
+
+  // Handle deep link to specific session (View Active Session) OR Restore from Storage
+  useEffect(() => {
+    // Priority 1: Navigation State (Deep Link)
+    if (location.state?.viewSessionName && sessions.length > 0) {
+       const target = sessions.find(s => s.name === location.state.viewSessionName);
+       if (target) {
+         setActiveSession(target);
+         // Clear state to avoid stickiness
+         window.history.replaceState({}, document.title);
+         return;
+       }
+    }
+
+    // Priority 2: Session Storage (Restore last viewed)
+    if (!activeSession && sessions.length > 0) {
+      const lastActive = sessionStorage.getItem('jules_last_active_session');
+      if (lastActive) {
+        const target = sessions.find(s => s.name === lastActive);
+        if (target) {
+          setActiveSession(target);
+        }
+      }
+    }
+  }, [sessions, location]); // Dependencies: run when sessions load
+
+  // Persist Active Session Selection
+  useEffect(() => {
+    if (activeSession) {
+      sessionStorage.setItem('jules_last_active_session', activeSession.name);
+    }
+  }, [activeSession]);
 
   const loadSessions = async () => {
     setLoading(true);
@@ -126,8 +158,8 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
 
       filtered.forEach(s => {
          const branch = s.sourceContext?.githubRepoContext?.startingBranch;
-         // Heuristic: Group by branch if it's a feature branch (not main/master)
-         const isLeader = ['main', 'master', 'dev', 'develop'].includes(branch || '');
+         // Heuristic: Group by branch if it's a feature branch (not leader/main/master)
+         const isLeader = ['leader', 'main', 'master', 'dev', 'develop'].includes(branch || '');
          
          // Or try to group by common Issue # in title
          const issueMatch = (s.title || '').match(/#(\d+)/);
@@ -162,7 +194,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
       setIsCreateOpen(false);
       setNewPrompt('');
       setNewTitle('');
-      setNewBranch('main');
+      setNewBranch('leader');
       await loadSessions();
     } catch (e: any) {
       alert(`Failed to create session: ${e.message}`);
@@ -258,6 +290,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
     setIsDeleting(false);
     if (activeSession && selectedSessionNames.has(activeSession.name)) {
       setActiveSession(null);
+      sessionStorage.removeItem('jules_last_active_session');
     }
   };
 
@@ -550,15 +583,15 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
              {processedSessions.type === 'list' ? (
                // Flat List
                <>
-                 {processedSessions.items.length === 0 && !loading && (
+                 {(processedSessions as { items: JulesSession[] }).items.length === 0 && !loading && (
                    <div className="text-center py-10 text-slate-500 text-sm">No sessions found.</div>
                  )}
-                 {processedSessions.items.map((session) => renderSessionItem(session))}
+                 {(processedSessions as { items: JulesSession[] }).items.map((session) => renderSessionItem(session))}
                </>
              ) : (
                // Grouped List
                <>
-                  {Object.entries(processedSessions.groups).map(([group, groupSessions]) => (
+                  {Object.entries((processedSessions as { groups: Record<string, JulesSession[]> }).groups).map(([group, groupSessions]) => (
                     <div key={group} className="mb-4">
                       <div className="px-2 py-1.5 text-xs font-bold text-slate-500 uppercase flex items-center gap-2 sticky top-0 bg-surface z-10">
                         <Layers className="w-3 h-3" /> {group} <span className="text-[10px] bg-slate-800 px-1.5 rounded-full">{groupSessions.length}</span>
@@ -568,11 +601,11 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
                       </div>
                     </div>
                   ))}
-                  {processedSessions.others.length > 0 && (
+                  {(processedSessions as { others: JulesSession[] }).others.length > 0 && (
                     <div className="mb-4">
                        <div className="px-2 py-1.5 text-xs font-bold text-slate-500 uppercase sticky top-0 bg-surface z-10">Ungrouped</div>
                        <div className="space-y-2 pl-2 border-l border-slate-800 ml-2">
-                         {processedSessions.others.map(session => renderSessionItem(session))}
+                         {(processedSessions as { others: JulesSession[] }).others.map(session => renderSessionItem(session))}
                        </div>
                     </div>
                   )}
@@ -754,7 +787,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
                 </div>
                 <div>
                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Starting Branch</label>
-                   <input type="text" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary font-mono text-sm" placeholder="main" />
+                   <input type="text" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary font-mono text-sm" placeholder="leader" />
                 </div>
                 <div>
                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Instructions</label>

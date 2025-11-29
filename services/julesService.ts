@@ -134,7 +134,7 @@ export const createSession = async (
   apiKey: string, 
   prompt: string, 
   sourceId: string, 
-  branch: string = 'main', 
+  branch: string = 'leader', 
   title?: string
 ): Promise<JulesSession> => {
   
