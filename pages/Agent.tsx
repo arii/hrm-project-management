@@ -125,6 +125,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
     setBulkProcessing(true);
     const selected = proposedIssues.filter(i => selectedIssueIds.has(i._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
     
     for (const issue of selected) {
       try {
@@ -134,7 +135,14 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
           labels: issue.labels
         });
         successIds.push(issue._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e); 
+        errors.push(`"${issue.title}": ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to create ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setProposedIssues(prev => prev.filter(i => !successIds.includes(i._id)));
@@ -147,6 +155,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
     setBulkProcessing(true);
     const selected = prActions.filter(a => selectedActionIds.has(a._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
@@ -158,7 +167,14 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
           await addLabels(repoName, token, item.prNumber, ['priority:high']);
         }
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e); 
+        errors.push(`PR #${item.prNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to execute actions on ${errors.length} PRs:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setPrActions(prev => prev.filter(a => !successIds.includes(a._id)));
@@ -171,12 +187,20 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
     setBulkProcessing(true);
     const selected = links.filter(l => selectedLinkIds.has(l._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
         await addComment(repoName, token, item.prNumber, `Closes #${item.issueNumber}\n\n*Linked by RepoAuditor AI*`);
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e); 
+        errors.push(`PR #${item.prNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to link ${errors.length} items:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setLinks(prev => prev.filter(l => !successIds.includes(l._id)));
@@ -189,6 +213,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
     setBulkProcessing(true);
     const selected = operatorActions.filter(a => selectedOperatorIds.has(a._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
     
     // We need source ID for recreating sessions (Start Over)
     let sourceId = '';
@@ -214,7 +239,14 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
            await createSession(julesApiKey, "Restarting task: Please retry the previous objective with a fresh context.", sourceId, 'leader', `Retry: ${shortName}`);
         }
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e);
+        errors.push(`Session ${item.sessionName.split('/').pop()}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to operate on ${errors.length} sessions:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setOperatorActions(prev => prev.filter(a => !successIds.includes(a._id)));

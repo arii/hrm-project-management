@@ -143,9 +143,21 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
 
     setIsBulkProcessing(true);
     const ids = Array.from(selectedIssueIds);
+    const errors: string[] = [];
+    
     for (const id of ids) {
-      await updateIssue(repoName, token, id as number, { state: 'closed' }).catch(console.error);
+      try {
+        await updateIssue(repoName, token, id as number, { state: 'closed' });
+      } catch (e: any) {
+        console.error(e);
+        errors.push(`Issue #${id}: ${e.message}`);
+      }
     }
+    
+    if (errors.length > 0) {
+      alert(`Failed to close ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    }
+
     setIsBulkProcessing(false);
     loadIssues();
   };
@@ -192,6 +204,7 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
     setActionProcessing(true);
     const selected = createCandidates.filter(c => selectedCreateIds.has(c._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
@@ -201,7 +214,14 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
           labels: item.labels
         });
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e);
+        errors.push(`"${item.title}": ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to create ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setCreateCandidates(prev => prev.filter(c => !successIds.includes(c._id)));
@@ -214,12 +234,20 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
     setActionProcessing(true);
     const selected = closeCandidates.filter(c => selectedCloseIds.has(c._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
         await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e);
+        errors.push(`Issue #${item.issueNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to close ${errors.length} duplicates:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setCloseCandidates(prev => prev.filter(c => !successIds.includes(c._id)));
@@ -233,12 +261,20 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
     setActionProcessing(true);
     const selected = triageActions.filter(a => selectedTriageIds.has(a._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
         await addLabels(repoName, token, item.issueNumber, item.suggestedLabels);
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e);
+        errors.push(`Issue #${item.issueNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to update ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setTriageActions(prev => prev.filter(a => !successIds.includes(a._id)));

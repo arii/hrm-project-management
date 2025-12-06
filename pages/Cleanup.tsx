@@ -5,7 +5,7 @@ import { generateCleanupReport, analyzeBranchCleanup, analyzeJulesCleanup } from
 import { listSessions, deleteSession } from '../services/julesService';
 import { AnalysisStatus, CleanupRecommendation, BranchCleanupRecommendation, JulesCleanupRecommendation } from '../types';
 import AnalysisCard from '../components/AnalysisCard';
-import { CheckCircle, ArrowRight, Trash2, MessageSquare, Loader2, Play, GitBranch, TerminalSquare, Copy, Clipboard } from 'lucide-react';
+import { CheckCircle, ArrowRight, Trash2, MessageSquare, Loader2, Play, GitBranch, TerminalSquare, Copy, Clipboard, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -97,19 +97,34 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
     setIsIssueProcessing(true);
     const selected = issueActions.filter(a => selectedIssueIds.has(a._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
-    for (const item of selected) {
-      try {
-        if (item.action === 'close') {
-          const comment = item.commentBody || `Closing as resolved by recent PRs.\n\n*Reason: ${item.reason}*`;
-          await addComment(repoName, token, item.issueNumber, comment);
-          await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
-        } else if (item.action === 'comment') {
-          const comment = item.commentBody || `Is this issue still relevant? \n\n*Observation: ${item.reason}*`;
-          await addComment(repoName, token, item.issueNumber, comment);
-        }
-        successIds.push(item._id);
-      } catch (e) { console.error(e); }
+    // Batch for better performance
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
+        const batch = selected.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(async (item) => {
+            try {
+                if (item.action === 'close') {
+                    const comment = item.commentBody || `Closing as resolved by recent PRs.\n\n*Reason: ${item.reason}*`;
+                    await addComment(repoName, token, item.issueNumber, comment);
+                    await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
+                } else if (item.action === 'comment') {
+                    const comment = item.commentBody || `Is this issue still relevant? \n\n*Observation: ${item.reason}*`;
+                    await addComment(repoName, token, item.issueNumber, comment);
+                }
+                successIds.push(item._id);
+            } catch (e: any) { 
+                console.error(e);
+                errors.push(`Issue #${item.issueNumber}: ${e.message}`);
+            }
+        }));
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to process ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+      alert(`Successfully processed ${successIds.length} issues.`);
     }
 
     setIssueActions(prev => prev.filter(a => !successIds.includes(a._id)));
@@ -124,6 +139,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
     setIsBranchProcessing(true);
     const selected = branchCandidates.filter(b => selectedBranchIds.has(b._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     const BATCH_SIZE = 5;
     for (let i = 0; i < selected.length; i += BATCH_SIZE) {
@@ -132,8 +148,17 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
             try {
                 await deleteBranch(repoName, token, item.branchName);
                 successIds.push(item._id);
-            } catch (e) { console.error(e); }
+            } catch (e: any) { 
+                console.error(e);
+                errors.push(`${item.branchName}: ${e.message}`);
+            }
         }));
+    }
+
+    if (errors.length > 0) {
+        alert(`Failed to delete ${errors.length} branches:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+        alert(`Successfully deleted ${successIds.length} branches.`);
     }
 
     setBranchCandidates(prev => prev.filter(b => !successIds.includes(b._id)));
@@ -155,13 +180,28 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
     
     const selected = julesCandidates.filter(j => selectedJulesIds.has(j._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
-    for (const item of selected) {
-      try {
-        const shortName = item.sessionName.split('/').pop() || item.sessionName;
-        await deleteSession(julesApiKey, shortName);
-        successIds.push(item._id);
-      } catch (e) { console.error(e); }
+    // Use batching for performance and error collection
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
+        const batch = selected.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(async (item) => {
+            try {
+                const shortName = item.sessionName.split('/').pop() || item.sessionName;
+                await deleteSession(julesApiKey, shortName);
+                successIds.push(item._id);
+            } catch (e: any) { 
+                console.error(`Failed to delete session ${item.sessionName}`, e);
+                errors.push(`${item.sessionName.split('/').pop()}: ${e.message}`);
+            }
+        }));
+    }
+
+    if (errors.length > 0) {
+        alert(`Failed to delete ${errors.length} sessions. Check console for details.\n\nSample Errors:\n${errors.slice(0, 3).join('\n')}`);
+    } else if (successIds.length > 0) {
+        alert(`Successfully deleted ${successIds.length} sessions.`);
     }
 
     setJulesCandidates(prev => prev.filter(j => !successIds.includes(j._id)));
@@ -198,11 +238,11 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-slate-700 mb-8">
+      <div className="flex border-b border-slate-700 mb-8 overflow-x-auto no-scrollbar">
         <button 
           onClick={() => setActiveTab('issues')}
           className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2",
+            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
             activeTab === 'issues' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
           )}
         >
@@ -211,7 +251,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
         <button 
           onClick={() => setActiveTab('branches')}
           className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2",
+            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
             activeTab === 'branches' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
           )}
         >
@@ -220,7 +260,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
         <button 
           onClick={() => setActiveTab('jules')}
           className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2",
+            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
             activeTab === 'jules' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
           )}
         >
@@ -336,7 +376,8 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
       {activeTab === 'jules' && (
         <div className="space-y-6 animate-in fade-in">
           {!julesApiKey && (
-             <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-200">
+             <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-200 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5" />
                 Please configure your Jules API Key in settings to use this feature.
              </div>
           )}

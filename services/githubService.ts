@@ -81,8 +81,13 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
       console.warn(`[GitHub] Fetch failed for ${endpoint} (retries left: ${retries - 1}):`, e.message);
       retries--;
       if (retries === 0) throw new Error(`Network error: Failed to reach GitHub. ${e.message}`);
-      // Exponential Backoff: 1s, 2s, 4s
-      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, 3 - retries))); 
+      
+      // Check if it's a network/fetch error and wait longer
+      const isNetworkError = e.message && (e.message.includes('Failed to fetch') || e.message.includes('NetworkError'));
+      const baseDelay = isNetworkError ? 2000 : 1000;
+
+      // Exponential Backoff: 1s, 2s, 4s (or 2s, 4s, 8s for network errors)
+      await new Promise(r => setTimeout(r, baseDelay * Math.pow(2, 3 - retries))); 
     }
   }
 
@@ -191,9 +196,12 @@ export const fetchBranches = async (repo: string, token: string): Promise<Github
 };
 
 export const deleteBranch = async (repo: string, token: string, branchName: string) => {
-  // GitHub API deletes a branch by deleting the Ref
-  // This needs to be URL encoded properly for branches with slashes (e.g. feature/abc)
-  return request(`/repos/${repo}/git/refs/heads/${encodeURIComponent(branchName)}`, token, { method: 'DELETE' });
+  // GitHub API expects the ref path.
+  // For branch "main", ref is "heads/main".
+  // For nested branch "feature/abc", ref is "heads/feature/abc".
+  // URL components must be encoded individually to preserve the structural slashes.
+  const refPath = branchName.split('/').map(encodeURIComponent).join('/');
+  return request(`/repos/${repo}/git/refs/heads/${refPath}`, token, { method: 'DELETE' });
 };
 
 export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
@@ -235,11 +243,12 @@ export const fetchRecentActivity = async (repo: string, token?: string, days = 3
 // Complex Aggregation Logic
 export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
   const list = await fetchPullRequests(repo, token, 'open');
-  // Process up to 20 PRs to avoid hitting limits, but do it in batches of 5 to respect browser concurrency
+  // Process up to 20 PRs to avoid hitting limits, but do it in batches to respect browser concurrency
   const subset = list.slice(0, 20); 
   
   const results: EnrichedPullRequest[] = [];
-  const BATCH_SIZE = 5;
+  // Reduced from 5 to 3 to improve stability and prevent "Failed to fetch" errors
+  const BATCH_SIZE = 3; 
 
   for (let i = 0; i < subset.length; i += BATCH_SIZE) {
     const batch = subset.slice(i, i + BATCH_SIZE);
@@ -315,6 +324,11 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
     }));
     
     results.push(...batchResults);
+
+    // Add a small delay between batches to let the network cool down
+    if (i + BATCH_SIZE < subset.length) {
+       await new Promise(r => setTimeout(r, 1000));
+    }
   }
 
   return results;

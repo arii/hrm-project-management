@@ -26,17 +26,23 @@ export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<Red
   }));
 
   const prompt = `
-    You are a senior project manager analyzing a GitHub repository.
+    You are a Technical Lead optimizing a backlog for AI Agents (Autonomous Coders).
     I have a list of open issues.
     
-    Your goal is to identify:
-    1. Duplicate issues that can be closed.
-    2. Groups of related issues (e.g. fragments of a larger feature) that should be consolidated into a SINGLE new "Master Issue" or "Epic".
+    Your goal is to optimize the backlog by identifying:
+    1. Exact Duplicates: Issues that are identical in intent to another.
+    2. Consolidation Candidates: Very small, tightly coupled tasks that should be merged into a SINGLE atomic task.
+    
+    CRITICAL CONSTRAINT FOR CONSOLIDATION:
+    - DO NOT consolidate complex or unrelated features into "Epics". 
+    - AI Agents fail when tasks are too large. 
+    - Only consolidate if the resulting task is still small, specific, and completable in a single coding session (< 20 files changed).
+    - If issues are distinct features, keep them separate.
     
     Output a structured JSON response with:
     - 'summary': A markdown executive summary of the redundancy state.
-    - 'redundantIssues': A list of issue numbers to CLOSE because they are duplicates or stale.
-    - 'consolidatedIssues': A list of NEW issues to CREATE that replace/consolidate existing ones.
+    - 'redundantIssues': A list of issue numbers to CLOSE because they are exact duplicates or superseded.
+    - 'consolidatedIssues': A list of NEW issues to CREATE.
     
     Issues Data:
     ${JSON.stringify(issueSummary)}
@@ -500,8 +506,6 @@ export const suggestStrategicIssues = async (
   const client = getClient();
   
   // Use a larger context to prevent duplicates.
-  // We include ALL issue titles to ensure the model knows what exists.
-  // Gemini 2.5 Flash has a large context window, so we can afford this.
   const context = {
     existingIssueTitles: issues.map(i => i.title),
     existingPrTitles: prs.map(p => p.title),
@@ -510,28 +514,28 @@ export const suggestStrategicIssues = async (
   let specificPrompt = "";
   switch (mode) {
     case 'strategic':
-      specificPrompt = "Identify high-level gaps in features, documentation, or major testing coverage. Suggest 3 high-value strategic issues that advance the project significantly.";
+      specificPrompt = "Identify MISSING features required for a complete product. Do NOT suggest broad improvements. Suggest specific, implementable features (e.g. 'Add Refresh Button to Dashboard' not 'Improve Dashboard UI').";
       break;
     case 'tech_debt':
-      specificPrompt = "Focus on general code quality, maintainability, and reliability.";
+      specificPrompt = "Identify specific code quality tasks. Target specific file/folder refactors (e.g. 'Extract auth logic from App.tsx to separate service') rather than general 'Refactor Code' tasks.";
       break;
     case 'quick_win':
-      specificPrompt = "Focus on 'Quick Wins' or 'Good First Issues'. Suggest very small, actionable, low-effort tasks like UI polish, typo fixes, README updates, or simple configuration tweaks.";
+      specificPrompt = "Suggest atomic, trivial tasks (e.g., 'Fix typo in README', 'Update dependency X', 'Add loading spinner to button'). Max 1-hour effort.";
       break;
     case 'code_reuse':
-      specificPrompt = "Identify opportunities for code reuse. Look for likely duplicated logic inferred from feature sets and suggest creating shared utilities or components.";
+      specificPrompt = "Identify duplicated logic that can be extracted into a shared utility function. Name the specific logic and the proposed utility name.";
       break;
     case 'dead_code':
-      specificPrompt = "Identify potential dead code or deprecated features that should be removed to improve maintainability.";
+      specificPrompt = "Identify potential dead code or unused files that can be safely deleted. Be specific about which files.";
       break;
     case 'readability':
-      specificPrompt = "Focus on function/file naming and readability. Suggest renaming or restructuring for better clarity and developer experience.";
+      specificPrompt = "Suggest renaming specific complex functions or splitting large files. Naming must be the focus.";
       break;
     case 'maintainability':
-      specificPrompt = "Focus on updating dependencies, replacing unsupported packages with modern tools, or improving CI/CD pipelines.";
+      specificPrompt = "Suggest specific tooling configs (e.g. 'Add Prettier config', 'Update GitHub Action to Node 20').";
       break;
     default:
-      specificPrompt = "Suggest improvements based on best practices.";
+      specificPrompt = "Suggest atomic improvements.";
   }
 
   if (userGuidance) {
@@ -541,12 +545,14 @@ export const suggestStrategicIssues = async (
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: `
-      Based on the current list of "existingIssueTitles" and "existingPrTitles", suggest NEW issues to create.
+      You are an Architect creating work orders for an AI Agent (Autonomous Coder).
       
-      STRICT DEDUPLICATION RULES:
-      1. Review the "existingIssueTitles" list carefully.
-      2. If a proposed issue is semantically similar to ANY existing issue title, DO NOT suggest it.
-      3. Do NOT suggest issues that are subsets of existing work (e.g. if "Fix all typos" exists, don't suggest "Fix typo in README").
+      Your goal: Generate SMALL, HIGHLY SPECIFIC issues.
+      
+      RULES FOR AI AGENT SUCCESS:
+      1. ATOMICITY: Each issue must be solvable in a single coding session (< 20 files touched).
+      2. SPECIFICITY: Do not be vague. Mention specific components, files, or logic paths if possible.
+      3. DE-DUPLICATION: Do NOT suggest issues that already exist in "existingIssueTitles".
       
       FOCUS: ${specificPrompt}
       

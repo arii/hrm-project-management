@@ -73,6 +73,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     setActionProcessing(true);
     const selected = healthActions.filter(a => selectedActionIds.has(a._id));
     const successIds: string[] = [];
+    const errors: string[] = [];
 
     for (const item of selected) {
       try {
@@ -87,7 +88,14 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
           await addLabels(repoName, token, item.prNumber, [item.label]);
         }
         successIds.push(item._id);
-      } catch (e) { console.error(e); }
+      } catch (e: any) { 
+        console.error(e); 
+        errors.push(`PR #${item.prNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to execute actions on ${errors.length} PRs:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
     }
 
     setHealthActions(prev => prev.filter(a => !successIds.includes(a._id)));
