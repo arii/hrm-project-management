@@ -1,6 +1,7 @@
 
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult, ArchitectAnalysisResult, CodeReviewResult } from '../types';
 
 const getClient = () => {
   const apiKey = process.env.API_KEY;
@@ -197,8 +198,12 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
 };
 
 // Cleanup Report: Match Closed PRs to Open Issues
-export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs: GithubPullRequest[]): Promise<CleanupAnalysisResult> => {
-  if (!openIssues || openIssues.length === 0 || !closedPrs || closedPrs.length === 0) {
+export const generateCleanupReport = async (
+  openIssues: GithubIssue[], 
+  closedPrs: GithubPullRequest[],
+  julesSessions: JulesSession[] = [] // Ignored for closing logic to ensure code merge verification
+): Promise<CleanupAnalysisResult> => {
+  if ((!openIssues || openIssues.length === 0)) {
     return { report: "Insufficient data for cleanup analysis.", actions: [] };
   }
   const client = getClient();
@@ -212,7 +217,7 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
   }
 
   // We only need recently merged PRs to check against current open issues
-  const recentMergedPrs = mergedPrs.slice(0, 30).map(p => ({
+  const recentMergedPrs = mergedPrs.slice(0, 50).map(p => ({
     number: p.number,
     title: p.title,
     merged_at: p.merged_at,
@@ -228,16 +233,23 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
   const prompt = `
     You are a GitHub Repository Maintainer.
     
-    I have a list of OPEN Issues and a list of recently MERGED Pull Requests.
+    I have a list of OPEN Issues and recently MERGED Pull Requests.
     
     Your task:
     Determine if any of the OPEN issues should likely be closed because they were addressed by the MERGED Pull Requests.
-    Look for keywords like "fixes", "resolves", "closes" in the PR body, or semantic similarity between the PR title and Issue title.
+    
+    CRITICAL RULE:
+    - Only recommend closing an issue if a MERGED Pull Request explicitly fixes it (referenced in body or title) or is semantically identical.
+    - Do NOT recommend closing an issue based on Jules Sessions or unmerged PRs. Changes must be merged.
+    
+    Look for:
+    1. Keywords like "fixes", "resolves", "closes" in PR bodies.
+    2. Semantic similarity between PR titles and Issue titles.
 
     Generate a structured response:
     1. 'report': A markdown executive summary of the findings.
     2. 'actions': A list of specific actions to take.
-       - If you are confident an issue is fixed, suggest 'close'.
+       - If you are confident an issue is fixed by a MERGED PR, suggest 'close'.
        - If you suspect it's fixed but need verification, suggest 'comment' with a question asking if it's resolved.
     
     Open Issues:
@@ -268,6 +280,7 @@ export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs
                 action: { type: Type.STRING, enum: ['close', 'comment'] },
                 reason: { type: Type.STRING },
                 prReference: { type: Type.INTEGER, nullable: true },
+                sessionReference: { type: Type.STRING, nullable: true, description: "Name of the Jules session if relevant" },
                 commentBody: { type: Type.STRING, description: "Text to post on the issue." },
                 confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] }
               },
@@ -386,6 +399,7 @@ export const analyzeJulesCleanup = async (sessions: JulesSession[], closedPrs: G
     1. **Merged/Closed PR**: The session created a PR that has since been MERGED or CLOSED. The work is done or abandoned.
     2. **Stale & Failed**: The session is > 7 days old and ended in a FAILED/TERMINATED state.
     3. **Stale & No PR**: The session is > 7 days old, SUCCEEDED, but has no linked PR and hasn't been touched.
+    4. **Archived**: The session is > 30 days old (archived).
     
     OUTPUT JSON:
     - 'report': A markdown summary of the cleanup analysis.
@@ -502,7 +516,7 @@ export const suggestStrategicIssues = async (
   prs: GithubPullRequest[], 
   mode: string,
   userGuidance?: string
-): Promise<ProposedIssue[]> => {
+): Promise<ArchitectAnalysisResult> => {
   const client = getClient();
   
   // Use a larger context to prevent duplicates.
@@ -547,12 +561,16 @@ export const suggestStrategicIssues = async (
     contents: `
       You are an Architect creating work orders for an AI Agent (Autonomous Coder).
       
-      Your goal: Generate SMALL, HIGHLY SPECIFIC issues.
+      Your goal: Generate AT LEAST 10 SMALL, HIGHLY SPECIFIC issues.
       
       RULES FOR AI AGENT SUCCESS:
-      1. ATOMICITY: Each issue must be solvable in a single coding session (< 20 files touched).
-      2. SPECIFICITY: Do not be vague. Mention specific components, files, or logic paths if possible.
-      3. DE-DUPLICATION: Do NOT suggest issues that already exist in "existingIssueTitles".
+      1. QUANTITY: You MUST generate at least 10 issues if possible. 
+      2. ATOMICITY: Each issue must be solvable in a single coding session (< 20 files touched).
+      3. SPECIFICITY: Do not be vague. Mention specific components, files, or logic paths if possible.
+      4. DE-DUPLICATION: Do NOT suggest issues that already exist in "existingIssueTitles".
+
+      INTELLIGENT PIVOT:
+      If you cannot find 10 high-quality issues for the requested mode/guidance, return a 'suggestedPivot' object recommending a different 'mode' and 'guidance' that would yield better results for this specific repo context.
       
       FOCUS: ${specificPrompt}
       
@@ -561,25 +579,40 @@ export const suggestStrategicIssues = async (
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            body: { type: Type.STRING },
-            reason: { type: Type.STRING },
-            priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
-            effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'], description: "Estimated effort to complete the task" },
-            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+        type: Type.OBJECT,
+        properties: {
+          issues: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                body: { type: Type.STRING },
+                reason: { type: Type.STRING },
+                priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'], description: "Estimated effort to complete the task" },
+                labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['title', 'body', 'reason', 'priority', 'effort', 'labels']
+            }
           },
-          required: ['title', 'body', 'reason', 'priority', 'effort', 'labels']
-        }
+          suggestedPivot: {
+            type: Type.OBJECT,
+            properties: {
+              mode: { type: Type.STRING, enum: ['strategic', 'tech_debt', 'quick_win', 'code_reuse', 'dead_code', 'readability', 'maintainability'] },
+              guidance: { type: Type.STRING },
+              reason: { type: Type.STRING }
+            },
+            nullable: true
+          }
+        },
+        required: ['issues']
       }
     }
   });
 
-  const text = response.text || "[]";
-  return JSON.parse(text) as ProposedIssue[];
+  const text = response.text || "{}";
+  return JSON.parse(text) as ArchitectAnalysisResult;
 };
 
 // 2. Audit Pull Requests (Actions)
@@ -603,6 +636,7 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
       - 'close' if it looks like a test, stale (> 30 days), or duplicate.
       - 'prioritize' if it looks important or quick to win.
       - 'comment' if it needs a gentle nudge.
+      - 'publish' if the PR is a Draft, but seems ready for review (no conflicts, serious feature).
       
       IMPORTANT:
       1. If recommending 'comment', prefix the comment body with "@jules".
@@ -618,7 +652,7 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
           type: Type.OBJECT,
           properties: {
             prNumber: { type: Type.INTEGER },
-            action: { type: Type.STRING, enum: ['close', 'prioritize', 'comment'] },
+            action: { type: Type.STRING, enum: ['close', 'prioritize', 'comment', 'publish'] },
             reason: { type: Type.STRING },
             suggestedComment: { type: Type.STRING }
           },
@@ -637,14 +671,26 @@ export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullReq
   if (!issues || issues.length === 0 || !prs || prs.length === 0) return [];
   const client = getClient();
   
-  const issueData = issues.map(i => ({ id: i.number, title: i.title }));
-  const prData = prs.map(p => ({ id: p.number, title: p.title }));
+  // Pass state context to Gemini so it understands what it's linking
+  const issueData = issues.map(i => ({ id: i.number, title: i.title, state: i.state }));
+  const prData = prs.map(p => ({ 
+    id: p.number, 
+    title: p.title, 
+    state: p.merged_at ? 'merged' : p.state, // Distinct 'merged' state
+  }));
 
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: `
-      Match these open PRs to these open Issues based on semantic similarity of their titles.
-      Only return matches where you are confident the PR is addressing the Issue.
+      Match these Pull Requests to these Issues based on semantic similarity of their titles.
+      
+      Scope:
+      1. Link Open PRs to Open Issues (Suggest linking).
+      2. Link Merged PRs to Open Issues (Suggest checking if issue is resolved).
+      3. Link Merged PRs to Closed Issues (History tracking).
+      
+      Goal: Only return matches where you are confident the PR is addressing the Issue.
+      Action: The user will likely post a comment linking them. Do NOT suggest closing issues in this step.
       
       Issues: ${JSON.stringify(issueData)}
       PRs: ${JSON.stringify(prData)}
@@ -659,9 +705,14 @@ export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullReq
             prNumber: { type: Type.INTEGER },
             issueNumber: { type: Type.INTEGER },
             confidence: { type: Type.STRING },
-            reason: { type: Type.STRING }
+            reason: { type: Type.STRING },
+            // Include descriptive fields for UI
+            prTitle: { type: Type.STRING },
+            prState: { type: Type.STRING },
+            issueTitle: { type: Type.STRING },
+            issueState: { type: Type.STRING },
           },
-          required: ['prNumber', 'issueNumber', 'confidence', 'reason']
+          required: ['prNumber', 'issueNumber', 'confidence', 'reason', 'prTitle', 'prState', 'issueTitle', 'issueState']
         }
       }
     }
@@ -856,4 +907,69 @@ export const generateRepoBriefing = async (
   });
 
   return response.text || "Repo is stable. No major anomalies detected.";
+};
+
+// 7. Generate Code Review
+export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string): Promise<CodeReviewResult> => {
+  const client = getClient();
+  
+  // Truncate diff if extremely large to prevent context overflow (saving token space)
+  const maxDiffLength = 50000;
+  const truncatedDiff = diff.length > maxDiffLength ? diff.substring(0, maxDiffLength) + "\n...[DIFF TRUNCATED]" : diff;
+
+  const prompt = `
+    **Role:** You are a Principal Software Engineer acting as a strict, critical code reviewer.
+    
+    **Task:** Review the following Pull Request Diff.
+    
+    **Context:**
+    - **PR Title:** ${pr.title}
+    - **Author:** ${pr.user.login}
+    - **Branches:** ${pr.head.ref} -> ${pr.base.ref}
+    - **Description:** ${pr.body || "No description."}
+    
+    **Critical Instructions:**
+    1. **Be Skeptical:** Your default stance is to request changes. Only approve if the code is excellent.
+    2. **Scope Enforcement:** 
+       - If this is a backend PR, FLAG any frontend changes or snapshot updates as "Suspicious Scope Creep".
+       - If this is a refactor, FLAG any logic changes that aren't pure cleanup.
+    3. **File Audit:** You MUST list every single file changed.
+       - For each file, provide a specific comment. 
+       - If a file has no obvious issues, you must still explicitly state "Checked - No issues". 
+       - If a file change seems unnecessary, ask "Why was this file modified?".
+    4. **Large Changes:** If the diff is large, suggest splitting the PR.
+    5. **Suggestions:** Provide code snippets for fixes.
+    
+    **Output Format (JSON):**
+    {
+      "reviewComment": "Markdown string containing: \n\n### 🛡️ Security & Quality Summary\n[Summary]\n\n### 📂 File-by-File Audit\n- **file1.ts**: [Comment]\n- **file2.tsx**: [Comment]\n...\n\n### 💡 Critical Feedback\n[Deep dive]",
+      "labels": ["size-label", "status-label"]
+    }
+    
+    **Valid Labels:**
+    - Size: 'small', 'medium', 'large', 'xl'
+    - Status: 'needs-improvement', 'abandon', 'ready-for-approval'
+
+    **Diff:**
+    ${truncatedDiff}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          reviewComment: { type: Type.STRING },
+          labels: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
+        required: ['reviewComment', 'labels']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  return JSON.parse(text) as CodeReviewResult;
 };

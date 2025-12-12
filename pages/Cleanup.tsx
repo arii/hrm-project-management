@@ -42,11 +42,12 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
 
   // Analysis Hooks
   const issueAnalysis = useGeminiAnalysis(async () => {
-    const [issues, closedPrs] = await Promise.all([
+    const [issues, closedPrs, sessions] = await Promise.all([
       fetchIssues(repoName, token, 'open'),
-      fetchPullRequests(repoName, token, 'closed')
+      fetchPullRequests(repoName, token, 'closed'),
+      julesApiKey ? listSessions(julesApiKey) : Promise.resolve([])
     ]);
-    const result = await generateCleanupReport(issues, closedPrs);
+    const result = await generateCleanupReport(issues, closedPrs, sessions);
     setIssueActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9) })));
     return result;
   }, 'cleanup_issues');
@@ -304,6 +305,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
                         </div>
                         <p className="text-slate-300 text-sm">{item.reason}</p>
                         {item.prReference && <div className="text-xs text-slate-500 mt-2">Referenced PR: #{item.prReference}</div>}
+                        {item.sessionReference && <div className="text-xs text-purple-400 mt-2 flex items-center gap-1"><TerminalSquare className="w-3 h-3" /> Resolved by Session: {item.sessionReference}</div>}
                      </div>
                   </div>
                 ))}

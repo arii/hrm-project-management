@@ -1,6 +1,7 @@
 
+
 import React, { useState, useEffect } from 'react';
-import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels } from '../services/githubService';
+import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest } from '../services/githubService';
 import { analyzePullRequests } from '../services/geminiService';
 import { listSessions } from '../services/julesService';
 import { EnrichedPullRequest, JulesSession, PrHealthAction } from '../types';
@@ -86,6 +87,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
           await addComment(repoName, token, item.prNumber, item.suggestedComment);
         } else if (item.action === 'label' && item.label) {
           await addLabels(repoName, token, item.prNumber, [item.label]);
+        } else if (item.action === 'publish') {
+           // Find node_id if needed, but we pass number. Our publishPullRequest handles it.
+           await publishPullRequest(repoName, token, item.prNumber);
+           await addComment(repoName, token, item.prNumber, "Marking Ready for Review (RepoAuditor AI)");
         }
         successIds.push(item._id);
       } catch (e: any) { 

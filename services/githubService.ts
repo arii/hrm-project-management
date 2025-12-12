@@ -1,4 +1,5 @@
 
+
 import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch } from '../types';
 
 const BASE_URL = 'https://api.github.com';
@@ -159,6 +160,24 @@ export const fetchPrDetails = async (repo: string, number: number, token?: strin
   return request<GithubPullRequest>(`/repos/${repo}/pulls/${number}`, token, options);
 };
 
+export const fetchPrDiff = async (repo: string, number: number, token: string): Promise<string> => {
+  const headers: Record<string, string> = {
+    'Accept': 'application/vnd.github.v3.diff',
+  };
+  
+  if (token && token.trim()) {
+    headers['Authorization'] = `token ${token.trim()}`;
+  }
+
+  const response = await fetch(`${BASE_URL}/repos/${repo}/pulls/${number}`, { headers });
+  
+  if (!response.ok) {
+     throw new Error(`Failed to fetch diff: ${response.statusText}`);
+  }
+  
+  return await response.text();
+};
+
 export const fetchComments = async (repo: string, issueNumber: number, token?: string) => {
   try {
     return await request<any[]>(`/repos/${repo}/issues/${issueNumber}/comments`, token);
@@ -196,10 +215,6 @@ export const fetchBranches = async (repo: string, token: string): Promise<Github
 };
 
 export const deleteBranch = async (repo: string, token: string, branchName: string) => {
-  // GitHub API expects the ref path.
-  // For branch "main", ref is "heads/main".
-  // For nested branch "feature/abc", ref is "heads/feature/abc".
-  // URL components must be encoded individually to preserve the structural slashes.
   const refPath = branchName.split('/').map(encodeURIComponent).join('/');
   return request(`/repos/${repo}/git/refs/heads/${refPath}`, token, { method: 'DELETE' });
 };
@@ -240,14 +255,32 @@ export const fetchRecentActivity = async (repo: string, token?: string, days = 3
   return data.filter(item => !item.pull_request);
 };
 
-// Complex Aggregation Logic
+export const publishPullRequest = async (repo: string, token: string, number: number, nodeId?: string) => {
+  if (!nodeId) {
+     const pr = await fetchPrDetails(repo, number, token);
+     nodeId = pr.node_id; 
+  }
+  
+  const query = `
+    mutation {
+      markPullRequestReadyForReview(input: {pullRequestId: "${nodeId}"}) {
+        pullRequest { isDraft }
+      }
+    }
+  `;
+  
+  // Use /graphql endpoint
+  return request('/graphql', token, {
+     method: 'POST',
+     body: JSON.stringify({ query })
+  });
+};
+
 export const fetchEnrichedPullRequests = async (repo: string, token?: string): Promise<EnrichedPullRequest[]> => {
   const list = await fetchPullRequests(repo, token, 'open');
-  // Process up to 20 PRs to avoid hitting limits, but do it in batches to respect browser concurrency
   const subset = list.slice(0, 20); 
   
   const results: EnrichedPullRequest[] = [];
-  // Reduced from 5 to 3 to improve stability and prevent "Failed to fetch" errors
   const BATCH_SIZE = 3; 
 
   for (let i = 0; i < subset.length; i += BATCH_SIZE) {
@@ -257,11 +290,9 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
       try {
         let details = await fetchPrDetails(repo, pr.number, token);
 
-        // Retry logic for mergeability
         let retries = 0;
         while (details.mergeable === null && retries < 3) {
            await new Promise(r => setTimeout(r, 1500));
-           // Force skip cache on retry to get fresh mergeable status
            details = await fetchPrDetails(repo, pr.number, token, true);
            retries++;
         }
@@ -325,7 +356,6 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
     
     results.push(...batchResults);
 
-    // Add a small delay between batches to let the network cool down
     if (i + BATCH_SIZE < subset.length) {
        await new Promise(r => setTimeout(r, 1000));
     }

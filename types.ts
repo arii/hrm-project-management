@@ -31,6 +31,7 @@ export interface GithubIssue {
 
 export interface GithubPullRequest {
   id: number;
+  node_id: string;
   number: number;
   title: string;
   user: GithubUser;
@@ -142,9 +143,18 @@ export interface ProposedIssue {
   labels: string[];
 }
 
+export interface ArchitectAnalysisResult {
+  issues: ProposedIssue[];
+  suggestedPivot?: {
+    mode: string;
+    guidance: string;
+    reason: string;
+  };
+}
+
 export interface PrActionRecommendation {
   prNumber: number;
-  action: 'close' | 'prioritize' | 'comment';
+  action: 'close' | 'prioritize' | 'comment' | 'publish';
   reason: string;
   suggestedComment?: string;
 }
@@ -154,6 +164,11 @@ export interface LinkSuggestion {
   issueNumber: number;
   confidence: string;
   reason: string;
+  // Enhanced fields for UI context
+  prTitle?: string;
+  prState?: string;
+  issueTitle?: string;
+  issueState?: string;
 }
 
 export interface JulesAgentAction {
@@ -169,6 +184,7 @@ export interface CleanupRecommendation {
   action: 'close' | 'comment';
   reason: string;
   prReference?: number;
+  sessionReference?: string;
   commentBody?: string;
   confidence: 'high' | 'medium' | 'low';
 }
@@ -226,6 +242,12 @@ export interface MergeProposal {
   reason: string;
   risk: 'Low' | 'Medium' | 'High';
   targetBranch: string;
+}
+
+// Code Review Types
+export interface CodeReviewResult {
+  reviewComment: string;
+  labels: string[];
 }
 
 // Jules API Types

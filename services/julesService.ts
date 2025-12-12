@@ -111,7 +111,7 @@ export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
   let allSessions: JulesSession[] = [];
   let nextToken: string | undefined = undefined;
 
-  // Simple loop to fetch all pages (limit to 5 pages to prevent infinite loops in bad states)
+  // Loop to fetch pages (increased limit to 10 to catch archived/older sessions)
   let pages = 0;
   do {
     const query = nextToken ? `?pageToken=${nextToken}` : '';
@@ -121,7 +121,7 @@ export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
     }
     nextToken = data.nextPageToken;
     pages++;
-  } while (nextToken && pages < 5);
+  } while (nextToken && pages < 10);
 
   return allSessions;
 };

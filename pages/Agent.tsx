@@ -1,8 +1,9 @@
 
+
 import React, { useState, useEffect } from 'react';
-import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box, TerminalSquare, MessageSquare, Send, GitMerge, RotateCcw } from 'lucide-react';
+import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box, TerminalSquare, MessageSquare, Send, GitMerge, RotateCcw, Lightbulb } from 'lucide-react';
 import clsx from 'clsx';
-import { fetchIssues, fetchPullRequests, createIssue, updateIssue, addComment, fetchEnrichedPullRequests, addLabels } from '../services/githubService';
+import { fetchIssues, fetchPullRequests, createIssue, updateIssue, addComment, fetchEnrichedPullRequests, addLabels, publishPullRequest } from '../services/githubService';
 import { suggestStrategicIssues, auditPullRequests, findIssuePrLinks, analyzeJulesSessions, suggestMergeableBranches } from '../services/geminiService';
 import { listSessions, deleteSession, sendMessage, createSession, findSourceForRepo } from '../services/julesService';
 import { ProposedIssue, PrActionRecommendation, LinkSuggestion, JulesAgentAction, MergeProposal } from '../types';
@@ -31,6 +32,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
   
   // Architect State
   const [proposedIssues, setProposedIssues] = useState<ProposedIssueWithId[]>([]);
+  const [pivotSuggestion, setPivotSuggestion] = useState<{ mode: string, guidance: string, reason: string } | null>(null);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
   const [discoveryMode, setDiscoveryMode] = useState<string>('strategic');
   const [userGuidance, setUserGuidance] = useState('');
@@ -61,11 +63,13 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
   // Use custom analysis hooks with persistence
   const architectAnalysis = useGeminiAnalysis(async () => {
      const [issues, prs] = await Promise.all([fetchIssues(repoName, token, 'open'), fetchPullRequests(repoName, token, 'open')]);
-     const suggestions = await suggestStrategicIssues(issues, prs, discoveryMode, userGuidance);
-     const withIds = suggestions.map(s => ({ ...s, _id: generateId() }));
+     const result = await suggestStrategicIssues(issues, prs, discoveryMode, userGuidance);
+     
+     const withIds = result.issues.map(s => ({ ...s, _id: generateId() }));
      setProposedIssues(withIds);
+     setPivotSuggestion(result.suggestedPivot || null);
      setSelectedIssueIds(new Set());
-     return withIds;
+     return result;
   }, 'agent_architect');
 
   const overseerAnalysis = useGeminiAnalysis(async () => {
@@ -78,7 +82,18 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
   }, 'agent_overseer');
 
   const janitorAnalysis = useGeminiAnalysis(async () => {
-     const [issues, prs] = await Promise.all([fetchIssues(repoName, token, 'open'), fetchPullRequests(repoName, token, 'open')]);
+     // Fetch expanded data for Janitor to support history tracking and merged PR linking
+     const [openIssues, closedIssues, openPrs, closedPrs] = await Promise.all([
+        fetchIssues(repoName, token, 'open'),
+        fetchIssues(repoName, token, 'closed'), 
+        fetchPullRequests(repoName, token, 'open'),
+        fetchPullRequests(repoName, token, 'closed')
+     ]);
+
+     // Combine to provide context, limit closed history to recent 50 to save tokens
+     const issues = [...openIssues, ...closedIssues.slice(0, 50)];
+     const prs = [...openPrs, ...closedPrs.slice(0, 50)];
+
      const matches = await findIssuePrLinks(issues, prs);
      const withIds = matches.map(m => ({ ...m, _id: generateId() }));
      setLinks(withIds);
@@ -110,7 +125,10 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
   // Sync state from cached results on mount/update
   useEffect(() => {
-    if (architectAnalysis.result) setProposedIssues(architectAnalysis.result);
+    if (architectAnalysis.result) {
+       setProposedIssues(architectAnalysis.result.issues.map(i => ({...i, _id: generateId()}))); // Simplified re-mapping for cache consistency
+       setPivotSuggestion(architectAnalysis.result.suggestedPivot || null);
+    }
     if (overseerAnalysis.result) setPrActions(overseerAnalysis.result);
     if (janitorAnalysis.result) setLinks(janitorAnalysis.result);
     if (operatorAnalysis.result) setOperatorActions(operatorAnalysis.result);
@@ -119,6 +137,14 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
 
   // --- Handlers ---
+
+  const handleApplyPivot = () => {
+    if (!pivotSuggestion) return;
+    setDiscoveryMode(pivotSuggestion.mode);
+    setUserGuidance(pivotSuggestion.guidance);
+    // Immediately re-run
+    setTimeout(() => architectAnalysis.run(), 100);
+  };
 
   const executeBulkIssues = async () => {
     if (!token) return alert("GitHub Token required");
@@ -165,6 +191,10 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
           await addComment(repoName, token, item.prNumber, item.suggestedComment);
         } else if (item.action === 'prioritize') {
           await addLabels(repoName, token, item.prNumber, ['priority:high']);
+        } else if (item.action === 'publish') {
+          // Attempt to convert draft to ready for review
+          await publishPullRequest(repoName, token, item.prNumber);
+          await addComment(repoName, token, item.prNumber, "Marking Ready for Review (RepoAuditor AI)");
         }
         successIds.push(item._id);
       } catch (e: any) { 
@@ -191,11 +221,12 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
     for (const item of selected) {
       try {
-        await addComment(repoName, token, item.prNumber, `Closes #${item.issueNumber}\n\n*Linked by RepoAuditor AI*`);
+        // Only link comment on PR. Do NOT close issues here.
+        await addComment(repoName, token, item.prNumber, `Relates to #${item.issueNumber}\n\n*Linked by RepoAuditor AI*`);
         successIds.push(item._id);
       } catch (e: any) { 
         console.error(e); 
-        errors.push(`PR #${item.prNumber}: ${e.message}`);
+        errors.push(`Link ${item.prNumber}<->${item.issueNumber}: ${e.message}`);
       }
     }
 
@@ -232,10 +263,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
            const cmd = item.suggestedCommand || (item.action === 'publish' ? 'Please publish the PR now.' : 'Status check');
            await sendMessage(julesApiKey, shortName, cmd);
         } else if (item.action === 'start_over' && sourceId) {
-           // 1. Delete old
            await deleteSession(julesApiKey, shortName);
-           // 2. Create new (We assume we can infer prompt/branch or use defaults. For now we use a generic recovery prompt)
-           // ideally we'd fetch the old session to get the prompt, but here we'll use a standard recovery prompt
            await createSession(julesApiKey, "Restarting task: Please retry the previous objective with a fresh context.", sourceId, 'leader', `Retry: ${shortName}`);
         }
         successIds.push(item._id);
@@ -265,7 +293,6 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
        await createSession(julesApiKey, prompt, sourceId, proposal.targetBranch, `Merge Ops: ${proposal.groupName}`);
        alert(`Jules Session dispatched for ${proposal.groupName}`);
        
-       // Remove from list
        setMergeProposals(prev => prev.filter(p => p._id !== proposal._id));
     } catch (e: any) {
       alert(`Failed to dispatch: ${e.message}`);
@@ -362,6 +389,23 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
              />
            </div>
 
+           {/* Pivot Suggestion UI */}
+           {pivotSuggestion && (
+              <div className="bg-blue-900/10 border border-blue-500/20 rounded-xl p-4 flex items-start gap-4">
+                 <div className="bg-blue-500/20 p-2 rounded-lg">
+                    <Lightbulb className="w-6 h-6 text-blue-400" />
+                 </div>
+                 <div className="flex-1">
+                    <h4 className="text-blue-200 font-bold mb-1">AI Suggestion: Try "{pivotSuggestion.mode}"</h4>
+                    <p className="text-sm text-slate-400 mb-3">{pivotSuggestion.reason}</p>
+                    <div className="text-xs font-mono bg-slate-900/50 p-2 rounded text-slate-500 mb-3">
+                       Proposed Guidance: {pivotSuggestion.guidance}
+                    </div>
+                    <Button variant="secondary" size="sm" onClick={handleApplyPivot} icon={Play}>Apply Suggestion & Retry</Button>
+                 </div>
+              </div>
+           )}
+
            {proposedIssues.length > 0 && (
              <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
                 <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
@@ -439,7 +483,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
                        <div className="flex-1">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="font-mono text-slate-500">#{action.prNumber}</span>
-                            <Badge variant={action.action === 'close' ? 'red' : 'blue'}>{action.action.toUpperCase()}</Badge>
+                            <Badge variant={action.action === 'close' ? 'red' : action.action === 'publish' ? 'green' : 'blue'}>{action.action.toUpperCase()}</Badge>
                           </div>
                           <p className="text-slate-300 text-sm mb-2">{action.reason}</p>
                           {action.suggestedComment && (
@@ -460,8 +504,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
       {activeTab === 'janitor' && (
         <div className="space-y-6 animate-in fade-in">
            <AnalysisCard 
-              title="Link Discovery"
-              description="Find open PRs that solve open Issues but aren't linked."
+              title="Link Discovery & Clean Up"
+              description="Find merged PRs that should close open issues, and open PRs that should be linked."
               status={janitorAnalysis.status}
               result={null}
               onAnalyze={janitorAnalysis.run}
@@ -489,17 +533,38 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
                        <div className="pt-1">
                           <input type="checkbox" checked={selectedLinkIds.has(link._id)} onChange={() => toggleOne(link._id, selectedLinkIds, setSelectedLinkIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer" />
                        </div>
-                       <div className="flex-1 flex items-center gap-4">
-                          <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-700">
-                             <span className="text-blue-400 font-mono">PR #{link.prNumber}</span>
+                       <div className="flex-1 flex flex-col md:flex-row md:items-center gap-4">
+                          <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-700 min-w-[160px]">
+                             <div className="flex flex-col">
+                                <span className="text-blue-400 font-mono text-xs">PR #{link.prNumber}</span>
+                                {link.prState && (
+                                   <span className={clsx("text-[10px] uppercase font-bold", link.prState === 'merged' ? 'text-purple-400' : 'text-slate-500')}>
+                                      {link.prState}
+                                   </span>
+                                )}
+                             </div>
+                             {link.prTitle && <span className="text-xs text-slate-300 truncate max-w-[150px]" title={link.prTitle}>{link.prTitle}</span>}
                           </div>
-                          <ArrowRight className="w-4 h-4 text-slate-500" />
-                          <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-700">
-                             <span className="text-rose-400 font-mono">Issue #{link.issueNumber}</span>
+                          
+                          <ArrowRight className="w-4 h-4 text-slate-500 hidden md:block" />
+                          
+                          <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-700 min-w-[160px]">
+                             <div className="flex flex-col">
+                                <span className="text-rose-400 font-mono text-xs">Issue #{link.issueNumber}</span>
+                                {link.issueState && (
+                                   <span className={clsx("text-[10px] uppercase font-bold", link.issueState === 'open' ? 'text-green-400' : 'text-slate-500')}>
+                                      {link.issueState}
+                                   </span>
+                                )}
+                             </div>
+                             {link.issueTitle && <span className="text-xs text-slate-300 truncate max-w-[150px]" title={link.issueTitle}>{link.issueTitle}</span>}
                           </div>
-                          <div className="flex-1 ml-4">
+
+                          <div className="flex-1 ml-0 md:ml-4">
                              <p className="text-sm text-slate-300">{link.reason}</p>
-                             <Badge variant="green" className="mt-1">{link.confidence} Confidence</Badge>
+                             <div className="flex gap-2 mt-1">
+                               <Badge variant="green">{link.confidence} Confidence</Badge>
+                             </div>
                           </div>
                        </div>
                     </div>

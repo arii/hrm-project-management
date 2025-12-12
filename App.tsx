@@ -1,4 +1,5 @@
 
+
 import React, { useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
@@ -9,6 +10,7 @@ import Cleanup from './pages/Cleanup';
 import BatchCreate from './pages/BatchCreate';
 import Agent from './pages/Agent';
 import JulesSessions from './pages/JulesSessions';
+import CodeReview from './pages/CodeReview';
 
 const App: React.FC = () => {
   // Global State for Repo context
@@ -62,6 +64,7 @@ const App: React.FC = () => {
           <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
           <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+          <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} />} />
           <Route path="agent" element={<Agent repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />

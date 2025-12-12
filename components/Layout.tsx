@@ -1,7 +1,8 @@
 
+
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, CheckCircle, Upload, Bot, TerminalSquare } from 'lucide-react';
+import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, CheckCircle, Upload, Bot, TerminalSquare, Eye } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 
@@ -26,6 +27,7 @@ const Layout: React.FC<LayoutProps> = ({
     { path: '/sessions', label: 'Jules Sessions', icon: TerminalSquare },
     { path: '/issues', label: 'Issue Analysis', icon: AlertCircle },
     { path: '/pull-requests', label: 'Pull Requests', icon: GitPullRequest },
+    { path: '/code-review', label: 'Code Review', icon: Eye },
     { path: '/agent', label: 'AI Agent', icon: Bot },
     { path: '/cleanup', label: 'Cleanup Report', icon: CheckCircle },
     { path: '/batch-create', label: 'Batch Creator', icon: Upload },
