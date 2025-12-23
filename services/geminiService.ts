@@ -1,7 +1,7 @@
 
-
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult, ArchitectAnalysisResult, CodeReviewResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult, ArchitectAnalysisResult, CodeReviewResult, QualityAnalysisResult, RecoveryAnalysisResult, RepoStats } from '../types';
+import { fetchRepoContent } from './githubService';
 
 const getClient = () => {
   const apiKey = process.env.API_KEY;
@@ -11,18 +11,73 @@ const getClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// --- AI Batch Creator Parser ---
+export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
+  if (!text || text.trim().length === 0) return [];
+  const client = getClient();
+
+  const prompt = `
+    Role: Senior Technical Project Manager.
+    Task: Parse the following unstructured text, notes, or documentation into a set of distinct, high-quality GitHub Issues.
+    
+    Guidelines:
+    1. **De-duplication**: If the text describes the same task multiple times, consolidate it.
+    2. **Granularity**: Break large features into actionable sub-tasks (each roughly 1-4 hours of work).
+    3. **Actionability**: Every issue MUST have a clear title and a detailed Markdown body with "Acceptance Criteria".
+    4. **Metadata**: Assign realistic Priority (High/Medium/Low) and Effort (Small/Medium/Large).
+    
+    Input Text:
+    """
+    ${text}
+    """
+    
+    Output a strict JSON array of objects.
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: 'Concise, action-oriented title' },
+            body: { type: Type.STRING, description: 'Detailed Markdown description with context and requirements' },
+            priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+            effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] },
+            labels: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Relevant category labels like bug, feature, refactor' }
+          },
+          required: ['title', 'body', 'priority', 'effort', 'labels']
+        }
+      }
+    }
+  });
+
+  try {
+    const parsed = JSON.parse(response.text || "[]");
+    return parsed as ProposedIssue[];
+  } catch (e) {
+    console.error("Failed to parse Gemini response for issue extraction", e);
+    return [];
+  }
+};
+
 // Analyze Issues for Redundancies (Structured)
 export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<RedundancyAnalysisResult> => {
+// ... rest of file remains the same ...
   if (!issues || issues.length === 0) {
     return { summary: "No issues to analyze.", redundantIssues: [], consolidatedIssues: [] };
   }
   const client = getClient();
   
-  // Prepare data for the prompt (minimized to save tokens)
+  // Prepare data for the prompt (Increased context window to 500 chars for better semantic matching)
   const issueSummary = issues.map(i => ({
     number: i.number,
     title: i.title,
-    body: i.body ? i.body.substring(0, 300) : "No description", // Truncate body
+    body: i.body ? i.body.substring(0, 500) : "No description", 
     labels: i.labels.map(l => l.name).join(", "),
   }));
 
@@ -31,14 +86,15 @@ export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<Red
     I have a list of open issues.
     
     Your goal is to optimize the backlog by identifying:
-    1. Exact Duplicates: Issues that are identical in intent to another.
-    2. Consolidation Candidates: Very small, tightly coupled tasks that should be merged into a SINGLE atomic task.
+    1. **Semantic Duplicates**: Issues that have different wording but identical intent (e.g. "Fix Login" vs "Login Broken").
+    2. **Micro-Task Consolidation**: Identify clusters of very small tasks affecting the same component or area.
+       - *Example*: "Update button color", "Change button font", "Fix button margin".
+       - *Action*: Consolidate into "Refactor Button Component Styles".
     
     CRITICAL CONSTRAINT FOR CONSOLIDATION:
-    - DO NOT consolidate complex or unrelated features into "Epics". 
     - AI Agents fail when tasks are too large. 
-    - Only consolidate if the resulting task is still small, specific, and completable in a single coding session (< 20 files changed).
-    - If issues are distinct features, keep them separate.
+    - Only consolidate if the resulting task is still specific and completable in a single coding session.
+    - However, DO consolidate if individual tasks are too trivial (< 5 mins) to stand alone.
     
     Output a structured JSON response with:
     - 'summary': A markdown executive summary of the redundancy state.
@@ -102,7 +158,7 @@ export const identifyRedundantCandidates = async (issues: GithubIssue[]): Promis
   const issueSummary = issues.map(i => ({
     id: i.number,
     title: i.title,
-    body: i.body ? i.body.substring(0, 100) : "", 
+    body: i.body ? i.body.substring(0, 150) : "", 
   }));
 
   const response = await client.models.generateContent({
@@ -508,74 +564,355 @@ export const generateTriageReport = async (issues: GithubIssue[]): Promise<Triag
   return JSON.parse(text) as TriageAnalysisResult;
 };
 
-// --- AGENT FEATURES ---
-
-// 1. Suggest New Strategic Issues
-export const suggestStrategicIssues = async (
+// Analyze Issue Quality (Improve/Close)
+export const analyzeIssueQuality = async (
   issues: GithubIssue[], 
-  prs: GithubPullRequest[], 
-  mode: string,
-  userGuidance?: string
-): Promise<ArchitectAnalysisResult> => {
+  repoName?: string, 
+  token?: string
+): Promise<QualityAnalysisResult> => {
+  if (!issues || issues.length === 0) {
+    return { summary: "No issues to analyze.", improvements: [], closures: [] };
+  }
   const client = getClient();
+
+  // --- Context Gathering ---
+  let contextPrompt = "";
   
-  // Use a larger context to prevent duplicates.
-  const context = {
-    existingIssueTitles: issues.map(i => i.title),
-    existingPrTitles: prs.map(p => p.title),
-  };
+  if (repoName && token) {
+    try {
+      // 1. Try to fetch official templates (Fetch up to 3 to be comprehensive)
+      const templates = await fetchRepoContent(repoName, '.github/ISSUE_TEMPLATE', token);
+      if (Array.isArray(templates) && templates.length > 0) {
+        // Fetch up to 3 .md files
+        const mdFiles = templates.filter((t: any) => t.name.endsWith('.md')).slice(0, 3);
+        
+        for (const file of mdFiles) {
+           const content = await fetchRepoContent(repoName, `.github/ISSUE_TEMPLATE/${file.name}`, token);
+           if (typeof content === 'string') {
+             contextPrompt += `\n\n### Official Template (${file.name}):\n${content.substring(0, 1000)}\n...`;
+           }
+        }
+      }
 
-  let specificPrompt = "";
-  switch (mode) {
-    case 'strategic':
-      specificPrompt = "Identify MISSING features required for a complete product. Do NOT suggest broad improvements. Suggest specific, implementable features (e.g. 'Add Refresh Button to Dashboard' not 'Improve Dashboard UI').";
-      break;
-    case 'tech_debt':
-      specificPrompt = "Identify specific code quality tasks. Target specific file/folder refactors (e.g. 'Extract auth logic from App.tsx to separate service') rather than general 'Refactor Code' tasks.";
-      break;
-    case 'quick_win':
-      specificPrompt = "Suggest atomic, trivial tasks (e.g., 'Fix typo in README', 'Update dependency X', 'Add loading spinner to button'). Max 1-hour effort.";
-      break;
-    case 'code_reuse':
-      specificPrompt = "Identify duplicated logic that can be extracted into a shared utility function. Name the specific logic and the proposed utility name.";
-      break;
-    case 'dead_code':
-      specificPrompt = "Identify potential dead code or unused files that can be safely deleted. Be specific about which files.";
-      break;
-    case 'readability':
-      specificPrompt = "Suggest renaming specific complex functions or splitting large files. Naming must be the focus.";
-      break;
-    case 'maintainability':
-      specificPrompt = "Suggest specific tooling configs (e.g. 'Add Prettier config', 'Update GitHub Action to Node 20').";
-      break;
-    default:
-      specificPrompt = "Suggest atomic improvements.";
+      // 2. Try to fetch audit guides (Fetch up to 3)
+      const auditDocs = await fetchRepoContent(repoName, 'docs/audits', token);
+      if (Array.isArray(auditDocs) && auditDocs.length > 0) {
+         const guideFiles = auditDocs.filter((t: any) => t.name.endsWith('.md')).slice(0, 3);
+         
+         for (const file of guideFiles) {
+            const guideContent = await fetchRepoContent(repoName, `docs/audits/${file.name}`, token);
+            if (typeof guideContent === 'string') {
+               contextPrompt += `\n\n### Repository Audit Guide (${file.name}):\n${guideContent.substring(0, 1000)}\n...`;
+            }
+         }
+      }
+    } catch (e) {
+      // Fail silently on context fetching, fall back to generic standards
+      console.warn("Could not fetch repo context:", e);
+    }
   }
 
-  if (userGuidance) {
-    specificPrompt += `\n\nUSER GUIDANCE (Prioritize this): "${userGuidance}"`;
-  }
+  const issueData = issues.map(i => ({
+    number: i.number,
+    title: i.title,
+    body: i.body ? i.body.substring(0, 300) : "", // Truncate
+    created_at: i.created_at
+  }));
+
+  const prompt = `
+    You are a Staff Software Engineer and Technical Project Manager.
+    Your goal is to ensure every issue in the backlog is a **High-Quality, Actionable Engineering Task**.
+
+    ${contextPrompt}
+
+    **CRITICAL INSTRUCTION: WORKLOAD EXPANSION & 30-MINUTE MINIMUM**
+    - AI Agents and Junior Engineers struggle with "one-liners" or trivial tasks.
+    - **Minimum Workload**: Every issue MUST represent at least **30 minutes** of focused work.
+    - **Action**: If an issue is simple (e.g., "Fix typo"), you MUST EXPAND it.
+      - Add: "Grep codebase for similar occurrences", "Verify no regression in related areas", "Update snapshots", "Add a test case".
+      - Turn "Update button color" into "Refactor Button Component Styles, verify hover/focus states, and check accessibility."
+
+    **Goal 1: Expand & Refine (Vague Issues)**
+    - Identify issues that are too vague, short, or lack clear acceptance criteria.
+    - REWRITE the description to be comprehensive.
+    - Structure:
+      1. **Context & Motivation**: Why are we doing this?
+      2. **Implementation Details**: Specific files, components, or logic paths to check.
+      3. **Definition of Done**: Bulleted list of requirements including testing and docs.
+      4. **Verification**: How to verify the fix manually and automated.
+
+    **Goal 2: Prune (Stale/Irrelevant Issues)**
+    - Identify issues that are clearly obsolete, exact duplicates, or "test" noise.
+
+    **Output JSON:**
+    {
+      "summary": "Markdown summary of quality check",
+      "improvements": [
+        { "issueNumber": 123, "title": "Old Title", "suggestedTitle": "New Title", "suggestedBody": "New Markdown Body...", "reason": "Original was too vague; expanded scope to meet 30m workload." }
+      ],
+      "closures": [
+        { "issueNumber": 456, "title": "Old Title", "reason": "Seems like a test issue" }
+      ]
+    }
+
+    Issues:
+    ${JSON.stringify(issueData)}
+  `;
 
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: `
-      You are an Architect creating work orders for an AI Agent (Autonomous Coder).
-      
-      Your goal: Generate AT LEAST 10 SMALL, HIGHLY SPECIFIC issues.
-      
-      RULES FOR AI AGENT SUCCESS:
-      1. QUANTITY: You MUST generate at least 10 issues if possible. 
-      2. ATOMICITY: Each issue must be solvable in a single coding session (< 20 files touched).
-      3. SPECIFICITY: Do not be vague. Mention specific components, files, or logic paths if possible.
-      4. DE-DUPLICATION: Do NOT suggest issues that already exist in "existingIssueTitles".
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          summary: { type: Type.STRING },
+          improvements: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                issueNumber: { type: Type.INTEGER },
+                title: { type: Type.STRING },
+                suggestedTitle: { type: Type.STRING },
+                suggestedBody: { type: Type.STRING },
+                reason: { type: Type.STRING }
+              },
+              required: ['issueNumber', 'title', 'suggestedTitle', 'suggestedBody', 'reason']
+            }
+          },
+          closures: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                issueNumber: { type: Type.INTEGER },
+                title: { type: Type.STRING },
+                reason: { type: Type.STRING }
+              },
+              required: ['issueNumber', 'title', 'reason']
+            }
+          }
+        },
+        required: ['summary', 'improvements', 'closures']
+      }
+    }
+  });
 
-      INTELLIGENT PIVOT:
-      If you cannot find 10 high-quality issues for the requested mode/guidance, return a 'suggestedPivot' object recommending a different 'mode' and 'guidance' that would yield better results for this specific repo context.
-      
-      FOCUS: ${specificPrompt}
-      
-      Context: ${JSON.stringify(context)}
-    `,
+  const text = response.text || "{}";
+  return JSON.parse(text) as QualityAnalysisResult;
+};
+
+// 7. Generate Code Review (Modified: Focus on technical analysis AND identify separate follow-ups)
+export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string): Promise<CodeReviewResult> => {
+  const client = getClient();
+  
+  // Truncate diff if extremely large to prevent context overflow (saving token space)
+  const maxDiffLength = 50000;
+  const truncatedDiff = diff.length > maxDiffLength ? diff.substring(0, maxDiffLength) + "\n...[DIFF TRUNCATED]" : diff;
+
+  const prompt = `
+    **Role:** You are a Principal Software Engineer conducting a cohesive, comprehensive code review.
+    
+    **Task:** Review the provided diff strictly for technical quality and identify scoped follow-up work.
+    
+    **Context:**
+    - **PR Title:** ${pr.title}
+    - **Author:** ${pr.user.login}
+    - **Description:** ${pr.body || "No description."}
+    
+    **Review Guidelines:**
+    1. **Technical Excellence**: Spot logic errors, performance bottlenecks, or security flaws.
+    2. **Follow-up Identification**: Identify changes that are technically sound but conceptually separate from this PR's core intent (Scope Creep).
+    
+    **Output Format (JSON):**
+    {
+      "reviewComment": "Markdown formatted review. Structure with: \n\n### 🚀 Executive Summary\n[Overall assessment]\n\n### 📂 File-by-File Audit\n- **filename.ext**: [Specific feedback]\n...\n\n### 🛠️ Key Recommendations\n[Bullet points]",
+      "labels": ["size-label", "status-label"],
+      "suggestedIssues": [
+        {
+          "title": "Short title",
+          "body": "Markdown description",
+          "reason": "Why this should be separate from current PR",
+          "priority": "High|Medium|Low",
+          "effort": "Small|Medium|Large",
+          "labels": ["follow-up", "refactor"]
+        }
+      ]
+    }
+    
+    **Valid Labels:**
+    - Size: 'small', 'medium', 'large', 'xl'
+    - Status: 'needs-improvement', 'ready-for-approval'
+
+    **Diff:**
+    ${truncatedDiff}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          reviewComment: { type: Type.STRING },
+          labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+          suggestedIssues: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                body: { type: Type.STRING },
+                reason: { type: Type.STRING },
+                priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] },
+                labels: { type: Type.ARRAY, items: { type: Type.STRING } }
+              },
+              required: ['title', 'body', 'reason', 'priority', 'effort', 'labels']
+            }
+          }
+        },
+        required: ['reviewComment', 'labels']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  return JSON.parse(text) as CodeReviewResult;
+};
+
+// 8. Generate Recovery Plan
+export const generateRecoveryPlan = async (pr: EnrichedPullRequest): Promise<RecoveryAnalysisResult> => {
+  const client = getClient();
+  
+  const context = {
+    title: pr.title,
+    body: pr.body,
+    state: pr.state,
+    branch: pr.head.ref,
+    base: pr.base.ref,
+    changed_files: pr.changed_files,
+    comments_count: pr.comments,
+    test_status: pr.testStatus,
+    mergeable: pr.mergeable
+  };
+
+  const prompt = `
+    You are a Senior Engineering Manager deciding how to save a failing Pull Request.
+    The PR in question is stuck, has conflicts, or has received too many comments/requests for changes.
+    
+    **Goal:** Determine if we should attempt to fix the existing branch (REPAIR) or start fresh (REWRITE).
+    
+    **Criteria:**
+    - **REWRITE:** If the PR is very old, has massive merge conflicts, or seems fundamentally flawed (e.g. "XY Problem").
+    - **REPAIR:** If the PR is mostly good but needs specific fixes (test failures, linting, small logic errors).
+    
+    **Instructions:**
+    1. Select a recommendation.
+    2. Write a prompt for "Jules" (our autonomous coding agent) to execute this plan.
+       - If REPAIR: The prompt should tell Jules to checkout the branch '${pr.head.ref}', run tests, and fix issues.
+       - If REWRITE: The prompt should tell Jules to checkout '${pr.base.ref}', and re-implement the feature described in '${pr.title}'.
+    
+    **PR Context:**
+    ${JSON.stringify(context)}
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      temperature: 0.2, // Low temp for decision making
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          recommendation: { type: Type.STRING, enum: ['REPAIR', 'REWRITE'] },
+          reason: { type: Type.STRING },
+          julesPrompt: { type: Type.STRING }
+        },
+        required: ['recommendation', 'reason', 'julesPrompt']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  return JSON.parse(text) as RecoveryAnalysisResult;
+};
+
+// 9. Generate Repo Briefing
+export const generateRepoBriefing = async (
+  stats: RepoStats, 
+  velocity: { opened: number, closed: number }, 
+  recentIssues: GithubIssue[], 
+  recentPrs: GithubPullRequest[]
+): Promise<string> => {
+  const client = getClient();
+  
+  const context = {
+    stats,
+    velocity,
+    recentIssues: recentIssues.map(i => i.title),
+    recentPrs: recentPrs.map(p => p.title)
+  };
+
+  const prompt = `
+    You are an AI Repository Manager. Generate a concise "Daily Briefing" for the engineering team.
+    
+    Data:
+    ${JSON.stringify(context)}
+    
+    Format:
+    - Markdown.
+    - Start with a "Health Score" (A, B, C) based on open issues vs closed velocity.
+    - Highlight 3 key areas of focus based on recent activity.
+    - Be professional but encouraging.
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+  });
+
+  return response.text || "No briefing generated.";
+};
+
+// 10. Architect: Suggest Strategic Issues
+export const suggestStrategicIssues = async (
+  issues: GithubIssue[], 
+  prs: GithubPullRequest[], 
+  mode: string, 
+  guidance: string
+): Promise<ArchitectAnalysisResult> => {
+  const client = getClient();
+
+  const prompt = `
+    Role: Software Architect.
+    Goal: Suggest new work items (Issues) to improve the repository.
+    Mode: ${mode} (${guidance})
+    
+    Current State:
+    - ${issues.length} Open Issues (Sample: ${issues.slice(0, 5).map(i => i.title).join(', ')})
+    - ${prs.length} Open PRs
+    
+    Task:
+    1. Identify gaps based on the 'Mode'.
+    2. Propose 3-5 high-value issues to create.
+    3. Suggest a "Pivot" if the current mode seems wrong (e.g. if too many bugs, suggest switching to "Stability").
+    
+    Output JSON:
+    {
+      "issues": [{ "title": "...", "body": "...", "priority": "High", "effort": "Medium", "labels": ["tech-debt"], "reason": "..." }],
+      "suggestedPivot": { "mode": "stability", "guidance": "Focus on bug fixes", "reason": "Too many open bugs" }
+    }
+  `;
+
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -588,18 +925,18 @@ export const suggestStrategicIssues = async (
               properties: {
                 title: { type: Type.STRING },
                 body: { type: Type.STRING },
-                reason: { type: Type.STRING },
                 priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
-                effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'], description: "Estimated effort to complete the task" },
+                effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] },
                 labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+                reason: { type: Type.STRING }
               },
-              required: ['title', 'body', 'reason', 'priority', 'effort', 'labels']
+              required: ['title', 'body', 'priority', 'effort', 'labels', 'reason']
             }
           },
           suggestedPivot: {
             type: Type.OBJECT,
             properties: {
-              mode: { type: Type.STRING, enum: ['strategic', 'tech_debt', 'quick_win', 'code_reuse', 'dead_code', 'readability', 'maintainability'] },
+              mode: { type: Type.STRING },
               guidance: { type: Type.STRING },
               reason: { type: Type.STRING }
             },
@@ -611,11 +948,11 @@ export const suggestStrategicIssues = async (
     }
   });
 
-  const text = response.text || "{}";
+  const text = response.text || "{\"issues\": []}";
   return JSON.parse(text) as ArchitectAnalysisResult;
 };
 
-// 2. Audit Pull Requests (Actions)
+// 11. Overseer: Audit Pull Requests (Action Oriented)
 export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrActionRecommendation[]> => {
   if (!prs || prs.length === 0) return [];
   const client = getClient();
@@ -623,27 +960,30 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
   const prData = prs.map(p => ({
     number: p.number,
     title: p.title,
-    created: p.created_at,
+    user: p.user.login,
     draft: p.draft,
-    user: p.user.login
+    created_at: p.created_at
   }));
+
+  const prompt = `
+    Role: Engineering Manager.
+    Task: Review these PRs and assign actions.
+    
+    Actions:
+    - 'prioritize': If it looks critical or is blocking.
+    - 'close': If it looks abandoned (> 30 days old) or spam.
+    - 'comment': If it needs a nudge (e.g. "Status update?").
+    - 'publish': If it is a draft but looks ready (e.g. old draft).
+    
+    Output JSON array of recommendations.
+    
+    PRs:
+    ${JSON.stringify(prData)}
+  `;
 
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: `
-      Review these open PRs. 
-      Recommend actions:
-      - 'close' if it looks like a test, stale (> 30 days), or duplicate.
-      - 'prioritize' if it looks important or quick to win.
-      - 'comment' if it needs a gentle nudge.
-      - 'publish' if the PR is a Draft, but seems ready for review (no conflicts, serious feature).
-      
-      IMPORTANT:
-      1. If recommending 'comment', prefix the comment body with "@jules".
-      2. If recommending 'prioritize', explicitly check (or mention checking) for merge conflicts and build/test errors in your reasoning or suggested comment.
-      
-      PRs: ${JSON.stringify(prData)}
-    `,
+    contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -654,47 +994,43 @@ export const auditPullRequests = async (prs: GithubPullRequest[]): Promise<PrAct
             prNumber: { type: Type.INTEGER },
             action: { type: Type.STRING, enum: ['close', 'prioritize', 'comment', 'publish'] },
             reason: { type: Type.STRING },
-            suggestedComment: { type: Type.STRING }
+            suggestedComment: { type: Type.STRING, nullable: true }
           },
           required: ['prNumber', 'action', 'reason']
         }
       }
     }
   });
-
+  
   const text = response.text || "[]";
   return JSON.parse(text) as PrActionRecommendation[];
 };
 
-// 3. Find Issue Links
+// 12. Janitor: Find Issue/PR Links
 export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullRequest[]): Promise<LinkSuggestion[]> => {
-  if (!issues || issues.length === 0 || !prs || prs.length === 0) return [];
+  if (!issues.length || !prs.length) return [];
   const client = getClient();
   
-  // Pass state context to Gemini so it understands what it's linking
   const issueData = issues.map(i => ({ id: i.number, title: i.title, state: i.state }));
-  const prData = prs.map(p => ({ 
-    id: p.number, 
-    title: p.title, 
-    state: p.merged_at ? 'merged' : p.state, // Distinct 'merged' state
-  }));
+  const prData = prs.map(p => ({ id: p.number, title: p.title, state: p.state }));
+
+  const prompt = `
+    Role: Project Linker.
+    Task: Identify semantic links between Issues and PRs that are NOT explicitly linked yet.
+    
+    Match based on:
+    - Similar titles (e.g. Issue "Fix Login" matches PR "Fixes login bug")
+    - Keywords.
+    
+    Output JSON array of suggestions.
+    
+    Issues: ${JSON.stringify(issueData)}
+    PRs: ${JSON.stringify(prData)}
+  `;
 
   const response = await client.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: `
-      Match these Pull Requests to these Issues based on semantic similarity of their titles.
-      
-      Scope:
-      1. Link Open PRs to Open Issues (Suggest linking).
-      2. Link Merged PRs to Open Issues (Suggest checking if issue is resolved).
-      3. Link Merged PRs to Closed Issues (History tracking).
-      
-      Goal: Only return matches where you are confident the PR is addressing the Issue.
-      Action: The user will likely post a comment linking them. Do NOT suggest closing issues in this step.
-      
-      Issues: ${JSON.stringify(issueData)}
-      PRs: ${JSON.stringify(prData)}
-    `,
+    contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -706,13 +1042,12 @@ export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullReq
             issueNumber: { type: Type.INTEGER },
             confidence: { type: Type.STRING },
             reason: { type: Type.STRING },
-            // Include descriptive fields for UI
             prTitle: { type: Type.STRING },
             prState: { type: Type.STRING },
             issueTitle: { type: Type.STRING },
-            issueState: { type: Type.STRING },
+            issueState: { type: Type.STRING }
           },
-          required: ['prNumber', 'issueNumber', 'confidence', 'reason', 'prTitle', 'prState', 'issueTitle', 'issueState']
+          required: ['prNumber', 'issueNumber', 'confidence', 'reason']
         }
       }
     }
@@ -722,69 +1057,42 @@ export const findIssuePrLinks = async (issues: GithubIssue[], prs: GithubPullReq
   return JSON.parse(text) as LinkSuggestion[];
 };
 
-// 4. Analyze Jules Sessions (Operator)
+// 13. Operator: Analyze Jules Sessions
 export const analyzeJulesSessions = async (sessions: JulesSession[], prs: EnrichedPullRequest[]): Promise<JulesAgentAction[]> => {
-  if (!sessions || sessions.length === 0) return [];
+  if (!sessions.length) return [];
   const client = getClient();
   
-  // Create a map of PR URL -> PR Details for lookup
-  const prMap = new Map(prs.map(p => [p.html_url, p]));
+  // Basic mapping of PR status
+  const prMap = new Map(prs.map(p => [p.head.ref, p])); // Map branch to PR
 
   const sessionData = sessions.map(s => {
-    const prUrl = s.outputs?.find(o => o.pullRequest)?.pullRequest?.url;
-    let prContext = "No PR linked";
-    let hasConflicts = false;
-    let prMerged = false;
-
-    if (prUrl) {
-      const pr = prMap.get(prUrl);
-      if (pr) {
-        prContext = `Linked PR #${pr.number} is ${pr.state.toUpperCase()}.`;
-        if (pr.mergeable === false) {
-           hasConflicts = true;
-           prContext += " HAS MERGE CONFLICTS.";
-        } else if (pr.merged_at) {
-           prMerged = true;
-           prContext += " MERGED.";
-        }
-      } else {
-        // If we don't have PR data (maybe it's closed/merged and not in the 'open' list we fetched, or we fetched limited list)
-        // We assume it exists if URL exists.
-        prContext = "PR exists but status unknown (likely closed/merged if not in open list).";
-      }
-    }
-
+    const branch = s.sourceContext?.githubRepoContext?.startingBranch;
+    const linkedPr = branch ? prMap.get(branch) : undefined;
+    
     return {
-      name: s.name,
-      title: s.title,
-      state: s.state,
-      createTime: s.createTime,
-      prContext: prContext,
-      hasConflicts: hasConflicts,
-      prMerged: prMerged,
-      lastStatus: s.state 
+       name: s.name,
+       state: s.state,
+       createTime: s.createTime,
+       branch,
+       linkedPrStatus: linkedPr ? linkedPr.state : 'none',
+       linkedPrMerged: linkedPr ? linkedPr.merged_at : null
     };
   });
 
   const prompt = `
-    You are an AI Operator for autonomous coding sessions.
-    Analyze these sessions and suggest ONE action per session if necessary.
+    Role: AI Session Operator.
+    Task: Manage Jules sessions.
     
-    Session Data provided includes: State, Title, Creation Time, and Linked PR Context.
-
-    Rules for Recommendations:
-    1. **Recover**: If session 'hasConflicts' is true, OR state is FAILED/TERMINATED. Suggest a rebase command.
-    2. **Start Over**: If session is FAILED/TERMINATED and appears urgent/important (e.g. "Critical", "Fix", "Blocker" in title), OR if 'hasConflicts' is true but session is FAILED. Suggest 'start_over' to delete and retry.
-    3. **Delete**: If session's linked PR is 'prMerged' (true). This is a cleanup action.
-    4. **Delete**: If session is very old (> 7 days) and FAILED/STALE with no active PR.
-    5. **Publish**: If session SUCCEEDED and "No PR linked".
-    6. **Message**: If session is SUCCEEDED or AWAITING_USER_FEEDBACK but PR is OPEN (not merged). Do NOT suggest generic nudges. Suggest a verification message.
-       - Recommended Command Text: "Please git fetch, rebase off origin/leader, and ensure the following pass: npm run lint, npm run build, npm test, npm run test:all, npm run dev, and ./start_production.sh"
-    7. **Message**: If session is RUNNING > 24h.
-
-    Return a list of actionable items.
-
-    Sessions: ${JSON.stringify(sessionData)}
+    Rules:
+    - If session FAILED -> 'delete' or 'start_over'.
+    - If session SUCCEEDED but no PR -> 'publish' (ask user to create PR).
+    - If session is STUCK (Running > 24h) -> 'recover' (check status).
+    - If session linked PR is MERGED -> 'delete'.
+    
+    Output JSON array of actions.
+    
+    Sessions:
+    ${JSON.stringify(sessionData)}
   `;
 
   const response = await client.models.generateContent({
@@ -800,7 +1108,7 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
             sessionName: { type: Type.STRING },
             action: { type: Type.STRING, enum: ['delete', 'recover', 'publish', 'message', 'start_over'] },
             reason: { type: Type.STRING },
-            suggestedCommand: { type: Type.STRING }
+            suggestedCommand: { type: Type.STRING, nullable: true }
           },
           required: ['sessionName', 'action', 'reason']
         }
@@ -812,146 +1120,27 @@ export const analyzeJulesSessions = async (sessions: JulesSession[], prs: Enrich
   return JSON.parse(text) as JulesAgentAction[];
 };
 
-// 5. Suggest Mergeable Branches (Integrator)
+// 14. Integrator: Suggest Mergeable Branches
 export const suggestMergeableBranches = async (prs: EnrichedPullRequest[]): Promise<MergeProposal[]> => {
-  if (!prs || prs.length === 0) return [];
+  if (prs.length < 2) return [];
+  const client = getClient();
   
-  // Filter for viable candidates FIRST to save tokens and improve quality
-  const candidates = prs.filter(pr => 
-    pr.mergeable === true &&  // No Conflicts
-    !pr.draft &&              // Not Draft
-    (pr.testStatus === 'passed' || pr.testStatus === 'unknown') // Tests passed or skipped (not failed)
-  ).map(pr => ({
-    number: pr.number,
-    title: pr.title,
-    branch: pr.head.ref,
-    base: pr.base.ref,
-    files: pr.changed_files
+  const prData = prs.map(p => ({
+     number: p.number,
+     title: p.title,
+     branch: p.head.ref,
+     base: p.base.ref,
+     labels: p.labels.map(l => l.name)
   }));
 
-  if (candidates.length === 0) return [];
-
-  const client = getClient();
   const prompt = `
-    You are a Release Manager.
-    Review these mergeable Pull Requests.
+    Role: Release Engineer.
+    Task: Group compatible PRs that should be merged together (e.g. all "dependabot" PRs, or all "frontend" PRs).
     
-    Group them into logical "Merge Batches" to be dispatched to an autonomous agent for merging.
-    Example groups: "Dependency Updates", "UI Fixes", "Core Refactors", "Documentation".
+    Output JSON array of proposals.
     
-    If a PR is standalone or critical, it can be its own group.
-    Target branch for all is origin/leader unless specified otherwise.
-    
-    Candidates: ${JSON.stringify(candidates)}
-  `;
-
-  const response = await client.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            groupName: { type: Type.STRING },
-            prNumbers: { type: Type.ARRAY, items: { type: Type.INTEGER } },
-            branches: { type: Type.ARRAY, items: { type: Type.STRING } },
-            reason: { type: Type.STRING },
-            risk: { type: Type.STRING, enum: ['Low', 'Medium', 'High'] },
-            targetBranch: { type: Type.STRING }
-          },
-          required: ['groupName', 'prNumbers', 'branches', 'reason', 'risk', 'targetBranch']
-        }
-      }
-    }
-  });
-
-  const text = response.text || "[]";
-  return JSON.parse(text) as MergeProposal[];
-};
-
-// 6. Generate Repo Briefing (Dashboard)
-export const generateRepoBriefing = async (
-  stats: any, 
-  velocity: { opened: number, closed: number }, 
-  recentActivity: GithubIssue[], 
-  stalePrs: GithubPullRequest[]
-): Promise<string> => {
-  const client = getClient();
-  
-  const activitySummary = recentActivity.slice(0, 10).map(i => `[${i.state}] ${i.title}`);
-  
-  const context = {
-    totalOpenIssues: stats.openIssuesCount,
-    totalOpenPRs: stats.openPRsCount,
-    velocity: velocity,
-    stalePRCount: stalePrs.length,
-    recentActivity: activitySummary
-  };
-
-  const response = await client.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: `
-      You are a CTO giving a "Morning Briefing" on the repository status.
-      Analyze the stats and recent activity.
-      
-      Write a short, professional, 3-sentence summary that highlights:
-      1. The team's momentum (velocity).
-      2. Any immediate blockers (stale PRs or high open issue count).
-      3. A recommended focus for the day.
-      
-      Stats: ${JSON.stringify(context)}
-    `,
-  });
-
-  return response.text || "Repo is stable. No major anomalies detected.";
-};
-
-// 7. Generate Code Review
-export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string): Promise<CodeReviewResult> => {
-  const client = getClient();
-  
-  // Truncate diff if extremely large to prevent context overflow (saving token space)
-  const maxDiffLength = 50000;
-  const truncatedDiff = diff.length > maxDiffLength ? diff.substring(0, maxDiffLength) + "\n...[DIFF TRUNCATED]" : diff;
-
-  const prompt = `
-    **Role:** You are a Principal Software Engineer acting as a strict, critical code reviewer.
-    
-    **Task:** Review the following Pull Request Diff.
-    
-    **Context:**
-    - **PR Title:** ${pr.title}
-    - **Author:** ${pr.user.login}
-    - **Branches:** ${pr.head.ref} -> ${pr.base.ref}
-    - **Description:** ${pr.body || "No description."}
-    
-    **Critical Instructions:**
-    1. **Be Skeptical:** Your default stance is to request changes. Only approve if the code is excellent.
-    2. **Scope Enforcement:** 
-       - If this is a backend PR, FLAG any frontend changes or snapshot updates as "Suspicious Scope Creep".
-       - If this is a refactor, FLAG any logic changes that aren't pure cleanup.
-    3. **File Audit:** You MUST list every single file changed.
-       - For each file, provide a specific comment. 
-       - If a file has no obvious issues, you must still explicitly state "Checked - No issues". 
-       - If a file change seems unnecessary, ask "Why was this file modified?".
-    4. **Large Changes:** If the diff is large, suggest splitting the PR.
-    5. **Suggestions:** Provide code snippets for fixes.
-    
-    **Output Format (JSON):**
-    {
-      "reviewComment": "Markdown string containing: \n\n### 🛡️ Security & Quality Summary\n[Summary]\n\n### 📂 File-by-File Audit\n- **file1.ts**: [Comment]\n- **file2.tsx**: [Comment]\n...\n\n### 💡 Critical Feedback\n[Deep dive]",
-      "labels": ["size-label", "status-label"]
-    }
-    
-    **Valid Labels:**
-    - Size: 'small', 'medium', 'large', 'xl'
-    - Status: 'needs-improvement', 'abandon', 'ready-for-approval'
-
-    **Diff:**
-    ${truncatedDiff}
+    PRs:
+    ${JSON.stringify(prData)}
   `;
 
   const response = await client.models.generateContent({
@@ -962,14 +1151,84 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          reviewComment: { type: Type.STRING },
-          labels: { type: Type.ARRAY, items: { type: Type.STRING } }
+          groupName: { type: Type.STRING },
+          prNumbers: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+          branches: { type: Type.ARRAY, items: { type: Type.STRING } },
+          reason: { type: Type.STRING },
+          risk: { type: Type.STRING, enum: ['Low', 'Medium', 'High'] },
+          targetBranch: { type: Type.STRING }
         },
-        required: ['reviewComment', 'labels']
+        required: ['groupName', 'prNumbers', 'branches', 'reason', 'risk', 'targetBranch']
       }
     }
   });
 
-  const text = response.text || "{}";
-  return JSON.parse(text) as CodeReviewResult;
+  const text = response.text || "[]";
+  return JSON.parse(text) as MergeProposal[];
+};
+
+// 15. Extract Issues from Comments
+export const extractIssuesFromComments = async (
+  comments: { id: number; user: string; body: string; url: string }[]
+): Promise<ProposedIssue[]> => {
+  if (comments.length === 0) return [];
+  const client = getClient();
+
+  const prompt = `
+    Role: Technical Project Manager.
+    Task: Analyze the following comments from a Pull Request review.
+    Goal: Identify comments that suggest **future work**, **refactoring**, or **out-of-scope fixes** that should be tracked as new Issues.
+    
+    Criteria:
+    - Look for phrases like "for a future PR", "follow up", "out of scope", "separate issue", "refactor later", "TODO".
+    - Ignore simple questions, praise, or immediate change requests for *this* PR.
+    
+    Output JSON array of proposed issues.
+    
+    Comments:
+    ${JSON.stringify(comments.map(c => ({ user: c.user, body: c.body })))}
+  `;
+
+  try {
+    const response = await client.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              body: { type: Type.STRING },
+              reason: { type: Type.STRING },
+              priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+              effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] },
+              labels: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['title', 'body', 'reason', 'priority', 'effort', 'labels']
+          }
+        }
+      }
+    });
+
+    const text = response.text || "[]";
+    return JSON.parse(text) as ProposedIssue[];
+  } catch (e) {
+    console.warn("Schema validation failed for comments analysis, retrying with raw prompt", e);
+    // Fallback: If schema validation fails, try standard generation
+    const fallbackResponse = await client.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt + "\n\nReturn strict JSON array of objects only.",
+        config: { responseMimeType: 'application/json' }
+    });
+    const text = fallbackResponse.text || "[]";
+    try {
+        return JSON.parse(text) as ProposedIssue[];
+    } catch (parseError) {
+        console.error("Failed to parse fallback response", parseError);
+        return [];
+    }
+  }
 };

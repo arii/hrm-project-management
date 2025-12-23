@@ -1,10 +1,10 @@
 
-
-import React from 'react';
+import React, { useEffect } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, CheckCircle, Upload, Bot, TerminalSquare, Eye } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
+import { trackPageVisit } from '../services/telemetryService';
 
 interface LayoutProps {
   repoName: string;
@@ -21,6 +21,11 @@ const Layout: React.FC<LayoutProps> = ({
   julesApiKey, setJulesApiKey
 }) => {
   const location = useLocation();
+
+  // Track usage on route change
+  useEffect(() => {
+    trackPageVisit(location.pathname);
+  }, [location.pathname]);
 
   const navItems = [
     { path: '/', label: 'Overview', icon: LayoutDashboard },

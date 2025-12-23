@@ -1,5 +1,4 @@
 
-
 import React, { useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
@@ -11,6 +10,7 @@ import BatchCreate from './pages/BatchCreate';
 import Agent from './pages/Agent';
 import JulesSessions from './pages/JulesSessions';
 import CodeReview from './pages/CodeReview';
+import { MaintenanceProvider } from './contexts/MaintenanceContext';
 
 const App: React.FC = () => {
   // Global State for Repo context
@@ -49,30 +49,32 @@ const App: React.FC = () => {
   }, [repoName, githubToken]);
 
   return (
-    <HashRouter>
-      <Routes>
-        <Route path="/" element={
-          <Layout 
-            repoName={repoName} 
-            setRepoName={setRepoName}
-            githubToken={githubToken}
-            setGithubToken={setGithubToken}
-            julesApiKey={julesApiKey}
-            setJulesApiKey={setJulesApiKey}
-          />
-        }>
-          <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
-          <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} />} />
-          <Route path="agent" element={<Agent repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
-          <Route path="sessions" element={<JulesSessions repoName={repoName} julesApiKey={julesApiKey} />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </HashRouter>
+    <MaintenanceProvider repoName={repoName} token={githubToken}>
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={
+            <Layout 
+              repoName={repoName} 
+              setRepoName={setRepoName}
+              githubToken={githubToken}
+              setGithubToken={setGithubToken}
+              julesApiKey={julesApiKey}
+              setJulesApiKey={setJulesApiKey}
+            />
+          }>
+            <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
+            <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="agent" element={<Agent repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="cleanup" element={<Cleanup repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
+            <Route path="sessions" element={<JulesSessions repoName={repoName} julesApiKey={julesApiKey} />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </HashRouter>
+    </MaintenanceProvider>
   );
 };
 

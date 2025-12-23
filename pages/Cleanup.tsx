@@ -29,6 +29,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
   const [issueActions, setIssueActions] = useState<CleanupItem[]>([]);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
   const [isIssueProcessing, setIsIssueProcessing] = useState(false);
+  const [processingActionId, setProcessingActionId] = useState<string | null>(null);
 
   // -- BRANCH HYGIENE STATE --
   const [branchCandidates, setBranchCandidates] = useState<BranchItem[]>([]);
@@ -78,6 +79,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
   // --- ISSUE HANDLERS ---
   const executeIssueAction = async (item: CleanupItem) => {
     if (!token) return alert("GitHub token required.");
+    setProcessingActionId(item._id);
     try {
       if (item.action === 'close') {
         const comment = item.commentBody || `Closing as resolved by recent PRs.\n\n*Reason: ${item.reason}*`;
@@ -91,6 +93,7 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
       setIssueActions(prev => prev.filter(a => a._id !== item._id));
       setSelectedIssueIds(prev => { const next = new Set(prev); next.delete(item._id); return next; });
     } catch (e: any) { alert(`Failed on #${item.issueNumber}: ${e.message}`); }
+    finally { setProcessingActionId(null); }
   };
 
   const executeBulkIssues = async () => {
@@ -301,7 +304,16 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
                              <Badge variant={item.action === 'close' ? 'red' : 'yellow'}>{item.action.toUpperCase()}</Badge>
                              <Badge variant={item.confidence === 'high' ? 'green' : 'gray'}>{item.confidence} Confidence</Badge>
                            </div>
-                           <Button size="sm" variant="secondary" onClick={() => executeIssueAction(item)} icon={Play}>Run</Button>
+                           <Button 
+                             size="sm" 
+                             variant="secondary" 
+                             onClick={() => executeIssueAction(item)} 
+                             isLoading={processingActionId === item._id}
+                             disabled={processingActionId !== null}
+                             icon={Play}
+                           >
+                             Run
+                           </Button>
                         </div>
                         <p className="text-slate-300 text-sm">{item.reason}</p>
                         {item.prReference && <div className="text-xs text-slate-500 mt-2">Referenced PR: #{item.prReference}</div>}

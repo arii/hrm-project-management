@@ -1,7 +1,6 @@
 
-
 import React, { useState, useEffect } from 'react';
-import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box, TerminalSquare, MessageSquare, Send, GitMerge, RotateCcw, Lightbulb } from 'lucide-react';
+import { Bot, Sparkles, Trash2, Link as LinkIcon, AlertTriangle, ArrowRight, Check, Play, Zap, Target, Wrench, Search, Code2, FileSearch, Box, TerminalSquare, MessageSquare, Send, GitMerge, RotateCcw, Lightbulb, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { fetchIssues, fetchPullRequests, createIssue, updateIssue, addComment, fetchEnrichedPullRequests, addLabels, publishPullRequest } from '../services/githubService';
 import { suggestStrategicIssues, auditPullRequests, findIssuePrLinks, analyzeJulesSessions, suggestMergeableBranches } from '../services/geminiService';
@@ -52,6 +51,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
   // Integrator State
   const [mergeProposals, setMergeProposals] = useState<MergeProposalWithId[]>([]);
   const [selectedProposalIds, setSelectedProposalIds] = useState<Set<string>>(new Set());
+  const [processingProposalId, setProcessingProposalId] = useState<string | null>(null);
 
   // Background Pre-fetch of PRs for responsiveness
   useEffect(() => {
@@ -169,6 +169,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
     if (errors.length > 0) {
       alert(`Failed to create ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+      alert(`Successfully created ${successIds.length} issues.`);
     }
 
     setProposedIssues(prev => prev.filter(i => !successIds.includes(i._id)));
@@ -205,6 +207,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
     if (errors.length > 0) {
       alert(`Failed to execute actions on ${errors.length} PRs:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+      alert(`Successfully executed actions on ${successIds.length} PRs.`);
     }
 
     setPrActions(prev => prev.filter(a => !successIds.includes(a._id)));
@@ -232,6 +236,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
     if (errors.length > 0) {
       alert(`Failed to link ${errors.length} items:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+      alert(`Successfully linked ${successIds.length} items.`);
     }
 
     setLinks(prev => prev.filter(l => !successIds.includes(l._id)));
@@ -275,6 +281,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
     if (errors.length > 0) {
       alert(`Failed to operate on ${errors.length} sessions:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    } else if (successIds.length > 0) {
+      alert(`Successfully executed actions on ${successIds.length} sessions.`);
     }
 
     setOperatorActions(prev => prev.filter(a => !successIds.includes(a._id)));
@@ -284,6 +292,7 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
 
   const dispatchMergeSession = async (proposal: MergeProposalWithId) => {
     if (!julesApiKey) return alert("Jules API Key required");
+    setProcessingProposalId(proposal._id);
     try {
        const sourceId = await findSourceForRepo(julesApiKey, repoName);
        if (!sourceId) throw new Error("Source not found");
@@ -296,6 +305,8 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
        setMergeProposals(prev => prev.filter(p => p._id !== proposal._id));
     } catch (e: any) {
       alert(`Failed to dispatch: ${e.message}`);
+    } finally {
+      setProcessingProposalId(null);
     }
   };
 
@@ -668,7 +679,15 @@ const Agent: React.FC<AgentProps> = ({ repoName, token, julesApiKey }) => {
                      </div>
                      <div className="flex items-center gap-3">
                         <Badge variant={proposal.risk === 'Low' ? 'green' : proposal.risk === 'Medium' ? 'yellow' : 'red'}>{proposal.risk} Risk</Badge>
-                        <Button size="sm" onClick={() => dispatchMergeSession(proposal)} icon={TerminalSquare}>Dispatch Merger</Button>
+                        <Button 
+                          size="sm" 
+                          onClick={() => dispatchMergeSession(proposal)} 
+                          isLoading={processingProposalId === proposal._id}
+                          disabled={processingProposalId !== null}
+                          icon={TerminalSquare}
+                        >
+                          Dispatch Merger
+                        </Button>
                      </div>
                   </div>
                   

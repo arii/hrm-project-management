@@ -1,30 +1,36 @@
 
 import React, { useState, useRef } from 'react';
-import { Upload, FileText, CheckCircle2, AlertCircle, Play, X, Loader2, Clipboard, FileUp } from 'lucide-react';
+import { Upload, FileText, CheckCircle2, AlertCircle, Play, X, Loader2, Clipboard, FileUp, Sparkles, BrainCircuit } from 'lucide-react';
 import clsx from 'clsx';
 import { createIssue } from '../services/githubService';
+import { parseIssuesFromText } from '../services/geminiService';
+import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
 
 interface BatchCreateProps {
   repoName: string;
   token: string;
 }
 
-interface ParsedIssue {
+interface ParsedIssueUI {
   id: string; // temp id
   title: string;
   body: string;
   labels: string[];
+  priority: string;
+  effort: string;
   selected: boolean;
   status: 'idle' | 'creating' | 'success' | 'error';
   errorMsg?: string;
 }
 
 const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
-  const [inputMode, setInputMode] = useState<'file' | 'text'>('file');
+  const [inputMode, setInputMode] = useState<'file' | 'text'>('text');
   const [textInput, setTextInput] = useState('');
   
   const [dragActive, setDragActive] = useState(false);
-  const [parsedIssues, setParsedIssues] = useState<ParsedIssue[]>([]);
+  const [parsedIssues, setParsedIssues] = useState<ParsedIssueUI[]>([]);
+  const [isParsing, setIsParsing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -38,75 +44,35 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
     }
   };
 
-  const parseMarkdown = (text: string): ParsedIssue[] => {
-    const lines = text.split('\n');
-    const issues: ParsedIssue[] = [];
-    let currentSection = '';
-    let currentTitle = '';
-    let currentBody: string[] = [];
-
-    // Heuristic: Check if H2 exists. If so, H1 is a section label. If not, H1 is the title.
-    const hasH2 = lines.some(l => l.startsWith('## '));
-
-    const pushIssue = () => {
-      if (currentTitle) {
-        issues.push({
-          id: Math.random().toString(36).substr(2, 9),
-          title: currentTitle,
-          body: currentBody.join('\n').trim(),
-          labels: currentSection ? [currentSection] : [],
-          selected: true,
-          status: 'idle'
-        });
-      }
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // const trimmed = line.trim(); // Unused
-
-      if (line.startsWith('# ')) {
-        if (hasH2) {
-          // New Section
-          currentSection = line.replace('# ', '').trim();
-        } else {
-          // New Issue (Flat structure)
-          pushIssue();
-          currentTitle = line.replace('# ', '').trim();
-          currentBody = [];
-        }
-      } else if (line.startsWith('## ') && hasH2) {
-        // New Issue (Nested structure)
-        pushIssue();
-        currentTitle = line.replace('## ', '').trim();
-        currentBody = [];
-      } else {
-        if (currentTitle || (currentSection && !hasH2)) {
-          currentBody.push(line);
-        }
-      }
-    }
-    pushIssue(); // Push last one
-    return issues;
-  };
-
   const handleFiles = (files: FileList) => {
     if (files && files[0]) {
       const file = files[0];
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target?.result as string;
-        const issues = parseMarkdown(text);
-        setParsedIssues(issues);
+        setTextInput(text);
+        setInputMode('text'); // Switch to text mode to show the content
       };
       reader.readAsText(file);
     }
   };
 
-  const handleTextParse = () => {
+  const handleAiParse = async () => {
     if (!textInput.trim()) return;
-    const issues = parseMarkdown(textInput);
-    setParsedIssues(issues);
+    setIsParsing(true);
+    try {
+      const issues = await parseIssuesFromText(textInput);
+      setParsedIssues(issues.map(i => ({
+        ...i,
+        id: Math.random().toString(36).substr(2, 9),
+        selected: true,
+        status: 'idle'
+      })));
+    } catch (e: any) {
+      alert(`AI parsing failed: ${e.message}`);
+    } finally {
+      setIsParsing(false);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -135,20 +101,18 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
     setIsProcessing(true);
     const issuesToCreate = parsedIssues.filter(i => i.selected && i.status !== 'success');
     
-    // We process sequentially to avoid rate limits and show nice progress
     for (const issue of issuesToCreate) {
       setParsedIssues(prev => prev.map(i => i.id === issue.id ? { ...i, status: 'creating' } : i));
       
       try {
         await createIssue(repoName, token, {
           title: issue.title,
-          body: issue.body,
-          labels: issue.labels
+          body: issue.body + `\n\n---\n*Priority: ${issue.priority} | Effort: ${issue.effort}*`,
+          labels: [...issue.labels, 'ai-generated']
         });
         
         setParsedIssues(prev => prev.map(i => i.id === issue.id ? { ...i, status: 'success' } : i));
-        // Small delay to be nice to API
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 800));
       } catch (err: any) {
         setParsedIssues(prev => prev.map(i => i.id === issue.id ? { ...i, status: 'error', errorMsg: err.message } : i));
       }
@@ -159,34 +123,19 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-20">
       <div>
-        <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
-          <FileText className="text-primary w-8 h-8" />
-          Batch Issue Creator
+        <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+          <BrainCircuit className="text-purple-400 w-8 h-8" />
+          AI Batch Creator
         </h2>
         <p className="text-slate-400">
-          Create multiple issues at once from a Markdown plan. 
-          Use <code className="bg-slate-800 px-1 py-0.5 rounded text-xs text-blue-300"># Section</code> for labels and <code className="bg-slate-800 px-1 py-0.5 rounded text-xs text-blue-300">## Title</code> for issue titles.
-          <br/>
-          <span className="text-xs text-slate-500">Note: If you only use # Title (without ##), it will create issues without section labels.</span>
+          Paste meeting notes, messy docs, or feature requests. Gemini 3 will intelligently extract distinct, actionable GitHub issues.
         </p>
       </div>
 
       {/* Input Selection Tabs */}
       {parsedIssues.length === 0 && (
-        <div>
+        <div className="animate-in fade-in duration-500">
           <div className="flex border-b border-slate-700 mb-6">
-            <button 
-              onClick={() => setInputMode('file')}
-              className={clsx(
-                "flex items-center gap-2 px-6 py-3 font-medium transition-colors border-b-2",
-                inputMode === 'file' 
-                  ? "border-primary text-primary" 
-                  : "border-transparent text-slate-400 hover:text-white"
-              )}
-            >
-              <FileUp className="w-4 h-4" />
-              Upload File
-            </button>
             <button 
               onClick={() => setInputMode('text')}
               className={clsx(
@@ -197,9 +146,45 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
               )}
             >
               <Clipboard className="w-4 h-4" />
-              Paste Markdown
+              Source Text
+            </button>
+            <button 
+              onClick={() => setInputMode('file')}
+              className={clsx(
+                "flex items-center gap-2 px-6 py-3 font-medium transition-colors border-b-2",
+                inputMode === 'file' 
+                  ? "border-primary text-primary" 
+                  : "border-transparent text-slate-400 hover:text-white"
+              )}
+            >
+              <FileUp className="w-4 h-4" />
+              Upload Doc
             </button>
           </div>
+
+          {/* Text Input Zone */}
+          {inputMode === 'text' && (
+            <div className="bg-surface border border-slate-700 rounded-xl p-6 shadow-xl">
+               <textarea 
+                 value={textInput}
+                 onChange={(e) => setTextInput(e.target.value)}
+                 placeholder={`Paste raw notes here...\ne.g.\n"We need to fix the login button styling and also implement a logout confirmation dialog. Oh, and the API docs for auth are outdated."`}
+                 className="w-full h-64 bg-slate-900 border border-slate-700 rounded-lg p-4 text-slate-200 font-mono text-sm focus:border-primary focus:outline-none resize-none shadow-inner"
+               />
+               <div className="mt-4 flex justify-end">
+                 <Button 
+                   onClick={handleAiParse}
+                   disabled={!textInput.trim() || isParsing}
+                   isLoading={isParsing}
+                   icon={Sparkles}
+                   size="lg"
+                   className="shadow-purple-500/20"
+                 >
+                   Brainstorm Issues
+                 </Button>
+               </div>
+            </div>
+          )}
 
           {/* File Upload Zone */}
           {inputMode === 'file' && (
@@ -218,33 +203,12 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
                 ref={fileInputRef}
                 type="file" 
                 className="hidden" 
-                accept=".md,.txt" 
+                accept=".md,.txt,.doc,.docx" 
                 onChange={(e) => e.target.files && handleFiles(e.target.files)}
               />
               <Upload className="w-16 h-16 text-slate-500 mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-white mb-2">Drop Markdown plan here</h3>
+              <h3 className="text-xl font-semibold text-white mb-2">Drop document to parse</h3>
               <p className="text-slate-400">or click to browse files</p>
-            </div>
-          )}
-
-          {/* Text Input Zone */}
-          {inputMode === 'text' && (
-            <div className="bg-surface border border-slate-700 rounded-xl p-6">
-               <textarea 
-                 value={textInput}
-                 onChange={(e) => setTextInput(e.target.value)}
-                 placeholder={`# Feature Group A\n\n## Issue Title 1\nDescription for issue 1...\n\n## Issue Title 2\nDescription for issue 2...`}
-                 className="w-full h-64 bg-slate-900 border border-slate-700 rounded-lg p-4 text-slate-200 font-mono text-sm focus:border-primary focus:outline-none resize-none"
-               />
-               <div className="mt-4 flex justify-end">
-                 <button 
-                   onClick={handleTextParse}
-                   disabled={!textInput.trim()}
-                   className="bg-primary hover:bg-blue-600 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors"
-                 >
-                   <Play className="w-4 h-4 fill-current" /> Parse & Preview
-                 </button>
-               </div>
             </div>
           )}
         </div>
@@ -252,43 +216,42 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
 
       {/* Preview & Action Area */}
       {parsedIssues.length > 0 && (
-        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-          <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center sticky top-0 z-10">
+        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden animate-in slide-in-from-bottom-6 duration-500 shadow-2xl">
+          <div className="p-4 border-b border-slate-700 bg-slate-800/80 backdrop-blur flex justify-between items-center sticky top-0 z-10">
             <div className="flex items-center gap-4">
-               <h3 className="font-semibold text-white">Parsed Issues ({parsedIssues.length})</h3>
+               <h3 className="font-bold text-white flex items-center gap-2">
+                 <Sparkles className="w-4 h-4 text-yellow-400" />
+                 Extracted Issues ({parsedIssues.length})
+               </h3>
                <button 
-                 onClick={() => { setParsedIssues([]); setTextInput(''); }}
+                 onClick={() => { setParsedIssues([]); }}
                  className="text-xs text-slate-400 hover:text-white underline"
                >
-                 Clear / Start Over
+                 Cancel / Start Over
                </button>
             </div>
             
-            <button
+            <Button
               onClick={executeBatch}
               disabled={isProcessing || !token}
-              className={clsx(
-                "flex items-center gap-2 px-6 py-2 rounded-lg font-bold transition-all",
-                isProcessing 
-                  ? "bg-slate-700 text-slate-400 cursor-not-allowed" 
-                  : "bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20"
-              )}
+              isLoading={isProcessing}
+              variant="success"
+              icon={Play}
             >
-              {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-              {isProcessing ? 'Dispatching...' : 'Dispatch Issues Now'}
-            </button>
+              {isProcessing ? 'Creating...' : 'Dispatch to GitHub'}
+            </Button>
           </div>
 
-          <div className="divide-y divide-slate-700 max-h-[600px] overflow-y-auto">
-            {parsedIssues.map((issue, idx) => (
-              <div key={issue.id} className={clsx("p-4 transition-colors flex gap-4 group", issue.selected ? "bg-slate-800/20" : "opacity-50")}>
+          <div className="divide-y divide-slate-700 max-h-[650px] overflow-y-auto">
+            {parsedIssues.map((issue) => (
+              <div key={issue.id} className={clsx("p-5 transition-all flex gap-4 group border-l-4", issue.selected ? "bg-slate-800/20 border-primary" : "opacity-40 border-transparent")}>
                 <div className="pt-1">
                    {issue.status === 'idle' && (
                      <input 
                         type="checkbox" 
                         checked={issue.selected} 
                         onChange={() => toggleIssue(issue.id)}
-                        className="w-5 h-5 rounded border-slate-600 bg-slate-700 text-primary focus:ring-offset-0 focus:ring-0 cursor-pointer"
+                        className="w-5 h-5 rounded border-slate-600 bg-slate-700 text-primary cursor-pointer"
                      />
                    )}
                    {issue.status === 'creating' && <Loader2 className="w-5 h-5 animate-spin text-blue-500" />}
@@ -297,37 +260,33 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-start">
-                     <h4 className="text-white font-medium truncate pr-4">{issue.title}</h4>
+                  <div className="flex justify-between items-start mb-2">
+                     <h4 className="text-white font-bold truncate pr-4 text-lg">{issue.title}</h4>
                      {issue.status === 'idle' && (
                        <button onClick={() => removeIssue(issue.id)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <X className="w-4 h-4" />
+                         <X className="w-5 h-5" />
                        </button>
                      )}
                   </div>
                   
-                  {/* Labels */}
-                  {issue.labels.length > 0 && (
-                    <div className="flex gap-2 mt-1">
-                      {issue.labels.map((l, i) => (
-                        <span key={i} className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/20">
-                          {l}
-                        </span>
-                      ))}
+                  <div className="flex flex-wrap gap-2 mb-3">
+                     <Badge variant={issue.priority === 'High' ? 'red' : 'blue'}>{issue.priority} Priority</Badge>
+                     <Badge variant="purple">{issue.effort} Effort</Badge>
+                     {issue.labels.map((l, i) => <Badge key={i} variant="slate">{l}</Badge>)}
+                  </div>
+
+                  <div className="bg-slate-900/80 p-4 rounded-lg border border-slate-800 shadow-inner">
+                    <div className="text-xs text-slate-500 font-bold uppercase mb-2">Preview Description</div>
+                    <div className="text-sm text-slate-300 font-sans whitespace-pre-wrap leading-relaxed prose prose-invert prose-sm max-w-none">
+                      {issue.body}
                     </div>
-                  )}
+                  </div>
 
-                  {/* Body Preview */}
-                  <p className="text-sm text-slate-400 mt-2 line-clamp-2 font-mono bg-slate-900/50 p-2 rounded">
-                    {issue.body || <span className="italic opacity-50">No description provided</span>}
-                  </p>
-
-                  {/* Error Message */}
                   {issue.status === 'error' && (
-                    <p className="text-xs text-red-400 mt-1">{issue.errorMsg}</p>
+                    <p className="text-xs text-red-400 mt-2 font-bold flex items-center gap-1"><AlertCircle className="w-3 h-3"/> {issue.errorMsg}</p>
                   )}
                   {issue.status === 'success' && (
-                    <p className="text-xs text-green-400 mt-1">Issue created successfully</p>
+                    <p className="text-xs text-green-400 mt-2 font-bold flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Issue dispatched successfully</p>
                   )}
                 </div>
               </div>

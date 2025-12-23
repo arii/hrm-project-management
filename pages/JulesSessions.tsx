@@ -4,7 +4,7 @@ import { listSessions, createSession, findSourceForRepo, sendMessage, deleteSess
 import { JulesSession } from '../types';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import { TerminalSquare, RefreshCw, Plus, MessageSquare, Play, Trash2, GitPullRequest, GitBranch, ExternalLink, Send, AlertTriangle, Filter, Layers, Clock, CheckCircle2, XCircle, PauseCircle, Eraser, CheckSquare } from 'lucide-react';
+import { TerminalSquare, RefreshCw, Plus, MessageSquare, Play, Trash2, GitPullRequest, GitBranch, ExternalLink, Send, AlertTriangle, Filter, Layers, Clock, CheckCircle2, XCircle, PauseCircle, Eraser, CheckSquare, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useLocation } from 'react-router-dom';
 
@@ -45,14 +45,16 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedSessionNames, setSelectedSessionNames] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deletingSessionName, setDeletingSessionName] = useState<string | null>(null);
 
   // Check for navigation state (e.g. create from Issue)
   const location = useLocation();
+  const locState = location.state as { createFromIssue?: { title: string; number: number; body: string }; viewSessionName?: string } | null;
 
   useEffect(() => {
     // Check if we navigated here with intent to create
-    if (location.state && location.state.createFromIssue) {
-      const { title, number, body } = location.state.createFromIssue;
+    if (locState && locState.createFromIssue) {
+      const { title, number, body } = locState.createFromIssue;
       setNewTitle(`Fix: ${title} (#${number})`);
       setNewPrompt(`Task: ${title}\n\nContext from Issue #${number}:\n${body}\n\nPlease address this issue.`);
       setNewBranch(`fix/issue-${number}`);
@@ -60,7 +62,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
       // Clear state so refresh doesn't reopen
       window.history.replaceState({}, document.title);
     }
-  }, [location]);
+  }, [locState]);
 
   useEffect(() => {
     if (julesApiKey) {
@@ -71,8 +73,8 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   // Handle deep link to specific session (View Active Session) OR Restore from Storage
   useEffect(() => {
     // Priority 1: Navigation State (Deep Link)
-    if (location.state?.viewSessionName && sessions.length > 0) {
-       const target = sessions.find(s => s.name === location.state.viewSessionName);
+    if (locState?.viewSessionName && sessions.length > 0) {
+       const target = sessions.find(s => s.name === locState.viewSessionName);
        if (target) {
          setActiveSession(target);
          // Clear state to avoid stickiness
@@ -91,7 +93,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
         }
       }
     }
-  }, [sessions, location]); // Dependencies: run when sessions load
+  }, [sessions, locState]); // Dependencies: run when sessions load
 
   // Persist Active Session Selection
   useEffect(() => {
@@ -223,14 +225,17 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   const handleDelete = async (name: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (!window.confirm("Are you sure you want to delete this session?")) return;
+    setDeletingSessionName(name);
     try {
-      // Fix: Removed unnecessary cast that was causing 'unknown' type errors in some environments
-      const shortName = (name as string).split('/').pop() || name;
+      // Ensure name is treated as string. Fallback to name if pop() is undefined.
+      const shortName = (name as string).split('/').pop() || (name as string);
       await deleteSession(julesApiKey, shortName);
       setSessions(prev => prev.filter(s => s.name !== name));
       if (activeSession?.name === name) setActiveSession(null);
     } catch (err: any) {
       alert("Failed to delete: " + err.message);
+    } finally {
+      setDeletingSessionName(null);
     }
   };
 
@@ -273,24 +278,38 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
     setIsDeleting(true);
     
     const names = Array.from(selectedSessionNames);
+    let successCount = 0;
+    const errors: string[] = [];
+
     for (const name of names) {
       try {
-        const nameStr = name as string;
-        const shortName = nameStr.split('/').pop() || nameStr;
+        // Ensure name is treated as string. Fallback to name if pop() is undefined.
+        const shortName = (name as string).split('/').pop() || (name as string);
         await deleteSession(julesApiKey, shortName);
-      } catch (e) {
+        successCount++;
+      } catch (e: any) {
         console.error(`Failed to delete ${name}`, e);
+        errors.push(e.message || "Unknown error");
       }
     }
 
-    // Refresh
+    // Refresh State
     setSessions(prev => prev.filter(s => !selectedSessionNames.has(s.name)));
-    setSelectedSessionNames(new Set());
-    setIsSelectionMode(false);
-    setIsDeleting(false);
+    
     if (activeSession && selectedSessionNames.has(activeSession.name)) {
       setActiveSession(null);
       sessionStorage.removeItem('jules_last_active_session');
+    }
+
+    setSelectedSessionNames(new Set());
+    setIsSelectionMode(false);
+    setIsDeleting(false);
+
+    // Provide Feedback
+    if (errors.length > 0) {
+        alert(`Partial success: Deleted ${successCount} sessions.\nFailed to delete ${errors.length} sessions.\n\nFirst error: ${errors[0]}`);
+    } else {
+        alert(`Successfully deleted ${successCount} sessions.`);
     }
   };
 
@@ -383,6 +402,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
     const baseBranch = session.sourceContext?.githubRepoContext?.startingBranch || 'main';
     const isActive = activeSession?.name === session.name;
     const isSelected = selectedSessionNames.has(session.name);
+    const isBeingDeleted = deletingSessionName === session.name;
     
     // Check if recommended for cleanup
     const cleanupReason = cleanupCandidates.get(session.name);
@@ -400,7 +420,8 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
              ? "bg-slate-800 border-primary/50 ring-1 ring-primary/20"
              : isActive 
                 ? "bg-slate-800 border-purple-500/50 ring-1 ring-purple-500/20 shadow-lg" 
-                : "bg-slate-900/40 border-slate-800 hover:bg-slate-800 hover:border-slate-700"
+                : "bg-slate-900/40 border-slate-800 hover:bg-slate-800 hover:border-slate-700",
+          isBeingDeleted && "opacity-50 pointer-events-none"
         )}
       >
         {/* Selection Checkbox */}
@@ -422,7 +443,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
           </h4>
           <Badge variant={getStatusColor(session.state) as any} className="text-[10px] py-0 px-1.5 h-5">
             {getStatusIcon(session.state)}
-            <span className="ml-1 capitalize">{session.state.toLowerCase().replace(/_/g, ' ')}</span>
+            <span className="ml-1 capitalize">{(session.state || '').toLowerCase().replace(/_/g, ' ')}</span>
           </Badge>
         </div>
 
@@ -459,9 +480,10 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
              {!isSelectionMode && (
                <button 
                  onClick={(e) => handleDelete(session.name, e)}
-                 className="p-1 hover:bg-red-500/20 rounded text-slate-500 hover:text-red-400"
+                 disabled={isBeingDeleted}
+                 className="p-1 hover:bg-red-500/20 rounded text-slate-500 hover:text-red-400 disabled:opacity-50"
                >
-                 <Trash2 className="w-3 h-3" />
+                 {isBeingDeleted ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
                </button>
              )}
            </div>
@@ -623,7 +645,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
                 <div>
                   <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
                     {renderLinkedText(activeSession.title || "Untitled Session")}
-                    <Badge variant={getStatusColor(activeSession.state) as any} className="capitalize">{activeSession.state.toLowerCase().replace(/_/g, ' ')}</Badge>
+                    <Badge variant={getStatusColor(activeSession.state) as any} className="capitalize">{(activeSession.state || '').toLowerCase().replace(/_/g, ' ')}</Badge>
                   </h3>
                   <div className="flex items-center gap-4 text-xs text-slate-400 font-mono">
                      <span title="Session ID">{activeSession.name.split('/').pop()}</span>

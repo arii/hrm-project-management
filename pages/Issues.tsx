@@ -1,14 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { fetchIssues, updateIssue, createIssue, addLabels } from '../services/githubService';
-import { analyzeIssueRedundancy, generateTriageReport, identifyRedundantCandidates } from '../services/geminiService';
+import { analyzeIssueRedundancy, generateTriageReport, identifyRedundantCandidates, analyzeIssueQuality } from '../services/geminiService';
 import { listSessions } from '../services/julesService';
-import { GithubIssue, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction, JulesSession } from '../types';
+import { GithubIssue, RedundancyAnalysisResult, TriageAnalysisResult, TriageAction, JulesSession, IssueImprovementRecommendation, IssueStalenessRecommendation } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import AnalysisCard from '../components/AnalysisCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import { AlertCircle, Tag, Sparkles, Trash2, Plus, Box, Gauge, Loader2, TerminalSquare, Eye } from 'lucide-react';
+import { AlertCircle, Tag, Sparkles, Trash2, Plus, Box, Gauge, Loader2, TerminalSquare, Eye, Settings, Wrench, XCircle, FileText, ChevronDown, ChevronUp, Edit3 } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
 
@@ -22,6 +22,8 @@ interface IssuesProps {
 type ConsolidatedIssueUI = RedundancyAnalysisResult['consolidatedIssues'][0] & { _id: string };
 type RedundantIssueUI = RedundancyAnalysisResult['redundantIssues'][0] & { _id: string };
 type TriageActionUI = TriageAction & { _id: string };
+type ImprovementUI = IssueImprovementRecommendation & { _id: string; expanded?: boolean };
+type ClosureUI = IssueStalenessRecommendation & { _id: string };
 
 const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
   const [issues, setIssues] = useState<GithubIssue[]>([]);
@@ -36,24 +38,37 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
   // Hooks for Analysis (Cached)
   const redundancyAnalysis = useGeminiAnalysis(analyzeIssueRedundancy, 'redundancy_report');
   const triageAnalysis = useGeminiAnalysis(generateTriageReport, 'triage_report');
+  // Pass repo and token context to quality analysis
+  const qualityAnalysis = useGeminiAnalysis((issuesList) => analyzeIssueQuality(issuesList, repoName, token), 'quality_report');
   
   // Redundancy Action State
   const [createCandidates, setCreateCandidates] = useState<ConsolidatedIssueUI[]>([]);
   const [closeCandidates, setCloseCandidates] = useState<RedundantIssueUI[]>([]);
   const [selectedCreateIds, setSelectedCreateIds] = useState<Set<string>>(new Set());
   const [selectedCloseIds, setSelectedCloseIds] = useState<Set<string>>(new Set());
-  const [actionProcessing, setActionProcessing] = useState(false);
   const [activeRedundancyTab, setActiveRedundancyTab] = useState<'consolidate' | 'prune'>('consolidate');
 
   // Triage State
   const [triageActions, setTriageActions] = useState<TriageActionUI[]>([]);
   const [selectedTriageIds, setSelectedTriageIds] = useState<Set<string>>(new Set());
 
+  // Quality State
+  const [qualityImprovements, setQualityImprovements] = useState<ImprovementUI[]>([]);
+  const [qualityClosures, setQualityClosures] = useState<ClosureUI[]>([]);
+  const [selectedImproveIds, setSelectedImproveIds] = useState<Set<string>>(new Set());
+  const [selectedQualityCloseIds, setSelectedQualityCloseIds] = useState<Set<string>>(new Set());
+  const [activeQualityTab, setActiveQualityTab] = useState<'improve' | 'close'>('improve');
+  const [actionProcessing, setActionProcessing] = useState(false);
+
   // Jules Sessions State
   const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
 
   useEffect(() => {
-    loadIssues();
+    if (repoName && token) {
+      loadIssues();
+    } else {
+      setLoading(false);
+    }
   }, [repoName, token]);
 
   useEffect(() => {
@@ -101,6 +116,19 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
       setSelectedTriageIds(new Set());
     }
   }, [triageAnalysis.result]);
+
+  const handleQualityCheck = async () => {
+    setQualityImprovements([]);
+    setQualityClosures([]);
+    await qualityAnalysis.run(issues);
+  };
+
+  useEffect(() => {
+    if (qualityAnalysis.result) {
+      setQualityImprovements(qualityAnalysis.result.improvements.map(i => ({...i, _id: Math.random().toString(36).substr(2,9), expanded: false })));
+      setQualityClosures(qualityAnalysis.result.closures.map(i => ({...i, _id: Math.random().toString(36).substr(2,9) })));
+    }
+  }, [qualityAnalysis.result]);
 
   // --- Bulk Action Handlers (Main List) ---
   const toggleSelection = (id: number) => {
@@ -282,6 +310,67 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
     setActionProcessing(false);
   };
 
+  // --- Quality Actions ---
+  const executeImprovements = async () => {
+    if (!token) return alert("GitHub token required.");
+    setActionProcessing(true);
+    const selected = qualityImprovements.filter(i => selectedImproveIds.has(i._id));
+    const successIds: string[] = [];
+    const errors: string[] = [];
+
+    for (const item of selected) {
+      try {
+        // Direct update of Title and Body
+        await updateIssue(repoName, token, item.issueNumber, { 
+          title: item.suggestedTitle,
+          body: item.suggestedBody
+        });
+        successIds.push(item._id);
+      } catch (e: any) {
+        console.error(e);
+        errors.push(`Issue #${item.issueNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to improve ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    }
+
+    setQualityImprovements(prev => prev.filter(i => !successIds.includes(i._id)));
+    setSelectedImproveIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
+    setActionProcessing(false);
+  };
+
+  const handleUpdateImprovement = (id: string, field: 'suggestedTitle' | 'suggestedBody', value: string) => {
+    setQualityImprovements(prev => prev.map(i => i._id === id ? { ...i, [field]: value } : i));
+  };
+
+  const executeQualityClosures = async () => {
+    if (!token) return alert("GitHub token required.");
+    setActionProcessing(true);
+    const selected = qualityClosures.filter(c => selectedQualityCloseIds.has(c._id));
+    const successIds: string[] = [];
+    const errors: string[] = [];
+
+    for (const item of selected) {
+      try {
+        await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
+        successIds.push(item._id);
+      } catch (e: any) {
+        console.error(e);
+        errors.push(`Issue #${item.issueNumber}: ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      alert(`Failed to close ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
+    }
+
+    setQualityClosures(prev => prev.filter(c => !successIds.includes(c._id)));
+    setSelectedQualityCloseIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
+    setActionProcessing(false);
+  };
+
   const toggleSet = (setIds: Set<string>, setFunction: (s: Set<string>) => void, id: string) => {
     const next = new Set(setIds);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -296,6 +385,20 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
       setFunction(new Set(items.map(i => i._id)));
     }
   };
+
+  const toggleExpandImprovement = (id: string) => {
+    setQualityImprovements(prev => prev.map(i => i._id === id ? { ...i, expanded: !i.expanded } : i));
+  };
+
+  if (!token) {
+     return (
+        <div className="flex flex-col items-center justify-center h-96 text-center">
+           <AlertCircle className="w-12 h-12 text-slate-600 mb-4" />
+           <h2 className="text-xl font-bold text-white mb-2">GitHub Token Required</h2>
+           <p className="text-slate-400 max-w-sm">Please configure your GitHub Token in settings to analyze issues.</p>
+        </div>
+     );
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-20">
@@ -394,7 +497,142 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
         </div>
       )}
 
-      {/* 2. TRIAGE ANALYSIS */}
+      {/* 2. QUALITY ANALYSIS */}
+      <AnalysisCard 
+        title="Content Quality Audit"
+        description="Expand vague issues and close stale or irrelevant ones."
+        status={qualityAnalysis.status}
+        result={qualityAnalysis.result?.summary || null}
+        onAnalyze={handleQualityCheck}
+        repoName={repoName}
+      />
+
+      {/* Quality Actions */}
+      {(qualityImprovements.length > 0 || qualityClosures.length > 0) && (
+        <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden mb-8">
+           <div className="flex border-b border-slate-700">
+             <button onClick={() => setActiveQualityTab('improve')} className={clsx("flex-1 py-3 text-sm font-medium border-b-2 transition-colors", activeQualityTab === 'improve' ? "border-green-500 text-green-500 bg-green-500/5" : "border-transparent text-slate-400 hover:text-white")}>
+               Expand & Refine ({qualityImprovements.length})
+             </button>
+             <button onClick={() => setActiveQualityTab('close')} className={clsx("flex-1 py-3 text-sm font-medium border-b-2 transition-colors", activeQualityTab === 'close' ? "border-red-500 text-red-500 bg-red-500/5" : "border-transparent text-slate-400 hover:text-white")}>
+               Prune Stale ({qualityClosures.length})
+             </button>
+           </div>
+           
+           <div className="p-4 bg-slate-900/30">
+             {activeQualityTab === 'improve' && (
+                <div className="space-y-4">
+                   <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                         <input 
+                           type="checkbox" 
+                           checked={qualityImprovements.length > 0 && selectedImproveIds.size === qualityImprovements.length}
+                           onChange={() => toggleAllInSet(qualityImprovements, selectedImproveIds, setSelectedImproveIds)}
+                           className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer"
+                           title="Select All"
+                         />
+                         <div className="text-sm text-slate-400">{selectedImproveIds.size} selected</div>
+                      </div>
+                      <Button variant="success" size="sm" onClick={executeImprovements} disabled={selectedImproveIds.size === 0 || actionProcessing} isLoading={actionProcessing} icon={Wrench}>Apply Updates</Button>
+                   </div>
+                   <div className="grid gap-3">
+                     {qualityImprovements.map(item => (
+                       <div key={item._id} className={clsx("border rounded-lg transition-colors overflow-hidden", selectedImproveIds.has(item._id) ? "bg-green-900/10 border-green-500/50" : "bg-slate-800/50 border-slate-700")}>
+                          <div className="p-4 flex gap-3">
+                            <input type="checkbox" checked={selectedImproveIds.has(item._id)} onChange={() => toggleSet(selectedImproveIds, setSelectedImproveIds, item._id)} className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-green-500 cursor-pointer shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between items-start">
+                                <div className="flex-1 mr-4">
+                                  {/* Header: Original Context */}
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <span className="font-mono text-slate-500 text-xs">#{item.issueNumber}</span>
+                                    <span className="text-xs text-slate-500 truncate max-w-[200px]" title={item.title}>Current: {item.title}</span>
+                                  </div>
+
+                                  {/* Editable Title */}
+                                  <div className="mb-2">
+                                    <label className="text-[10px] uppercase font-bold text-green-500 mb-1 block">New Title</label>
+                                    <input 
+                                      type="text" 
+                                      value={item.suggestedTitle}
+                                      onChange={(e) => handleUpdateImprovement(item._id, 'suggestedTitle', e.target.value)}
+                                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:border-green-500 focus:outline-none placeholder-slate-600"
+                                      placeholder="Improve title..."
+                                    />
+                                  </div>
+                                  
+                                  {/* Reason / Preview Toggle */}
+                                  {!item.expanded && (
+                                     <button onClick={() => toggleExpandImprovement(item._id)} className="text-xs text-slate-400 hover:text-white flex items-center gap-1 mt-1 group">
+                                       <span className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] border border-slate-700 group-hover:border-slate-500">Reason: {item.reason}</span>
+                                       <span className="text-[10px] opacity-50 ml-1">(Click arrow to edit body)</span>
+                                     </button>
+                                  )}
+                                </div>
+                                
+                                <button onClick={() => toggleExpandImprovement(item._id)} className="text-slate-500 hover:text-white p-1 hover:bg-slate-700 rounded">
+                                  {item.expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {item.expanded && (
+                            <div className="px-4 pb-4 pt-0">
+                              <div className="text-[10px] text-slate-500 font-bold uppercase mb-1 flex items-center gap-2">
+                                <Edit3 className="w-3 h-3"/> New Description Body (Markdown)
+                              </div>
+                              <textarea 
+                                value={item.suggestedBody}
+                                onChange={(e) => handleUpdateImprovement(item._id, 'suggestedBody', e.target.value)}
+                                className="w-full h-48 bg-slate-900 p-3 rounded border border-slate-700 text-xs font-mono text-slate-300 focus:border-green-500 focus:outline-none resize-y"
+                                placeholder="Enter updated description..."
+                              />
+                              <p className="text-[10px] text-slate-500 mt-2">AI Reason: {item.reason}</p>
+                            </div>
+                          )}
+                       </div>
+                     ))}
+                   </div>
+                </div>
+             )}
+
+             {activeQualityTab === 'close' && (
+                <div className="space-y-4">
+                   <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                         <input 
+                           type="checkbox" 
+                           checked={qualityClosures.length > 0 && selectedQualityCloseIds.size === qualityClosures.length}
+                           onChange={() => toggleAllInSet(qualityClosures, selectedQualityCloseIds, setSelectedQualityCloseIds)}
+                           className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer"
+                           title="Select All"
+                         />
+                         <div className="text-sm text-slate-400">{selectedQualityCloseIds.size} selected</div>
+                      </div>
+                      <Button variant="danger" size="sm" onClick={executeQualityClosures} disabled={selectedQualityCloseIds.size === 0 || actionProcessing} isLoading={actionProcessing} icon={XCircle}>Close Irrelevant</Button>
+                   </div>
+                   <div className="grid gap-3">
+                     {qualityClosures.map(item => (
+                       <div key={item._id} className={clsx("p-4 border rounded-lg transition-colors flex gap-3", selectedQualityCloseIds.has(item._id) ? "bg-red-900/10 border-red-500/50" : "bg-slate-800/50 border-slate-700")}>
+                          <input type="checkbox" checked={selectedQualityCloseIds.has(item._id)} onChange={() => toggleSet(selectedQualityCloseIds, setSelectedQualityCloseIds, item._id)} className="w-5 h-5 mt-1 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer shrink-0" />
+                          <div>
+                             <div className="flex items-center gap-2">
+                               <span className="text-sm font-mono text-slate-500">#{item.issueNumber}</span>
+                               <span className="text-white font-medium">{item.title}</span>
+                             </div>
+                             <p className="text-sm text-slate-300 mt-1">{item.reason}</p>
+                          </div>
+                       </div>
+                     ))}
+                   </div>
+                </div>
+             )}
+           </div>
+        </div>
+      )}
+
+      {/* 3. TRIAGE ANALYSIS */}
       <AnalysisCard 
         title="Smart Triage"
         description="Auto-label issues by priority, effort, and category."
@@ -448,7 +686,7 @@ const Issues: React.FC<IssuesProps> = ({ repoName, token, julesApiKey }) => {
         </div>
       )}
 
-      {/* 3. MAIN ISSUE LIST */}
+      {/* 4. MAIN ISSUE LIST */}
       <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
         <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div className="flex items-center gap-4">

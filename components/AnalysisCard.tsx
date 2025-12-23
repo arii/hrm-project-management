@@ -11,9 +11,10 @@ interface AnalysisCardProps {
   onAnalyze: () => void;
   description: string;
   repoName?: string;
+  disabled?: boolean;
 }
 
-const AnalysisCard: React.FC<AnalysisCardProps> = ({ title, status, result, onAnalyze, description, repoName }) => {
+const AnalysisCard: React.FC<AnalysisCardProps> = ({ title, status, result, onAnalyze, description, repoName, disabled }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -62,10 +63,10 @@ const AnalysisCard: React.FC<AnalysisCardProps> = ({ title, status, result, onAn
         </div>
         <button
           onClick={onAnalyze}
-          disabled={status === AnalysisStatus.LOADING}
+          disabled={status === AnalysisStatus.LOADING || disabled}
           className={clsx(
             "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-            status === AnalysisStatus.LOADING
+            (status === AnalysisStatus.LOADING || disabled)
               ? "bg-slate-700 text-slate-400 cursor-not-allowed"
               : "bg-primary hover:bg-blue-600 text-white shadow-md shadow-blue-500/20"
           )}

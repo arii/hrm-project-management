@@ -138,6 +138,7 @@ export const createSession = async (
   title?: string
 ): Promise<JulesSession> => {
   
+  // Strictly define payload to ensure no invalid fields like 'model' are included
   const payload: any = {
     prompt,
     sourceContext: {

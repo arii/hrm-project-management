@@ -49,6 +49,7 @@ export interface GithubPullRequest {
   base: {
     ref: string;
   };
+  labels: GithubLabel[];
   // Detailed fields (may require fetching single PR endpoint)
   mergeable?: boolean | null;
   mergeable_state?: string;
@@ -131,6 +132,27 @@ export interface TriageAction {
 export interface TriageAnalysisResult {
   report: string;
   actions: TriageAction[];
+}
+
+// Structured Quality Analysis
+export interface IssueImprovementRecommendation {
+  issueNumber: number;
+  title: string; // current title for display
+  suggestedTitle: string;
+  suggestedBody: string;
+  reason: string;
+}
+
+export interface IssueStalenessRecommendation {
+  issueNumber: number;
+  title: string;
+  reason: string;
+}
+
+export interface QualityAnalysisResult {
+  summary: string;
+  improvements: IssueImprovementRecommendation[];
+  closures: IssueStalenessRecommendation[];
 }
 
 // AI Agent Types
@@ -222,7 +244,7 @@ export interface JulesCleanupResult {
 export interface PrHealthAction {
   prNumber: number;
   title: string;
-  action: 'close' | 'comment' | 'label';
+  action: 'close' | 'comment' | 'label' | 'publish';
   label?: string; // If action is label
   reason: string;
   suggestedComment?: string;
@@ -248,6 +270,14 @@ export interface MergeProposal {
 export interface CodeReviewResult {
   reviewComment: string;
   labels: string[];
+  suggestedIssues?: ProposedIssue[];
+}
+
+// Recovery Types
+export interface RecoveryAnalysisResult {
+  recommendation: 'REPAIR' | 'REWRITE';
+  reason: string;
+  julesPrompt: string; // The instruction to send to Jules
 }
 
 // Jules API Types

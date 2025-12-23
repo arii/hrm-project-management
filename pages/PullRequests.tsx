@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect } from 'react';
 import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest } from '../services/githubService';
 import { analyzePullRequests } from '../services/geminiService';
@@ -37,18 +36,22 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const analysis = useGeminiAnalysis(analyzePullRequests, 'pr_health_check');
 
   useEffect(() => {
-    const loadPrs = async () => {
-      setLoading(true);
-      try {
-        const data = await fetchEnrichedPullRequests(repoName, token);
-        setPrs(data);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadPrs();
+    if (repoName && token) {
+      const loadPrs = async () => {
+        setLoading(true);
+        try {
+          const data = await fetchEnrichedPullRequests(repoName, token);
+          setPrs(data);
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setLoading(false);
+        }
+      };
+      loadPrs();
+    } else {
+      setLoading(false);
+    }
   }, [repoName, token]);
 
   useEffect(() => {
@@ -156,6 +159,16 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     }
     return <Badge variant="slate">Review</Badge>;
   };
+
+  if (!token) {
+     return (
+        <div className="flex flex-col items-center justify-center h-96 text-center">
+           <GitPullRequest className="w-12 h-12 text-slate-600 mb-4" />
+           <h2 className="text-xl font-bold text-white mb-2">GitHub Token Required</h2>
+           <p className="text-slate-400 max-w-sm">Please configure your GitHub Token in settings to analyze pull requests.</p>
+        </div>
+     );
+  }
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 pb-20">

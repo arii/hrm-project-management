@@ -1,5 +1,4 @@
 
-
 import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch } from '../types';
 
 const BASE_URL = 'https://api.github.com';
@@ -20,7 +19,7 @@ const clearCache = () => {
 };
 
 // --- Internal Helper for Requests ---
-const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}): Promise<T> => {
+const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}, isText = false): Promise<T> => {
   const isGet = !options.method || options.method === 'GET';
   
   // Handle X-Skip-Cache safely
@@ -29,8 +28,8 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
   
   const cacheKey = `${CACHE_PREFIX}${endpoint}`;
 
-  // 1. Try to read from cache
-  if (isGet && !skipCache) {
+  // 1. Try to read from cache (ONLY for JSON responses for now, text responses not cached yet)
+  if (isGet && !skipCache && !isText) {
     const cached = localStorage.getItem(cacheKey);
     if (cached) {
       try {
@@ -46,9 +45,15 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
   }
 
   const headers: HeadersInit = {
-    'Accept': 'application/vnd.github.v3+json',
-    'Content-Type': 'application/json',
+    'Accept': isText ? 'application/vnd.github.v3.diff' : 'application/vnd.github.v3+json',
+    // Do not set Content-Type for GET
+    ...options.headers,
   };
+
+  if (!isText && !headers['Content-Type']) {
+     // @ts-ignore
+     headers['Content-Type'] = 'application/json';
+  }
   
   // Trim token to prevent "Invalid Header Value" errors from copy-paste whitespace
   if (token && token.trim()) {
@@ -72,14 +77,26 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
         headers: { ...headers, ...fetchOptions.headers },
       });
 
-      // Handle Rate Limiting explicitly
+      // Handle 429 Too Many Requests
       if (response.status === 429) {
         throw new Error("Rate limit exceeded");
+      }
+      
+      // Handle 403 Rate Limit (Secondary or Primary)
+      if (response.status === 403) {
+         const remaining = response.headers.get('x-ratelimit-remaining');
+         if (remaining === '0') {
+             throw new Error("GitHub API Rate Limit Exceeded. Please add a Personal Access Token in Settings to increase your limit (5000 req/hr).");
+         }
       }
       
       break;
     } catch (e: any) {
       console.warn(`[GitHub] Fetch failed for ${endpoint} (retries left: ${retries - 1}):`, e.message);
+      
+      // If it's our specific rate limit error, don't retry, just fail fast
+      if (e.message.includes('Rate Limit Exceeded')) throw e;
+
       retries--;
       if (retries === 0) throw new Error(`Network error: Failed to reach GitHub. ${e.message}`);
       
@@ -98,7 +115,13 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     let errorMessage = `GitHub API Error: ${response.status} ${response.statusText}`;
     try {
       const errorBody = await response.json();
-      if (errorBody.message) errorMessage = errorBody.message;
+      if (errorBody.message) {
+         errorMessage = errorBody.message;
+         // Catch the specific IP rate limit message if we missed it above
+         if (errorMessage.includes("API rate limit exceeded")) {
+             errorMessage = "GitHub API Rate Limit Exceeded. Please add a Personal Access Token in Settings.";
+         }
+      }
     } catch (e) {
       // Ignore json parse error
     }
@@ -113,6 +136,10 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
       return {} as T;
     }
     return response.json();
+  }
+
+  if (isText) {
+     return response.text() as unknown as T;
   }
 
   const data = await response.json();
@@ -151,6 +178,10 @@ export const fetchIssues = async (repo: string, token?: string, state: 'open' | 
   return data.filter(item => !item.pull_request);
 };
 
+export const fetchIssueDetails = async (repo: string, number: number, token?: string): Promise<GithubIssue> => {
+  return request<GithubIssue>(`/repos/${repo}/issues/${number}`, token);
+};
+
 export const fetchPullRequests = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GithubPullRequest[]> => {
   return request<GithubPullRequest[]>(`/repos/${repo}/pulls?state=${state}&per_page=100`, token);
 };
@@ -161,21 +192,8 @@ export const fetchPrDetails = async (repo: string, number: number, token?: strin
 };
 
 export const fetchPrDiff = async (repo: string, number: number, token: string): Promise<string> => {
-  const headers: Record<string, string> = {
-    'Accept': 'application/vnd.github.v3.diff',
-  };
-  
-  if (token && token.trim()) {
-    headers['Authorization'] = `token ${token.trim()}`;
-  }
-
-  const response = await fetch(`${BASE_URL}/repos/${repo}/pulls/${number}`, { headers });
-  
-  if (!response.ok) {
-     throw new Error(`Failed to fetch diff: ${response.statusText}`);
-  }
-  
-  return await response.text();
+  // Use request helper with isText=true for robust error handling
+  return request<string>(`/repos/${repo}/pulls/${number}`, token, {}, true);
 };
 
 export const fetchComments = async (repo: string, issueNumber: number, token?: string) => {
@@ -184,6 +202,10 @@ export const fetchComments = async (repo: string, issueNumber: number, token?: s
   } catch (e) {
     return [];
   }
+};
+
+export const fetchReviewComments = async (repo: string, number: number, token?: string) => {
+  return request<any[]>(`/repos/${repo}/pulls/${number}/comments`, token);
 };
 
 export const fetchBranches = async (repo: string, token: string): Promise<GithubBranch[]> => {
@@ -226,7 +248,7 @@ export const createIssue = async (repo: string, token: string, issue: { title: s
   });
 };
 
-export const updateIssue = async (repo: string, token: string, number: number, updates: { state?: 'open' | 'closed'; labels?: string[] }) => {
+export const updateIssue = async (repo: string, token: string, number: number, updates: { state?: 'open' | 'closed'; labels?: string[]; title?: string; body?: string }) => {
   return request(`/repos/${repo}/issues/${number}`, token, {
     method: 'PATCH',
     body: JSON.stringify(updates),
@@ -237,6 +259,12 @@ export const addLabels = async (repo: string, token: string, number: number, lab
   return request(`/repos/${repo}/issues/${number}/labels`, token, {
     method: 'POST',
     body: JSON.stringify({ labels }),
+  });
+};
+
+export const removeLabel = async (repo: string, token: string, number: number, label: string) => {
+  return request(`/repos/${repo}/issues/${number}/labels/${encodeURIComponent(label)}`, token, {
+    method: 'DELETE',
   });
 };
 
@@ -319,7 +347,8 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
 
         const filesChanged = details.changed_files || 0;
         const isBig = filesChanged > 15 || (details.additions || 0) > 500;
-        const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release', 'leader'].includes(details.base.ref.toLowerCase());
+        const safeBaseRef = details?.base?.ref || '';
+        const isLeaderBranch = ['main', 'master', 'develop', 'dev', 'staging', 'release', 'leader'].includes(safeBaseRef.toLowerCase());
         const noConflicts = details.mergeable === true;
         
         let isReadyToMerge = false;
@@ -362,4 +391,37 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string): P
   }
 
   return results;
+};
+
+// Batch fetch for background prefetching
+export const prefetchRepositoryData = async (repo: string, token: string) => {
+  const [issues, prs, closedPrs] = await Promise.all([
+    fetchIssues(repo, token, 'open'),
+    fetchPullRequests(repo, token, 'open'),
+    fetchPullRequests(repo, token, 'closed'),
+  ]);
+  return { issues, prs, closedPrs };
+};
+
+// Fetch raw file content (or directory listing)
+export const fetchRepoContent = async (repo: string, path: string, token: string): Promise<any> => {
+  try {
+    const data = await request<any>(`/repos/${repo}/contents/${path}`, token);
+    
+    // If it's a file with content (base64)
+    if (!Array.isArray(data) && data.content && data.encoding === 'base64') {
+      try {
+        return atob(data.content.replace(/\n/g, ''));
+      } catch (e) {
+        console.warn('Failed to decode base64 content', e);
+        return null;
+      }
+    }
+    
+    // If it's a directory (array) or a file without content (too large?), return raw
+    return data;
+  } catch (e) {
+    // 404 is common if path doesn't exist
+    return null;
+  }
 };
