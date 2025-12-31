@@ -1,101 +1,65 @@
 
 import { JulesSession, JulesSource } from '../types';
+import { storage, StorageKeys } from './storageService';
 
 const JULES_API_BASE = 'https://jules.googleapis.com/v1alpha';
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-const CACHE_PREFIX = 'jules_cache_';
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-const clearCache = () => {
-  try {
-    Object.keys(localStorage).forEach(key => {
-      if (key.startsWith(CACHE_PREFIX)) {
-        localStorage.removeItem(key);
-      }
-    });
-    console.log('[Jules Cache] Cleared all cache entries due to mutation.');
-  } catch (e) {
-    console.warn('Failed to clear Jules cache', e);
+const clearJulesCache = () => {
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(StorageKeys.JULES_CACHE)) {
+      localStorage.removeItem(key);
+    }
   }
 };
 
-// Internal helper for Jules API requests
 const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}): Promise<T> => {
-  if (!apiKey) {
-    throw new Error("Jules API Key is missing. Please configure it in Settings.");
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error("Jules API Key is missing. Please check your settings.");
   }
 
   const isGet = !options.method || options.method === 'GET';
-  const cacheKey = `${CACHE_PREFIX}${endpoint}`;
+  const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
 
-  // 1. Try to read from cache
   if (isGet) {
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      try {
-        const { timestamp, data } = JSON.parse(cached);
-        if (Date.now() - timestamp < CACHE_DURATION) {
-          // console.debug(`[Jules Cache] Hit: ${endpoint}`);
-          return data as T;
-        }
-      } catch (e) {
-        localStorage.removeItem(cacheKey);
-      }
-    }
+    const cached = storage.getCached<T>(cacheKey);
+    if (cached) return cached;
   }
-
-  const trimmedKey = apiKey.trim();
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    'X-Goog-Api-Key': trimmedKey,
+    'X-Goog-Api-Key': apiKey.trim(),
     ...options.headers,
   };
 
-  let response: Response;
-  try {
-    response = await fetch(`${JULES_API_BASE}/${endpoint}`, {
-      ...options,
-      headers,
-    });
-  } catch (e: any) {
-    console.error(`[Jules] Fetch failed for ${endpoint}:`, e);
-    throw new Error("Network error: Failed to reach Jules API. Check your connection or CORS settings.");
-  }
+  const response = await fetch(`${JULES_API_BASE}/${endpoint}`, {
+    ...options,
+    headers,
+  });
 
   if (!response.ok) {
-    let errorMessage = `Jules API Error: ${response.status} ${response.statusText}`;
+    let errorMessage = `Jules API Error: ${response.status}`;
     try {
       const errorBody = await response.json();
-      if (errorBody.error && errorBody.error.message) {
-        errorMessage = errorBody.error.message;
-      }
-    } catch (e) {
-      // ignore
-    }
+      if (errorBody.error?.message) errorMessage = errorBody.error.message;
+    } catch (e) {}
     throw new Error(errorMessage);
   }
 
-  // Handle 204 No Content
   if (response.status === 204) {
-    if (!isGet) clearCache();
+    if (!isGet) clearJulesCache();
     return {} as T;
   }
 
   const data = await response.json();
 
-  // If we performed a mutation (POST, PATCH, DELETE), clear cache to ensure freshness
-  if (!isGet) {
-    clearCache();
+  if (isGet) {
+    storage.setCached(cacheKey, data, CACHE_DURATION);
   } else {
-    // 2. Save to cache
-    try {
-      localStorage.setItem(cacheKey, JSON.stringify({
-        timestamp: Date.now(),
-        data
-      }));
-    } catch (e) {
-      console.warn('Failed to cache Jules request (likely quota exceeded)', e);
-    }
+    clearJulesCache();
+    // Also clear GitHub cache if we likely caused a PR update
+    storage.clearCaches(); 
   }
 
   return data;
@@ -110,18 +74,15 @@ export const listSources = async (apiKey: string, filter?: string): Promise<Jule
 export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
   let allSessions: JulesSession[] = [];
   let nextToken: string | undefined = undefined;
-
-  // Loop to fetch pages (increased limit to 10 to catch archived/older sessions)
   let pages = 0;
+  
   do {
     const query = nextToken ? `?pageToken=${nextToken}` : '';
     const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(`sessions${query}`, apiKey);
-    if (data.sessions) {
-      allSessions = [...allSessions, ...data.sessions];
-    }
+    if (data.sessions) allSessions = [...allSessions, ...data.sessions];
     nextToken = data.nextPageToken;
     pages++;
-  } while (nextToken && pages < 10);
+  } while (nextToken && pages < 5);
 
   return allSessions;
 };
@@ -137,22 +98,14 @@ export const createSession = async (
   branch: string = 'leader', 
   title?: string
 ): Promise<JulesSession> => {
-  
-  // Strictly define payload to ensure no invalid fields like 'model' are included
   const payload: any = {
     prompt,
     sourceContext: {
       source: sourceId,
-      githubRepoContext: {
-        startingBranch: branch
-      }
+      githubRepoContext: { startingBranch: branch }
     }
   };
-
-  if (title) {
-    payload.title = title;
-  }
-
+  if (title) payload.title = title;
   return request<JulesSession>('sessions', apiKey, {
     method: 'POST',
     body: JSON.stringify(payload)
@@ -160,8 +113,6 @@ export const createSession = async (
 };
 
 export const sendMessage = async (apiKey: string, sessionName: string, text: string): Promise<any> => {
-  // Extract simple ID if full name provided for URL construction if needed, 
-  // but API usually expects resource name in path
   return request(`sessions/${sessionName}:sendMessage`, apiKey, {
     method: 'POST',
     body: JSON.stringify({ prompt: text })
@@ -169,21 +120,15 @@ export const sendMessage = async (apiKey: string, sessionName: string, text: str
 };
 
 export const deleteSession = async (apiKey: string, sessionName: string): Promise<void> => {
-  return request<void>(`sessions/${sessionName}`, apiKey, {
-    method: 'DELETE'
-  });
+  return request<void>(`sessions/${sessionName}`, apiKey, { method: 'DELETE' });
 };
 
-// Helper to find the correct source ID for a given repo
 export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {
-  // Heuristic: try to find a source that ends with the repo name
   try {
     const sources = await listSources(apiKey);
-    // e.g. sources/github/arii/hrm
     const match = sources.find(s => s.name.endsWith(repoName) || s.name.includes(repoName));
     return match ? match.name : null;
   } catch (e) {
-    console.error("Failed to fetch sources", e);
     return null;
   }
 };

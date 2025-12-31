@@ -6,11 +6,10 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
   const [status, setStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
   const [error, setError] = useState<string | null>(null);
   
-  // Initialize result from storage if persistenceKey is provided
   const [result, setResult] = useState<T | null>(() => {
     if (persistenceKey) {
       try {
-        const cached = sessionStorage.getItem(`analysis_v1_${persistenceKey}`);
+        const cached = localStorage.getItem(`audit_analysis_v2_${persistenceKey}`);
         if (cached) {
           return JSON.parse(cached);
         }
@@ -21,12 +20,11 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
     return null;
   });
 
-  // If we loaded a cached result, set status to COMPLETE on mount
   useEffect(() => {
     if (result && status === AnalysisStatus.IDLE) {
       setStatus(AnalysisStatus.COMPLETE);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const run = useCallback(async (...args: any[]) => {
     setStatus(AnalysisStatus.LOADING);
@@ -38,18 +36,11 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
       
       if (persistenceKey) {
         try {
-          sessionStorage.setItem(`analysis_v1_${persistenceKey}`, JSON.stringify(data));
-        } catch (e) {
-          console.warn('Failed to cache analysis result', e);
-        }
+          localStorage.setItem(`audit_analysis_v2_${persistenceKey}`, JSON.stringify(data));
+        } catch (e) {}
       }
     } catch (e: any) {
-      let msg = e.message || 'Analysis failed';
-      // Enhance error message for known API quotas
-      if (msg.includes('exhausted') || msg.includes('429')) {
-        msg = "AI Quota Exceeded. Please try again later or check your API usage limits.";
-      }
-      setError(msg);
+      setError(e.message || 'Analysis failed');
       setStatus(AnalysisStatus.ERROR);
     }
   }, [analyzerFn, persistenceKey]);
@@ -59,7 +50,7 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
     setResult(null);
     setError(null);
     if (persistenceKey) {
-      sessionStorage.removeItem(`analysis_v1_${persistenceKey}`);
+      localStorage.removeItem(`audit_analysis_v2_${persistenceKey}`);
     }
   }, [persistenceKey]);
 

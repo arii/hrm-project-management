@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
@@ -10,43 +10,41 @@ import BatchCreate from './pages/BatchCreate';
 import Agent from './pages/Agent';
 import JulesSessions from './pages/JulesSessions';
 import CodeReview from './pages/CodeReview';
+import TechnicalAudit from './pages/TechnicalAudit';
+import WorkflowHealth from './pages/WorkflowHealth';
 import { MaintenanceProvider } from './contexts/MaintenanceContext';
+import { storage, AppSettings } from './services/storageService';
 
 const App: React.FC = () => {
-  // Global State for Repo context
-  // Initialize from localStorage to persist across reloads
-  const [repoName, setRepoNameState] = useState(() => localStorage.getItem('audit_repo_name') || 'arii/hrm');
-  
-  // Securely load from localStorage, defaulting to empty string if not found
-  const [githubToken, setGithubTokenState] = useState(() => localStorage.getItem('audit_gh_token') || '');
-  const [julesApiKey, setJulesApiKeyState] = useState(() => localStorage.getItem('audit_jules_key') || '');
+  const [settings, setSettingsState] = useState<AppSettings>(() => storage.getSettings());
 
-  const setRepoName = (name: string) => {
-    setRepoNameState(name);
-    localStorage.setItem('audit_repo_name', name);
+  // Synchronize settings across tabs and components
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === storage.getSettingsKey() || e.key?.includes('settings')) {
+        setSettingsState(storage.getSettings());
+      }
+    };
+
+    const handleCustomChange = (e: any) => {
+      if (e.detail) setSettingsState(e.detail);
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('settings_updated', handleCustomChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('settings_updated', handleCustomChange);
+    };
+  }, []);
+
+  const updateSettings = (updates: Partial<AppSettings>) => {
+    storage.saveSettings(updates);
+    // Local state update is handled by the event listener dispatched in saveSettings
   };
 
-  const setGithubToken = (token: string) => {
-    setGithubTokenState(token);
-    localStorage.setItem('audit_gh_token', token);
-  };
-
-  const setJulesApiKey = (key: string) => {
-    setJulesApiKeyState(key);
-    localStorage.setItem('audit_jules_key', key);
-  };
-
-  // Pre-fetch data if credentials exist
-  React.useEffect(() => {
-    if (repoName && githubToken) {
-       // Lazy import to avoid circular dependencies if any, but direct import is fine here
-       import('./services/githubService').then(service => {
-         service.fetchIssues(repoName, githubToken, 'open').catch(() => {});
-         service.fetchPullRequests(repoName, githubToken, 'open').catch(() => {});
-         service.fetchBranches(repoName, githubToken).catch(() => {});
-       });
-    }
-  }, [repoName, githubToken]);
+  const { repoName, githubToken, julesApiKey } = settings;
 
   return (
     <MaintenanceProvider repoName={repoName} token={githubToken}>
@@ -55,14 +53,16 @@ const App: React.FC = () => {
           <Route path="/" element={
             <Layout 
               repoName={repoName} 
-              setRepoName={setRepoName}
+              setRepoName={(name) => updateSettings({ repoName: name })}
               githubToken={githubToken}
-              setGithubToken={setGithubToken}
+              setGithubToken={(token) => updateSettings({ githubToken: token })}
               julesApiKey={julesApiKey}
-              setJulesApiKey={setJulesApiKey}
+              setJulesApiKey={(key) => updateSettings({ julesApiKey: key })}
             />
           }>
             <Route index element={<Dashboard repoName={repoName} token={githubToken} />} />
+            <Route path="audit" element={<TechnicalAudit repoName={repoName} token={githubToken} />} />
+            <Route path="workflow-health" element={<WorkflowHealth repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
             <Route path="issues" element={<Issues repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
             <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
             <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />

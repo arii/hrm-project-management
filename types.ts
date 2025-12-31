@@ -50,7 +50,6 @@ export interface GithubPullRequest {
     ref: string;
   };
   labels: GithubLabel[];
-  // Detailed fields (may require fetching single PR endpoint)
   mergeable?: boolean | null;
   mergeable_state?: string;
   changed_files?: number;
@@ -61,9 +60,16 @@ export interface GithubPullRequest {
 
 export interface EnrichedPullRequest extends GithubPullRequest {
   testStatus: 'passed' | 'failed' | 'pending' | 'unknown';
+  checkResults?: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    url: string;
+  }>;
   isBig: boolean;
   isReadyToMerge: boolean;
   isLeaderBranch: boolean;
+  isApproved: boolean;
 }
 
 export interface GithubBranch {
@@ -96,13 +102,123 @@ export interface AnalysisResult {
   timestamp: string;
 }
 
-export interface RedundancyGroup {
-  topic: string;
-  issueNumbers: number[];
-  reason: string;
+// Workflow Health Types
+export interface GithubWorkflowRun {
+  id: number;
+  name: string;
+  node_id: string;
+  head_branch: string;
+  head_sha: string;
+  run_number: number;
+  event: string;
+  status: string;
+  conclusion: string | null;
+  workflow_id: number;
+  url: string;
+  html_url: string;
+  created_at: string;
+  updated_at: string;
 }
 
-// Structured Redundancy Analysis
+export interface GithubWorkflowJob {
+  id: number;
+  run_id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string;
+  completed_at: string | null;
+  html_url: string;
+  steps: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    number: number;
+  }>;
+}
+
+export interface WorkflowHealthResult {
+  report: string;
+  syntaxFailures: Array<{
+    workflowName: string;
+    reason: string;
+    fileUrl?: string;
+    suggestedTitle: string;
+    suggestedBody: string;
+  }>;
+  runtimeErrors: Array<{
+    runId: number;
+    jobName: string;
+    errorSnippet: string;
+    confidence: 'high' | 'medium' | 'low';
+    suggestedTitle: string;
+    suggestedBody: string;
+  }>;
+  falsePositives: Array<{
+    jobName: string;
+    reason: string;
+    flakinessScore: number; // 1-10
+    suggestedTitle: string;
+    suggestedBody: string;
+  }>;
+}
+
+export interface WorkflowQualitativeResult {
+  summary: string;
+  efficacyScore: number; // 1-100
+  efficiencyScore: number; // 1-100
+  findings: Array<{
+    type: 'efficacy' | 'coverage' | 'duplicate' | 'inefficient';
+    severity: 'critical' | 'moderate' | 'low';
+    title: string;
+    description: string;
+    recommendation: string;
+    suggestedTitle: string;
+    suggestedBody: string;
+  }>;
+}
+
+// Audit Types
+export type AuditAgentType = 'full-stack' | 'testing' | 'performance' | 'frontend' | 'cicd' | 'security';
+
+export interface ProposedIssue {
+  title: string;
+  body: string;
+  reason: string;
+  priority: 'High' | 'Medium' | 'Low';
+  effort: 'Small' | 'Medium' | 'Large';
+  labels: string[];
+}
+
+export interface TechnicalAuditResult {
+  agentType: AuditAgentType;
+  report: string;
+  timestamp: number;
+  criticalFindings: string[];
+  suggestedIssues: ProposedIssue[];
+  score: number; // 1-100
+}
+
+export interface BacklogTransformation {
+  type: 'CONSOLIDATE' | 'REPLACE' | 'TRIAGE_ONLY' | 'PRUNE';
+  targetIssueNumbers: number[];
+  proposedIssue?: {
+    title: string;
+    body: string;
+    labels: string[];
+    priority: 'High' | 'Medium' | 'Low';
+    effort: 'Small' | 'Medium' | 'Large';
+  };
+  reason: string;
+  impact: string;
+}
+
+export interface BacklogMaintenanceResult {
+  summary: string;
+  transformations: BacklogTransformation[];
+  healthScore: number;
+}
+
 export interface RedundancyAnalysisResult {
   summary: string;
   redundantIssues: {
@@ -118,7 +234,6 @@ export interface RedundancyAnalysisResult {
   }[];
 }
 
-// Structured Triage Analysis
 export interface TriageAction {
   issueNumber: number;
   title: string;
@@ -134,10 +249,9 @@ export interface TriageAnalysisResult {
   actions: TriageAction[];
 }
 
-// Structured Quality Analysis
 export interface IssueImprovementRecommendation {
   issueNumber: number;
-  title: string; // current title for display
+  title: string;
   suggestedTitle: string;
   suggestedBody: string;
   reason: string;
@@ -153,16 +267,6 @@ export interface QualityAnalysisResult {
   summary: string;
   improvements: IssueImprovementRecommendation[];
   closures: IssueStalenessRecommendation[];
-}
-
-// AI Agent Types
-export interface ProposedIssue {
-  title: string;
-  body: string;
-  reason: string;
-  priority: 'High' | 'Medium' | 'Low';
-  effort: 'Small' | 'Medium' | 'Large';
-  labels: string[];
 }
 
 export interface ArchitectAnalysisResult {
@@ -186,7 +290,6 @@ export interface LinkSuggestion {
   issueNumber: number;
   confidence: string;
   reason: string;
-  // Enhanced fields for UI context
   prTitle?: string;
   prState?: string;
   issueTitle?: string;
@@ -194,13 +297,14 @@ export interface LinkSuggestion {
 }
 
 export interface JulesAgentAction {
-  sessionName: string; // Full name
+  sessionName: string;
   action: 'delete' | 'recover' | 'publish' | 'message' | 'start_over';
   reason: string;
   suggestedCommand?: string;
+  hasPr: boolean;
+  prStatus?: string;
 }
 
-// Cleanup Types
 export interface CleanupRecommendation {
   issueNumber: number;
   action: 'close' | 'comment';
@@ -230,9 +334,29 @@ export interface BranchCleanupResult {
 
 export interface JulesCleanupRecommendation {
   sessionName: string;
+  sessionTitle?: string;
   reason: string;
-  linkedPrNumber?: number;
-  status: 'merged' | 'closed' | 'stale' | 'failed';
+  status: 'merged' | 'closed' | 'stale' | 'failed' | 'redundant';
+  publishedPrs: Array<{
+    number: number;
+    url: string;
+    state: string;
+    merged: boolean;
+  }>;
+  relatedIssueNumber?: number;
+}
+
+export interface PrCleanupRecommendation {
+  prNumber: number;
+  title: string;
+  reason: string;
+  action: 'close' | 'comment';
+  evidenceLinks: Array<{
+    type: 'issue' | 'pr';
+    number: number;
+    url: string;
+    state: string;
+  }>;
 }
 
 export interface JulesCleanupResult {
@@ -240,12 +364,16 @@ export interface JulesCleanupResult {
   candidates: JulesCleanupRecommendation[];
 }
 
-// PR Health Types
+export interface PrCleanupResult {
+  report: string;
+  candidates: PrCleanupRecommendation[];
+}
+
 export interface PrHealthAction {
   prNumber: number;
   title: string;
   action: 'close' | 'comment' | 'label' | 'publish';
-  label?: string; // If action is label
+  label?: string;
   reason: string;
   suggestedComment?: string;
   confidence: 'high' | 'medium' | 'low';
@@ -256,7 +384,6 @@ export interface PrHealthAnalysisResult {
   actions: PrHealthAction[];
 }
 
-// Integrator (Merge Ops) Types
 export interface MergeProposal {
   groupName: string;
   prNumbers: number[];
@@ -266,28 +393,25 @@ export interface MergeProposal {
   targetBranch: string;
 }
 
-// Code Review Types
 export interface CodeReviewResult {
   reviewComment: string;
   labels: string[];
   suggestedIssues?: ProposedIssue[];
 }
 
-// Recovery Types
 export interface RecoveryAnalysisResult {
   recommendation: 'REPAIR' | 'REWRITE';
   reason: string;
-  julesPrompt: string; // The instruction to send to Jules
+  julesPrompt: string;
 }
 
-// Jules API Types
 export interface JulesSource {
   name: string;
   displayName?: string;
 }
 
 export interface JulesSession {
-  name: string; // Resource name: projects/.../sessions/...
+  name: string;
   state: 
     | 'STATE_UNSPECIFIED' 
     | 'PENDING' 
@@ -296,7 +420,6 @@ export interface JulesSession {
     | 'FAILED' 
     | 'CANCELLED' 
     | 'TERMINATED'
-    // Granular states
     | 'IN_PROGRESS'
     | 'AWAITING_USER_FEEDBACK'
     | 'AWAITING_PLAN_APPROVAL'

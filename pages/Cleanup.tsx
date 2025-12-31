@@ -1,11 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { fetchIssues, fetchPullRequests, updateIssue, addComment, fetchBranches, deleteBranch } from '../services/githubService';
-import { generateCleanupReport, analyzeBranchCleanup, analyzeJulesCleanup } from '../services/geminiService';
+import { generateCleanupReport, analyzeBranchCleanup, analyzeJulesCleanup, analyzePrCleanup } from '../services/geminiService';
 import { listSessions, deleteSession } from '../services/julesService';
-import { AnalysisStatus, CleanupRecommendation, BranchCleanupRecommendation, JulesCleanupRecommendation } from '../types';
+import { CleanupRecommendation, BranchCleanupRecommendation, JulesCleanupRecommendation, PrCleanupRecommendation } from '../types';
 import AnalysisCard from '../components/AnalysisCard';
-import { CheckCircle, ArrowRight, Trash2, MessageSquare, Loader2, Play, GitBranch, TerminalSquare, Copy, Clipboard, AlertTriangle } from 'lucide-react';
+import { CheckCircle, Trash2, MessageSquare, Loader2, Play, GitBranch, TerminalSquare, Copy, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, GitMerge, GitPullRequest, Info, CheckSquare } from 'lucide-react';
 import clsx from 'clsx';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -17,308 +18,244 @@ interface CleanupProps {
   julesApiKey?: string;
 }
 
-// Local type for UI state
-type CleanupItem = CleanupRecommendation & { _id: string };
-type BranchItem = BranchCleanupRecommendation & { _id: string };
-type JulesItem = JulesCleanupRecommendation & { _id: string };
+type CleanupItem = CleanupRecommendation & { _id: string; status: 'idle' | 'processing' | 'success' | 'error' };
+type BranchItem = BranchCleanupRecommendation & { _id: string; status: 'idle' | 'processing' | 'success' | 'error' };
+type JulesItem = JulesCleanupRecommendation & { _id: string; status: 'idle' | 'processing' | 'success' | 'error' };
+type PrHygieneItem = PrCleanupRecommendation & { _id: string; status: 'idle' | 'processing' | 'success' | 'error' };
 
 const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
-  const [activeTab, setActiveTab] = useState<'issues' | 'branches' | 'jules'>('issues');
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState<'issues' | 'branches' | 'jules' | 'prs'>('issues');
+  const [showRaw, setShowRaw] = useState(false);
   
-  // -- ISSUE HYGIENE STATE --
   const [issueActions, setIssueActions] = useState<CleanupItem[]>([]);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
   const [isIssueProcessing, setIsIssueProcessing] = useState(false);
-  const [processingActionId, setProcessingActionId] = useState<string | null>(null);
-
-  // -- BRANCH HYGIENE STATE --
+  
   const [branchCandidates, setBranchCandidates] = useState<BranchItem[]>([]);
   const [selectedBranchIds, setSelectedBranchIds] = useState<Set<string>>(new Set());
   const [isBranchProcessing, setIsBranchProcessing] = useState(false);
 
-  // -- JULES HYGIENE STATE --
   const [julesCandidates, setJulesCandidates] = useState<JulesItem[]>([]);
   const [selectedJulesIds, setSelectedJulesIds] = useState<Set<string>>(new Set());
   const [isJulesProcessing, setIsJulesProcessing] = useState(false);
 
-  // Analysis Hooks
+  const [prHygieneCandidates, setPrHygieneCandidates] = useState<PrHygieneItem[]>([]);
+  const [selectedPrHygieneIds, setSelectedPrHygieneIds] = useState<Set<string>>(new Set());
+  const [isPrHygieneProcessing, setIsPrHygieneProcessing] = useState(false);
+
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+
   const issueAnalysis = useGeminiAnalysis(async () => {
-    const [issues, closedPrs, sessions] = await Promise.all([
-      fetchIssues(repoName, token, 'open'),
-      fetchPullRequests(repoName, token, 'closed'),
-      julesApiKey ? listSessions(julesApiKey) : Promise.resolve([])
+    const [issues, closedPrs] = await Promise.all([
+      fetchIssues(repoName, token, 'open'), 
+      fetchPullRequests(repoName, token, 'closed')
     ]);
-    const result = await generateCleanupReport(issues, closedPrs, sessions);
-    setIssueActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9) })));
+    const result = await generateCleanupReport(issues, closedPrs);
+    setIssueActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
     return result;
   }, 'cleanup_issues');
 
   const branchAnalysis = useGeminiAnalysis(async () => {
-    const [allBranches, closedPrs] = await Promise.all([
-      fetchBranches(repoName, token),
+    const [allBranches, openPrs, closedPrs] = await Promise.all([
+      fetchBranches(repoName, token), 
+      fetchPullRequests(repoName, token, 'open'),
       fetchPullRequests(repoName, token, 'closed')
     ]);
+    
+    const openRefs = openPrs.map(pr => pr.head.ref);
+    const closedRefs = closedPrs.map(pr => pr.head.ref);
     const branchNames = allBranches.map(b => b.name);
-    const mergedRefs = closedPrs.filter(pr => pr.merged_at).map(pr => ({ ref: pr.head.ref, number: pr.number }));
-    const result = await analyzeBranchCleanup(branchNames, mergedRefs);
-    setBranchCandidates(result.candidates.map(c => ({ ...c, _id: Math.random().toString(36).substr(2, 9) })));
+
+    const result = await analyzeBranchCleanup(branchNames, openRefs, closedRefs);
+    setBranchCandidates(result.candidates.map(c => ({ ...c, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
     return result;
   }, 'cleanup_branches');
 
   const julesAnalysis = useGeminiAnalysis(async () => {
     if (!julesApiKey) throw new Error("Jules API Key required");
-    const [sessions, closedPrs] = await Promise.all([
-      listSessions(julesApiKey),
-      fetchPullRequests(repoName, token, 'closed') // Includes merged & unmerged closed PRs
+    const [sessions, allPrs, allIssues] = await Promise.all([
+      listSessions(julesApiKey), 
+      fetchPullRequests(repoName, token, 'all'),
+      fetchIssues(repoName, token, 'all')
     ]);
-    const result = await analyzeJulesCleanup(sessions, closedPrs);
-    setJulesCandidates(result.candidates.map(c => ({ ...c, _id: Math.random().toString(36).substr(2, 9) })));
+
+    const result = await analyzeJulesCleanup(sessions, allPrs, allIssues);
+    setJulesCandidates(result.candidates.map(c => ({ ...c, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
     return result;
   }, 'cleanup_jules');
 
-  // --- ISSUE HANDLERS ---
-  const executeIssueAction = async (item: CleanupItem) => {
-    if (!token) return alert("GitHub token required.");
-    setProcessingActionId(item._id);
-    try {
-      if (item.action === 'close') {
-        const comment = item.commentBody || `Closing as resolved by recent PRs.\n\n*Reason: ${item.reason}*`;
-        await addComment(repoName, token, item.issueNumber, comment);
-        await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
-      } else if (item.action === 'comment') {
-        const comment = item.commentBody || `Is this issue still relevant? \n\n*Observation: ${item.reason}*`;
-        await addComment(repoName, token, item.issueNumber, comment);
-      }
-      
-      setIssueActions(prev => prev.filter(a => a._id !== item._id));
-      setSelectedIssueIds(prev => { const next = new Set(prev); next.delete(item._id); return next; });
-    } catch (e: any) { alert(`Failed on #${item.issueNumber}: ${e.message}`); }
-    finally { setProcessingActionId(null); }
-  };
+  const prHygieneAnalysis = useGeminiAnalysis(async () => {
+    const [openPrs, allIssues, closedPrs] = await Promise.all([
+      fetchPullRequests(repoName, token, 'open'),
+      fetchIssues(repoName, token, 'all'),
+      fetchPullRequests(repoName, token, 'closed')
+    ]);
+    const result = await analyzePrCleanup(openPrs, allIssues, closedPrs);
+    setPrHygieneCandidates(result.candidates.map(c => ({ ...c, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
+    return result;
+  }, 'cleanup_pr_hygiene');
 
   const executeBulkIssues = async () => {
-    if (!token) return alert("GitHub token required.");
+    const selected = issueActions.filter(a => selectedIssueIds.has(a._id) && a.status !== 'success');
+    if (selected.length === 0) return;
     setIsIssueProcessing(true);
-    const selected = issueActions.filter(a => selectedIssueIds.has(a._id));
-    const successIds: string[] = [];
-    const errors: string[] = [];
-
-    // Batch for better performance
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
-        const batch = selected.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(async (item) => {
-            try {
-                if (item.action === 'close') {
-                    const comment = item.commentBody || `Closing as resolved by recent PRs.\n\n*Reason: ${item.reason}*`;
-                    await addComment(repoName, token, item.issueNumber, comment);
-                    await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
-                } else if (item.action === 'comment') {
-                    const comment = item.commentBody || `Is this issue still relevant? \n\n*Observation: ${item.reason}*`;
-                    await addComment(repoName, token, item.issueNumber, comment);
-                }
-                successIds.push(item._id);
-            } catch (e: any) { 
-                console.error(e);
-                errors.push(`Issue #${item.issueNumber}: ${e.message}`);
-            }
-        }));
+    setProgress({ current: 0, total: selected.length });
+    for (let i = 0; i < selected.length; i++) {
+      const item = selected[i];
+      setIssueActions(prev => prev.map(a => a._id === item._id ? { ...a, status: 'processing' } : a));
+      try {
+        if (item.action === 'close') {
+          await addComment(repoName, token, item.issueNumber, item.commentBody || `Closing as resolved via RepoAuditor.\n\n*Reason: ${item.reason}*`);
+          await updateIssue(repoName, token, item.issueNumber, { state: 'closed' });
+        } else { await addComment(repoName, token, item.issueNumber, item.commentBody || `Observation: ${item.reason}`); }
+        setIssueActions(prev => prev.map(a => a._id === item._id ? { ...a, status: 'success' } : a));
+        setProgress(prev => ({ ...prev, current: i + 1 }));
+      } catch (e) { setIssueActions(prev => prev.map(a => a._id === item._id ? { ...a, status: 'error' } : a)); }
     }
-
-    if (errors.length > 0) {
-      alert(`Failed to process ${errors.length} issues:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
-    } else if (successIds.length > 0) {
-      alert(`Successfully processed ${successIds.length} issues.`);
-    }
-
-    setIssueActions(prev => prev.filter(a => !successIds.includes(a._id)));
-    setSelectedIssueIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setIsIssueProcessing(false);
   };
 
-  // --- BRANCH HANDLERS ---
   const deleteSelectedBranches = async () => {
-    if (!token) return alert("GitHub token required.");
-    if (!window.confirm(`Delete ${selectedBranchIds.size} branches?`)) return;
+    const selected = branchCandidates.filter(b => selectedBranchIds.has(b._id) && b.status !== 'success');
+    if (selected.length === 0) return;
     setIsBranchProcessing(true);
-    const selected = branchCandidates.filter(b => selectedBranchIds.has(b._id));
-    const successIds: string[] = [];
-    const errors: string[] = [];
-
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
-        const batch = selected.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(async (item) => {
-            try {
-                await deleteBranch(repoName, token, item.branchName);
-                successIds.push(item._id);
-            } catch (e: any) { 
-                console.error(e);
-                errors.push(`${item.branchName}: ${e.message}`);
-            }
-        }));
+    setProgress({ current: 0, total: selected.length });
+    for (let i = 0; i < selected.length; i++) {
+      const item = selected[i];
+      setBranchCandidates(prev => prev.map(b => b._id === item._id ? { ...b, status: 'processing' } : b));
+      try {
+        await deleteBranch(repoName, token, item.branchName);
+        setBranchCandidates(prev => prev.map(b => b._id === item._id ? { ...b, status: 'success' } : b));
+        setProgress(prev => ({ ...prev, current: i + 1 }));
+      } catch (e) { setBranchCandidates(prev => prev.map(b => b._id === item._id ? { ...b, status: 'error' } : b)); }
     }
-
-    if (errors.length > 0) {
-        alert(`Failed to delete ${errors.length} branches:\n${errors.slice(0, 3).join('\n')}${errors.length > 3 ? '\n...' : ''}`);
-    } else if (successIds.length > 0) {
-        alert(`Successfully deleted ${successIds.length} branches.`);
-    }
-
-    setBranchCandidates(prev => prev.filter(b => !successIds.includes(b._id)));
-    setSelectedBranchIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setIsBranchProcessing(false);
   };
 
-  const handleCopyBranchNames = () => {
-    const names = branchCandidates.map(c => c.branchName).join('\n');
-    navigator.clipboard.writeText(names);
-    alert(`Copied ${branchCandidates.length} branch names to clipboard.`);
-  };
-
-  // --- JULES HANDLERS ---
   const deleteSelectedJules = async () => {
-    if (!julesApiKey) return alert("Jules API Key required.");
-    if (!window.confirm(`Permanently delete ${selectedJulesIds.size} sessions?`)) return;
+    const selected = julesCandidates.filter(j => selectedJulesIds.has(j._id) && j.status !== 'success');
+    if (selected.length === 0) return;
     setIsJulesProcessing(true);
-    
-    const selected = julesCandidates.filter(j => selectedJulesIds.has(j._id));
-    const successIds: string[] = [];
-    const errors: string[] = [];
-
-    // Use batching for performance and error collection
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
-        const batch = selected.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(async (item) => {
-            try {
-                const shortName = item.sessionName.split('/').pop() || item.sessionName;
-                await deleteSession(julesApiKey, shortName);
-                successIds.push(item._id);
-            } catch (e: any) { 
-                console.error(`Failed to delete session ${item.sessionName}`, e);
-                errors.push(`${item.sessionName.split('/').pop()}: ${e.message}`);
-            }
-        }));
+    setProgress({ current: 0, total: selected.length });
+    for (let i = 0; i < selected.length; i++) {
+      const item = selected[i];
+      setJulesCandidates(prev => prev.map(j => j._id === item._id ? { ...j, status: 'processing' } : j));
+      try {
+        const shortName = item.sessionName.split('/').pop() || item.sessionName;
+        await deleteSession(julesApiKey!, shortName);
+        setJulesCandidates(prev => prev.map(j => j._id === item._id ? { ...j, status: 'success' } : j));
+        setProgress(prev => ({ ...prev, current: i + 1 }));
+      } catch (e) { setJulesCandidates(prev => prev.map(j => j._id === item._id ? { ...j, status: 'error' } : j)); }
     }
-
-    if (errors.length > 0) {
-        alert(`Failed to delete ${errors.length} sessions. Check console for details.\n\nSample Errors:\n${errors.slice(0, 3).join('\n')}`);
-    } else if (successIds.length > 0) {
-        alert(`Successfully deleted ${successIds.length} sessions.`);
-    }
-
-    setJulesCandidates(prev => prev.filter(j => !successIds.includes(j._id)));
-    setSelectedJulesIds(prev => { const next = new Set(prev); successIds.forEach(id => next.delete(id)); return next; });
     setIsJulesProcessing(false);
   };
 
-  // Helper for Toggle All
-  const toggleAll = (items: { _id: string }[], setIds: Set<string>, setFunction: (s: Set<string>) => void) => {
-    if (setIds.size === items.length) setFunction(new Set());
-    else setFunction(new Set(items.map(i => i._id)));
+  const executeBulkPrHygiene = async () => {
+    const selected = prHygieneCandidates.filter(c => selectedPrHygieneIds.has(c._id) && c.status !== 'success');
+    if (selected.length === 0) return;
+    setIsPrHygieneProcessing(true);
+    setProgress({ current: 0, total: selected.length });
+    for (let i = 0; i < selected.length; i++) {
+      const item = selected[i];
+      setPrHygieneCandidates(prev => prev.map(c => c._id === item._id ? { ...c, status: 'processing' } : c));
+      try {
+        if (item.action === 'close') {
+          await addComment(repoName, token, item.prNumber, `Closing this PR as its intended problem is already resolved by a merged PR to leader or a closed issue.\n\n*Reason: ${item.reason}*`);
+          await updateIssue(repoName, token, item.prNumber, { state: 'closed' });
+        } else {
+          await addComment(repoName, token, item.prNumber, `Hygiene Check: ${item.reason}`);
+        }
+        setPrHygieneCandidates(prev => prev.map(c => c._id === item._id ? { ...c, status: 'success' } : c));
+        setProgress(prev => ({ ...prev, current: i + 1 }));
+      } catch (e) { setPrHygieneCandidates(prev => prev.map(c => c._id === item._id ? { ...c, status: 'error' } : c)); }
+    }
+    setIsPrHygieneProcessing(false);
   };
 
-  const toggleOne = (id: string, setIds: Set<string>, setFunction: (s: Set<string>) => void) => {
-    const next = new Set(setIds);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setFunction(next);
-  };
+  const rawListText = useMemo(() => {
+    if (activeTab === 'issues') return issueActions.map(i => `#${i.issueNumber}`).join('\n');
+    if (activeTab === 'branches') return branchCandidates.map(b => b.branchName).join('\n');
+    if (activeTab === 'jules') return julesCandidates.map(j => j.sessionName.split('/').pop()).join('\n');
+    if (activeTab === 'prs') return prHygieneCandidates.map(p => `#${p.prNumber}`).join('\n');
+    return '';
+  }, [activeTab, issueActions, branchCandidates, julesCandidates, prHygieneCandidates]);
 
-  // Computed raw lists for text areas
-  const rawBranchList = branchCandidates.map(b => b.branchName).join(' ');
-  const rawJulesList = julesCandidates.map(j => j.sessionName.split('/').pop()).join(' ');
+  const handleCopyRaw = () => {
+    navigator.clipboard.writeText(rawListText);
+    alert("List copied to clipboard.");
+  };
 
   return (
-    <div className="max-w-4xl mx-auto pb-20">
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
-          <CheckCircle className="text-green-500 w-8 h-8" />
-          Cleanup Assistant
-        </h2>
-        <p className="text-slate-400">
-          Maintain repository hygiene by closing zombie issues and deleting stale branches.
-        </p>
+    <div className="max-w-5xl mx-auto pb-20">
+      <div className="mb-8 flex justify-between items-end">
+        <div>
+          <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2"><CheckCircle className="text-green-500 w-8 h-8" /> Cleanup Assistant</h2>
+          <p className="text-slate-400">Prune technical debt across issues, branches, PRs, and AI sessions.</p>
+        </div>
+        {(isIssueProcessing || isBranchProcessing || isJulesProcessing || isPrHygieneProcessing) && (
+          <div className="text-sm font-mono text-blue-400 animate-pulse bg-blue-900/10 px-3 py-1.5 rounded-lg border border-blue-500/20">Progress: {progress.current} / {progress.total}</div>
+        )}
       </div>
 
-      {/* Tabs */}
       <div className="flex border-b border-slate-700 mb-8 overflow-x-auto no-scrollbar">
+        <button onClick={() => { setActiveTab('issues'); setShowRaw(false); }} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 whitespace-nowrap", activeTab === 'issues' ? "border-primary text-primary" : "border-transparent text-slate-400")}><MessageSquare className="w-4 h-4" /> Issues</button>
+        <button onClick={() => { setActiveTab('prs'); setShowRaw(false); }} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 whitespace-nowrap", activeTab === 'prs' ? "border-primary text-primary" : "border-transparent text-slate-400")}><GitPullRequest className="w-4 h-4" /> PR Hygiene</button>
+        <button onClick={() => { setActiveTab('branches'); setShowRaw(false); }} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 whitespace-nowrap", activeTab === 'branches' ? "border-primary text-primary" : "border-transparent text-slate-400")}><GitBranch className="w-4 h-4" /> Branches</button>
+        <button onClick={() => { setActiveTab('jules'); setShowRaw(false); }} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 whitespace-nowrap", activeTab === 'jules' ? "border-primary text-primary" : "border-transparent text-slate-400")}><TerminalSquare className="w-4 h-4" /> Jules Hygiene</button>
+      </div>
+
+      <div className="mb-6 flex justify-end">
         <button 
-          onClick={() => setActiveTab('issues')}
-          className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
-            activeTab === 'issues' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
-          )}
+          onClick={() => setShowRaw(!showRaw)} 
+          className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1.5 transition-colors uppercase font-bold tracking-widest"
         >
-          <MessageSquare className="w-4 h-4" /> Issue Hygiene
-        </button>
-        <button 
-          onClick={() => setActiveTab('branches')}
-          className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
-            activeTab === 'branches' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
-          )}
-        >
-          <GitBranch className="w-4 h-4" /> Branch Hygiene
-        </button>
-        <button 
-          onClick={() => setActiveTab('jules')}
-          className={clsx(
-            "flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 whitespace-nowrap",
-            activeTab === 'jules' ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-white"
-          )}
-        >
-          <TerminalSquare className="w-4 h-4" /> Jules Hygiene
+          {showRaw ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          {showRaw ? 'Hide Raw List' : 'Show Raw List'}
         </button>
       </div>
 
-      {/* --- ISSUE TAB --- */}
+      {showRaw && (
+        <div className="mb-6 animate-in slide-in-from-top-2 duration-200">
+           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+              <div className="px-4 py-2 bg-slate-800/50 border-b border-slate-800 flex justify-between items-center">
+                 <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Plaintext Target List</span>
+                 <button onClick={handleCopyRaw} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                    <Copy className="w-3 h-3" /> Copy All
+                 </button>
+              </div>
+              <textarea 
+                readOnly 
+                value={rawListText || 'No targets identified yet. Run analysis below.'}
+                className="w-full h-32 bg-transparent p-4 text-xs font-mono text-slate-300 focus:outline-none resize-none"
+              />
+           </div>
+        </div>
+      )}
+
       {activeTab === 'issues' && (
         <div className="space-y-6 animate-in fade-in">
-          <AnalysisCard 
-            title="Cleanup Report"
-            description="Identify 'zombie' issues that should be closed."
-            status={issueAnalysis.status}
-            result={issueAnalysis.result?.report || null}
-            onAnalyze={issueAnalysis.run}
-            repoName={repoName}
-          />
-
+          <AnalysisCard title="Cleanup Report" description="Identify zombie issues addressed by merged PRs on leader branch." status={issueAnalysis.status} result={issueAnalysis.result?.report || null} onAnalyze={issueAnalysis.run} repoName={repoName} />
           {issueActions.length > 0 && (
-            <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
+            <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-lg">
               <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
                 <div className="flex items-center gap-3">
-                   <input type="checkbox" checked={issueActions.length > 0 && selectedIssueIds.size === issueActions.length} onChange={() => toggleAll(issueActions, selectedIssueIds, setSelectedIssueIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer" />
-                   <h3 className="font-semibold text-white">Recommended Actions ({issueActions.length})</h3>
+                  <input type="checkbox" checked={selectedIssueIds.size === issueActions.length} onChange={() => setSelectedIssueIds(selectedIssueIds.size === issueActions.length ? new Set() : new Set(issueActions.map(i => i._id)))} className="w-5 h-5 rounded bg-slate-800 text-primary cursor-pointer" />
+                  <span className="text-xs font-bold text-slate-400">Select All Candidates</span>
                 </div>
-                <Button onClick={executeBulkIssues} disabled={selectedIssueIds.size === 0 || isIssueProcessing} isLoading={isIssueProcessing} variant="success" icon={Play}>Execute Selected</Button>
+                <Button onClick={executeBulkIssues} disabled={selectedIssueIds.size === 0 || isIssueProcessing} isLoading={isIssueProcessing} variant="success" icon={Play}>Run Selected</Button>
               </div>
               <div className="divide-y divide-slate-700">
                 {issueActions.map(item => (
-                  <div key={item._id} className={clsx("p-5 flex gap-5 transition-colors", selectedIssueIds.has(item._id) ? "bg-slate-800/40" : "hover:bg-slate-800/20")}>
-                     <div className="pt-1"><input type="checkbox" checked={selectedIssueIds.has(item._id)} onChange={() => toggleOne(item._id, selectedIssueIds, setSelectedIssueIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-primary cursor-pointer" /></div>
-                     <div className="flex-1">
-                        <div className="flex justify-between items-start mb-2">
-                           <div className="flex items-center gap-2 mb-1">
-                             <span className="text-sm font-mono text-slate-500">#{item.issueNumber}</span>
-                             <Badge variant={item.action === 'close' ? 'red' : 'yellow'}>{item.action.toUpperCase()}</Badge>
-                             <Badge variant={item.confidence === 'high' ? 'green' : 'gray'}>{item.confidence} Confidence</Badge>
-                           </div>
-                           <Button 
-                             size="sm" 
-                             variant="secondary" 
-                             onClick={() => executeIssueAction(item)} 
-                             isLoading={processingActionId === item._id}
-                             disabled={processingActionId !== null}
-                             icon={Play}
-                           >
-                             Run
-                           </Button>
-                        </div>
-                        <p className="text-slate-300 text-sm">{item.reason}</p>
-                        {item.prReference && <div className="text-xs text-slate-500 mt-2">Referenced PR: #{item.prReference}</div>}
-                        {item.sessionReference && <div className="text-xs text-purple-400 mt-2 flex items-center gap-1"><TerminalSquare className="w-3 h-3" /> Resolved by Session: {item.sessionReference}</div>}
-                     </div>
+                  <div key={item._id} className={clsx("p-4 flex gap-4 transition-colors", item.status === 'processing' ? "bg-blue-900/10" : "hover:bg-slate-800/20")}>
+                    {item.status === 'processing' ? <Loader2 className="w-5 h-5 animate-spin text-blue-500 mt-1" /> : item.status === 'success' ? <CheckCircle2 className="w-5 h-5 text-green-500 mt-1" /> : <input type="checkbox" checked={selectedIssueIds.has(item._id)} onChange={() => { const n = new Set(selectedIssueIds); if (n.has(item._id)) n.delete(item._id); else n.add(item._id); setSelectedIssueIds(n); }} className="w-5 h-5 mt-1 rounded bg-slate-800 text-primary" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-mono text-slate-500">#{item.issueNumber}</span>
+                        <Badge variant={item.action === 'close' ? 'red' : 'yellow'}>{item.action.toUpperCase()}</Badge>
+                      </div>
+                      <p className="text-sm text-slate-300">{item.reason}</p>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -327,125 +264,201 @@ const Cleanup: React.FC<CleanupProps> = ({ repoName, token, julesApiKey }) => {
         </div>
       )}
 
-      {/* --- BRANCH TAB --- */}
-      {activeTab === 'branches' && (
+      {activeTab === 'prs' && (
         <div className="space-y-6 animate-in fade-in">
-           <AnalysisCard 
-            title="Branch Cleanup"
-            description="Identify stale or merged branches that can be deleted."
-            status={branchAnalysis.status}
-            result={branchAnalysis.result?.report || null}
-            onAnalyze={branchAnalysis.run}
-            repoName={repoName}
-          />
-          
-          {branchCandidates.length > 0 && (
-             <>
-                {/* Text Area for raw copy */}
-                <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden p-4">
-                  <label className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
-                    <Clipboard className="w-3 h-3" /> Raw Candidate List (Space Separated)
-                  </label>
-                  <textarea 
-                    readOnly 
-                    value={rawBranchList}
-                    className="w-full h-24 bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-slate-300 font-mono text-xs focus:outline-none focus:border-primary resize-none"
-                    onClick={(e) => e.currentTarget.select()}
-                  />
-                  <p className="text-[10px] text-slate-500 mt-2">Click to select all, then copy (Ctrl+C).</p>
+          <AnalysisCard title="PR Hygiene" description="Identify open PRs that target issues already resolved by other MERGED PRs (to leader) or CLOSED issues." status={prHygieneAnalysis.status} result={prHygieneAnalysis.result?.report || null} onAnalyze={prHygieneAnalysis.run} repoName={repoName} />
+          {prHygieneCandidates.length > 0 && (
+            <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+              <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" checked={selectedPrHygieneIds.size === prHygieneCandidates.length} onChange={() => setSelectedPrHygieneIds(selectedPrHygieneIds.size === prHygieneCandidates.length ? new Set() : new Set(prHygieneCandidates.map(i => i._id)))} className="w-5 h-5 rounded bg-slate-800 text-red-500 cursor-pointer" />
+                  <span className="text-xs font-bold text-slate-400">Select Redundant PRs</span>
                 </div>
-
-                <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
-                    <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
-                      <div className="flex items-center gap-3">
-                        <input type="checkbox" checked={branchCandidates.length > 0 && selectedBranchIds.size === branchCandidates.length} onChange={() => toggleAll(branchCandidates, selectedBranchIds, setSelectedBranchIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer" />
-                        <h3 className="font-semibold text-white">Candidates for Deletion ({branchCandidates.length})</h3>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button variant="secondary" size="sm" onClick={handleCopyBranchNames} icon={Copy}>Copy List</Button>
-                        <Button onClick={deleteSelectedBranches} disabled={selectedBranchIds.size === 0 || isBranchProcessing} isLoading={isBranchProcessing} variant="danger" icon={Trash2}>Delete Selected</Button>
-                      </div>
+                <Button onClick={executeBulkPrHygiene} disabled={selectedPrHygieneIds.size === 0 || isPrHygieneProcessing} isLoading={isPrHygieneProcessing} variant="danger" icon={Trash2}>Close Selected PRs</Button>
+              </div>
+              <div className="divide-y divide-slate-700">
+                {prHygieneCandidates.map(item => (
+                  <div key={item._id} className={clsx("p-6 flex gap-6 transition-all", item.status === 'processing' ? "bg-red-900/5" : "hover:bg-slate-800/10")}>
+                    <div className="pt-1">
+                       {item.status === 'processing' ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : 
+                        item.status === 'success' ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : 
+                        <input type="checkbox" checked={selectedPrHygieneIds.has(item._id)} onChange={() => { const n = new Set(selectedPrHygieneIds); if (n.has(item._id)) n.delete(item._id); else n.add(item._id); setSelectedPrHygieneIds(n); }} className="w-5 h-5 rounded bg-slate-800 text-red-500 cursor-pointer" />}
                     </div>
-                    <div className="divide-y divide-slate-700">
-                      {branchCandidates.map(branch => (
-                        <div key={branch._id} className={clsx("p-4 flex items-center gap-4 transition-colors", selectedBranchIds.has(branch._id) ? "bg-red-900/10" : "hover:bg-slate-800/20")}>
-                            <input type="checkbox" checked={selectedBranchIds.has(branch._id)} onChange={() => toggleOne(branch._id, selectedBranchIds, setSelectedBranchIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer shrink-0" />
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-1">
-                                <div className="flex items-center gap-2 font-mono text-sm text-slate-200"><GitBranch className="w-4 h-4 text-slate-500" />{branch.branchName}</div>
-                                <Badge variant={branch.type === 'merged' ? 'green' : branch.type === 'abandoned' ? 'red' : 'yellow'}>{branch.type}</Badge>
-                              </div>
-                              <p className="text-sm text-slate-400">{branch.reason}</p>
-                            </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h4 className="font-bold text-slate-200 truncate pr-4">PR #{item.prNumber}: {item.title}</h4>
+                        <Badge variant="red">{item.action.toUpperCase()}</Badge>
+                      </div>
+                      <p className="text-sm text-slate-400 mb-4">{item.reason}</p>
+                      <div className="bg-slate-900/60 rounded-lg p-3 border border-slate-800">
+                        <span className="text-[10px] font-black text-slate-600 uppercase mb-2 block tracking-widest">Verification Evidence</span>
+                        <div className="flex flex-wrap gap-2">
+                          {item.evidenceLinks.map((link, idx) => {
+                            const isMergedToLeader = link.type === 'pr' && link.state === 'merged';
+                            const isClosedIssue = link.type === 'issue' && link.state === 'closed';
+                            return (
+                              <a 
+                                key={idx} 
+                                href={link.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className={clsx(
+                                  "flex items-center gap-2 px-3 py-1.5 rounded border transition-all group",
+                                  (isMergedToLeader || isClosedIssue) ? "bg-green-500/10 border-green-500/30 hover:border-green-500/60" : "bg-slate-950/40 border-slate-800/50 hover:border-slate-500/50"
+                                )}
+                              >
+                                 {link.type === 'issue' ? <MessageSquare className="w-3 h-3 text-yellow-400" /> : <GitMerge className="w-3 h-3 text-purple-400" />}
+                                 <span className="text-[11px] font-mono text-slate-300">
+                                   #{link.number} 
+                                   <span className={clsx("ml-1 font-bold", isMergedToLeader ? "text-green-400" : isClosedIssue ? "text-green-400" : "text-slate-500")}>
+                                     ({isMergedToLeader ? 'MERGED TO LEADER' : isClosedIssue ? 'CLOSED ISSUE' : link.state.toUpperCase()})
+                                   </span>
+                                 </span>
+                                 <ExternalLink className="w-3 h-3 text-slate-600 opacity-0 group-hover:opacity-100" />
+                              </a>
+                            );
+                          })}
                         </div>
-                      ))}
+                      </div>
                     </div>
-                </div>
-             </>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}
 
-      {/* --- JULES TAB --- */}
+      {activeTab === 'branches' && (
+        <div className="space-y-6 animate-in fade-in">
+          <AnalysisCard title="Branch Cleanup" description="Detect zombie or orphaned branches not linked to open PRs." status={branchAnalysis.status} result={branchAnalysis.result?.report || null} onAnalyze={branchAnalysis.run} repoName={repoName} />
+          {branchCandidates.length > 0 && (
+            <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+              <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" checked={selectedBranchIds.size === branchCandidates.length} onChange={() => setSelectedBranchIds(selectedBranchIds.size === branchCandidates.length ? new Set() : new Set(branchCandidates.map(i => i._id)))} className="w-5 h-5 rounded bg-slate-800 text-red-500 cursor-pointer" />
+                  <span className="text-xs font-bold text-slate-400">Select All Candidates</span>
+                </div>
+                <Button onClick={deleteSelectedBranches} disabled={selectedBranchIds.size === 0 || isBranchProcessing} isLoading={isBranchProcessing} variant="danger" icon={Trash2}>Delete Selected</Button>
+              </div>
+              <div className="divide-y divide-slate-700">
+                {branchCandidates.map(item => (
+                  <div key={item._id} className={clsx("p-4 flex gap-4 transition-colors", item.status === 'processing' ? "bg-red-900/10" : "hover:bg-slate-800/20")}>
+                    {item.status === 'processing' ? <Loader2 className="w-5 h-5 animate-spin text-red-500 mt-1" /> : item.status === 'success' ? <CheckCircle2 className="w-5 h-5 text-green-500 mt-1" /> : <input type="checkbox" checked={selectedBranchIds.has(item._id)} onChange={() => { const n = new Set(selectedBranchIds); if (n.has(item._id)) n.delete(item._id); else n.add(item._id); setSelectedBranchIds(n); }} className="w-5 h-5 mt-1 rounded bg-slate-800 text-red-500" />}
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-mono text-slate-200">{item.branchName}</span>
+                        <Badge variant="slate">{item.type}</Badge>
+                      </div>
+                      <p className="text-xs text-slate-400">{item.reason}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {activeTab === 'jules' && (
         <div className="space-y-6 animate-in fade-in">
-          {!julesApiKey && (
-             <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-200 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5" />
-                Please configure your Jules API Key in settings to use this feature.
-             </div>
-          )}
-          <AnalysisCard 
-            title="Jules Session Hygiene"
-            description="Identify obsolete sessions linked to merged or closed Pull Requests."
-            status={julesAnalysis.status}
-            result={julesAnalysis.result?.report || null}
-            onAnalyze={julesAnalysis.run}
-            repoName={repoName}
-          />
-
+          <AnalysisCard title="Jules Hygiene" description="Identify sessions that are safe to delete because their work is merged to leader, target issue closed, or they are stale/failed." status={julesAnalysis.status} result={julesAnalysis.result?.report || null} onAnalyze={julesAnalysis.run} repoName={repoName} />
           {julesCandidates.length > 0 && (
-             <>
-                {/* Text Area for raw copy */}
-                <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden p-4">
-                  <label className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
-                    <Clipboard className="w-3 h-3" /> Raw Session IDs (Space Separated)
-                  </label>
-                  <textarea 
-                    readOnly 
-                    value={rawJulesList}
-                    className="w-full h-24 bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-slate-300 font-mono text-xs focus:outline-none focus:border-primary resize-none"
-                    onClick={(e) => e.currentTarget.select()}
-                  />
-                  <p className="text-[10px] text-slate-500 mt-2">Click to select all, then copy (Ctrl+C).</p>
+            <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+              <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" checked={selectedJulesIds.size === julesCandidates.length} onChange={() => setSelectedJulesIds(selectedJulesIds.size === julesCandidates.length ? new Set() : new Set(julesCandidates.map(i => i._id)))} className="w-5 h-5 rounded bg-slate-800 text-red-500 cursor-pointer" />
+                  <span className="text-xs font-bold text-slate-400">Select Sessions to Prune</span>
                 </div>
-
-                <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden">
-                    <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
-                      <div className="flex items-center gap-3">
-                        <input type="checkbox" checked={julesCandidates.length > 0 && selectedJulesIds.size === julesCandidates.length} onChange={() => toggleAll(julesCandidates, selectedJulesIds, setSelectedJulesIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer" />
-                        <h3 className="font-semibold text-white">Candidates for Deletion ({julesCandidates.length})</h3>
+                <Button onClick={deleteSelectedJules} disabled={selectedJulesIds.size === 0 || isJulesProcessing} isLoading={isJulesProcessing} variant="danger" icon={Trash2}>Delete Sessions</Button>
+              </div>
+              <div className="divide-y divide-slate-700">
+                {julesCandidates.map(item => {
+                  const shortName = item.sessionName.split('/').pop() || item.sessionName;
+                  return (
+                    <div key={item._id} className={clsx("p-6 flex gap-6 transition-all", item.status === 'processing' ? "bg-red-900/5" : "hover:bg-slate-800/10")}>
+                      <div className="pt-1">
+                        {item.status === 'processing' ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : 
+                         item.status === 'success' ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : 
+                         <input type="checkbox" checked={selectedJulesIds.has(item._id)} onChange={() => { const n = new Set(selectedJulesIds); if (n.has(item._id)) n.delete(item._id); else n.add(item._id); setSelectedJulesIds(n); }} className="w-5 h-5 rounded bg-slate-800 text-red-500 cursor-pointer" />}
                       </div>
-                      <Button onClick={deleteSelectedJules} disabled={selectedJulesIds.size === 0 || isJulesProcessing} isLoading={isJulesProcessing} variant="danger" icon={Trash2}>Delete Selected</Button>
-                    </div>
-
-                    <div className="divide-y divide-slate-700">
-                      {julesCandidates.map(item => (
-                        <div key={item._id} className={clsx("p-4 flex items-center gap-4 transition-colors", selectedJulesIds.has(item._id) ? "bg-red-900/10" : "hover:bg-slate-800/20")}>
-                            <input type="checkbox" checked={selectedJulesIds.has(item._id)} onChange={() => toggleOne(item._id, selectedJulesIds, setSelectedJulesIds)} className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-red-500 cursor-pointer shrink-0" />
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-1">
-                                <div className="flex items-center gap-2 font-mono text-sm text-slate-200"><TerminalSquare className="w-4 h-4 text-slate-500" />{item.sessionName.split('/').pop()}</div>
-                                <Badge variant={item.status === 'merged' ? 'green' : 'red'}>{item.status.toUpperCase()}</Badge>
-                              </div>
-                              <p className="text-sm text-slate-400">{item.reason}</p>
-                              {item.linkedPrNumber && <div className="text-xs text-slate-500 mt-1">Linked PR #{item.linkedPrNumber} is closed.</div>}
-                            </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="min-w-0 pr-4">
+                             <div className="flex items-center gap-3 mb-1">
+                               <h4 className="font-bold text-slate-200 truncate">{item.sessionTitle || 'Untitled Session'}</h4>
+                               <Badge variant={item.status === 'merged' ? 'green' : (item.status === 'redundant' ? 'purple' : 'slate')}>{item.status}</Badge>
+                             </div>
+                             <button 
+                               onClick={() => navigate('/sessions', { state: { viewSessionName: item.sessionName } })}
+                               className="text-[10px] font-mono text-blue-400 hover:text-blue-300 flex items-center gap-1.5 bg-blue-500/5 px-2.5 py-1 rounded border border-blue-500/10 transition-colors"
+                             >
+                               <TerminalSquare className="w-3 h-3" /> Visit Workspace: <span className="underline">{shortName}</span>
+                             </button>
+                          </div>
                         </div>
-                      ))}
+                        
+                        <p className="text-sm text-slate-400 leading-relaxed mb-4">{item.reason}</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {item.publishedPrs && item.publishedPrs.length > 0 && (
+                            <div className="bg-slate-900/60 rounded-lg p-3 border border-slate-800">
+                               <span className="text-[10px] font-black text-slate-600 uppercase mb-2 block tracking-widest">Published Pull Requests</span>
+                               <div className="space-y-2">
+                                 {item.publishedPrs.map(pr => (
+                                   <a 
+                                     key={pr.number} 
+                                     href={pr.url} 
+                                     target="_blank" 
+                                     rel="noopener noreferrer" 
+                                     className={clsx(
+                                       "flex items-center justify-between p-2 rounded border transition-all group",
+                                       pr.merged ? "bg-green-500/5 border-green-500/20 hover:border-green-500/50" : "bg-slate-950/40 border-slate-800/50 hover:border-blue-500/50"
+                                     )}
+                                   >
+                                      <div className="flex items-center gap-2 overflow-hidden">
+                                         <GitPullRequest className={clsx("w-3 h-3", pr.merged ? "text-green-400" : (pr.state === 'closed' ? "text-red-400" : "text-blue-400"))} />
+                                         <span className="text-[11px] font-mono text-slate-400">#{pr.number}</span>
+                                         <Badge variant={pr.merged ? 'green' : (pr.state === 'closed' ? 'red' : 'blue')} className="text-[8px] py-0 px-1 font-mono">
+                                           {pr.merged ? 'MERGED TO LEADER' : pr.state.toUpperCase()}
+                                         </Badge>
+                                      </div>
+                                      <ExternalLink className="w-3 h-3 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                   </a>
+                                 ))}
+                               </div>
+                            </div>
+                          )}
+
+                          {item.relatedIssueNumber && (
+                            <div className="bg-slate-900/60 rounded-lg p-3 border border-slate-800">
+                               <span className="text-[10px] font-black text-slate-600 uppercase mb-2 block tracking-widest">Target Issue Status</span>
+                               <a 
+                                 href={`https://github.com/${repoName}/issues/${item.relatedIssueNumber}`}
+                                 target="_blank"
+                                 rel="noopener noreferrer"
+                                 className="flex items-center justify-between p-2 bg-green-500/5 rounded border border-green-500/20 hover:border-green-500/50 transition-all group"
+                               >
+                                  <div className="flex items-center gap-2 overflow-hidden">
+                                     <MessageSquare className="w-3 h-3 text-green-400" />
+                                     <span className="text-[11px] font-mono text-slate-400">Issue #{item.relatedIssueNumber}</span>
+                                     <Badge variant="green" className="text-[8px] py-0 px-1 font-mono">CLOSED (FIXED)</Badge>
+                                  </div>
+                                  <ExternalLink className="w-3 h-3 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                               </a>
+                               <div className="mt-2 text-[10px] text-green-500/70 italic flex items-center gap-1.5 font-bold">
+                                 <Info className="w-3 h-3" />
+                                 Problem resolved: target issue is fixed.
+                               </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                </div>
-             </>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       )}
