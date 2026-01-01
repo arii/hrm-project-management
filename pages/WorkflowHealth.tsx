@@ -1,12 +1,11 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, ChevronDown, ChevronUp } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, X, CheckSquare } from 'lucide-react';
 import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchPrsForCommit, createIssue, fetchWorkflowsContent, fetchCoreRepoContext } from '../services/githubService';
 import { analyzeWorkflowHealth, analyzeWorkflowQualitative } from '../services/geminiService';
 import { listSessions, sendMessage } from '../services/julesService';
 import { GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, AnalysisStatus, GithubPullRequest, JulesSession, WorkflowQualitativeResult } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
-import AnalysisCard from '../components/AnalysisCard';
 import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import clsx from 'clsx';
@@ -23,20 +22,38 @@ interface RunBlameData {
   julesSessions: JulesSession[];
 }
 
+interface WorkerSelectorState {
+  isOpen: boolean;
+  findingId: string;
+  description: string;
+  suggestedSessions: JulesSession[];
+}
+
 const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesApiKey }) => {
-  const [activeTab, setActiveTab] = useState<'runs' | 'qualitative'>('runs');
-  const [runs, setRuns] = useState<GithubWorkflowRun[]>([]);
+  const [activeTab, setActiveTab] = useState<'failures' | 'false-positives' | 'qualitative'>('failures');
+  
+  // Separate states for the two distinct lookup sets
+  const [failingRuns, setFailingRuns] = useState<GithubWorkflowRun[]>([]);
+  const [successRuns, setSuccessRuns] = useState<GithubWorkflowRun[]>([]);
+  
   const [jobsMap, setJobsMap] = useState<Record<number, GithubWorkflowJob[]>>({});
   const [blameMap, setBlameMap] = useState<Record<number, RunBlameData>>({});
   const [allSessions, setAllSessions] = useState<JulesSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingStep, setLoadingStep] = useState('');
   
-  // Track individual run results
+  // Analysis results (unified map by run ID)
   const [runResults, setRunResults] = useState<Record<number, WorkflowHealthResult>>({});
   const [isAnalyzingRuns, setIsAnalyzingRuns] = useState(false);
 
-  // Track dispatching status for each finding
+  // Worker Selection Modal State
+  const [workerSelector, setWorkerSelector] = useState<WorkerSelectorState>({
+    isOpen: false,
+    findingId: '',
+    description: '',
+    suggestedSessions: []
+  });
+
   const [dispatchStatus, setDispatchStatus] = useState<Record<string, 'idle' | 'loading' | 'success'>>({});
   const [julesReportStatus, setJulesReportStatus] = useState<Record<string, 'idle' | 'loading' | 'success'>>({});
 
@@ -50,34 +67,48 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
   const loadData = async (silent = false) => {
     if (!silent) setLoading(true);
-    setLoadingStep('Fetching workflow runs...');
+    setLoadingStep('Fetching unique workflow files...');
     try {
       const runData = await fetchWorkflowRuns(repoName, token);
       
-      // UNIQUE PAIRS FILTER: Keep only the most recent run for each (Workflow Name + Head Branch) pair
-      const uniquePairs = new Set<string>();
-      const filteredRuns = runData.filter(run => {
-        const pairKey = `${run.name}-${run.head_branch}`;
-        if (uniquePairs.has(pairKey)) return false;
-        uniquePairs.add(pairKey);
-        return true;
-      }).slice(0, 5);
+      // Ignore skipped runs entirely
+      const nonSkipped = runData.filter(run => run.conclusion !== 'skipped');
 
-      setRuns(filteredRuns);
+      // logic: Find 10 unique workflow IDs for FAILURES
+      const failingMap = new Map<number, GithubWorkflowRun>();
+      for (const run of nonSkipped) {
+        if (run.conclusion === 'failure' && !failingMap.has(run.workflow_id) && failingMap.size < 10) {
+          failingMap.set(run.workflow_id, run);
+        }
+      }
+
+      // logic: Find 10 unique workflow IDs for SUCCESS (False Positive Audit)
+      const successMap = new Map<number, GithubWorkflowRun>();
+      for (const run of nonSkipped) {
+        if (run.conclusion === 'success' && !successMap.has(run.workflow_id) && successMap.size < 10) {
+          successMap.set(run.workflow_id, run);
+        }
+      }
+
+      const failingList = Array.from(failingMap.values());
+      const successList = Array.from(successMap.values());
+      const allActiveRuns = [...failingList, ...successList];
+
+      setFailingRuns(failingList);
+      setSuccessRuns(successList);
       
-      setLoadingStep('Correlating job and session data...');
+      setLoadingStep('Correlating technical context...');
       const newJobsMap: Record<number, GithubWorkflowJob[]> = {};
       const newBlameMap: Record<number, RunBlameData> = {};
       
-      // Fetch Jules sessions once for correlation if key exists
       let rawSessions: JulesSession[] = [];
       if (julesApiKey) {
         rawSessions = await listSessions(julesApiKey);
         setAllSessions(rawSessions);
       }
 
-      for (const run of filteredRuns) {
-        // Parallelize job fetching and PR correlation
+      // Fetch details only for the 20 targeted runs
+      for (const run of allActiveRuns) {
         const [jobs, associatedPrs] = await Promise.all([
           fetchWorkflowRunJobs(repoName, run.id, token),
           fetchPrsForCommit(repoName, run.head_sha, token)
@@ -85,20 +116,13 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
         
         newJobsMap[run.id] = jobs;
 
-        // Enhanced Blame Logic: 
-        // 1. Sessions that produced a PR matching this commit's PRs
-        // 2. Sessions targeting the same head_branch (handles in-progress or stale sessions)
         const correlatedJules = rawSessions.filter(session => {
-          // Strong Match: PR correlation
           const prMatch = session.outputs?.some(output => 
             associatedPrs.some(pr => output.pullRequest?.url.includes(`/pull/${pr.number}`))
           );
           if (prMatch) return true;
-
-          // Contextual Match: Branch correlation (includes stale/in-progress/failed)
           const sessionBranch = session.sourceContext?.githubRepoContext?.startingBranch;
           if (sessionBranch && sessionBranch === run.head_branch) return true;
-
           return false;
         });
 
@@ -119,11 +143,14 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
   const handleRunAnalysis = async () => {
     setIsAnalyzingRuns(true);
-    setDispatchStatus({});
-    const newResults: Record<number, WorkflowHealthResult> = {};
+    // Determine which runs to analyze based on current tab
+    const targetRuns = activeTab === 'failures' ? failingRuns : successRuns;
     
     try {
-      const analysisPromises = runs.map(async (run) => {
+      const newResults = { ...runResults };
+      const analysisPromises = targetRuns.map(async (run) => {
+        // Skip if already analyzed this session
+        if (newResults[run.id]) return;
         const jobs = jobsMap[run.id] || [];
         const res = await analyzeWorkflowHealth(run, jobs);
         newResults[run.id] = res;
@@ -144,7 +171,7 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
       fetchWorkflowsContent(repoName, token),
       fetchCoreRepoContext(repoName, token)
     ]);
-    await qualitativeAnalysis.run(workflows, runs, context);
+    await qualitativeAnalysis.run(workflows, [...failingRuns, ...successRuns], context);
   };
 
   const handleDispatchIssue = async (id: string, title: string, body: string, type: string) => {
@@ -180,55 +207,104 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
   const currentQualitativeResult = qualitativeAnalysis.result;
 
+  const currentVisibleRuns = activeTab === 'failures' ? failingRuns : successRuns;
+
   const aggregatedFindings = useMemo(() => {
     const syntax: any[] = [];
     const runtime: any[] = [];
     const flakes: any[] = [];
     
-    Object.values(runResults).forEach((res: any) => {
-      const result = res as WorkflowHealthResult;
-      syntax.push(...result.syntaxFailures);
-      runtime.push(...result.runtimeErrors);
-      flakes.push(...result.falsePositives);
+    // Aggregate findings only from the runs visible in the current tab
+    currentVisibleRuns.forEach(run => {
+      const result = runResults[run.id];
+      if (result) {
+        syntax.push(...result.syntaxFailures);
+        runtime.push(...result.runtimeErrors.map(e => ({ ...e, runId: run.id })));
+        flakes.push(...result.falsePositives);
+      }
     });
     
     return { syntax, runtime, flakes };
-  }, [runResults]);
+  }, [runResults, activeTab, currentVisibleRuns]);
 
-  const JulesReportMenu = ({ fid, description, sessions }: { fid: string, description: string, sessions: JulesSession[] }) => {
-    if (sessions.length === 0) return null;
+  const openWorkerSelector = (fid: string, description: string, suggestedSessions: JulesSession[]) => {
+    setWorkerSelector({
+      isOpen: true,
+      findingId: fid,
+      description,
+      suggestedSessions
+    });
+  };
+
+  const closeWorkerSelector = () => {
+    setWorkerSelector(prev => ({ ...prev, isOpen: false }));
+  };
+
+  const WorkerSelectorModal = () => {
+    if (!workerSelector.isOpen) return null;
     
+    const availableSessions = workerSelector.suggestedSessions.length > 0 
+      ? workerSelector.suggestedSessions 
+      : allSessions.slice(0, 15);
+
     return (
-      <div className="relative group/menu">
-        <Button variant="ghost" size="sm" className="h-6 w-8 p-0 text-purple-400 border border-purple-500/20" title="Report to AI Worker">
-          <Bot className="w-4 h-4" />
-        </Button>
-        <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[100] hidden group-hover/menu:block">
-          <div className="p-3 border-b border-slate-700 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-800/50">Send feedback to correlated workers</div>
-          <div className="max-h-64 overflow-y-auto custom-scrollbar">
-            {sessions.map(session => {
-              const reportKey = `${fid}-${session.name}`;
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={closeWorkerSelector} />
+        <div className="relative bg-slate-900 border border-slate-700 w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh] animate-in fade-in zoom-in-95 duration-200">
+          <div className="p-6 border-b border-slate-800 bg-slate-800/40 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Bot className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h3 className="text-white font-bold">Select Remediation Worker</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Send this finding to an active AI session.</p>
+              </div>
+            </div>
+            <button onClick={closeWorkerSelector} className="text-slate-500 hover:text-white transition-colors">
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-2 bg-slate-900/50">
+            {availableSessions.length === 0 ? (
+              <div className="p-12 text-center text-slate-600">No active sessions found.</div>
+            ) : availableSessions.map(session => {
+              const reportKey = `${workerSelector.findingId}-${session.name}`;
               const isDone = julesReportStatus[reportKey] === 'success';
               const isLoading = julesReportStatus[reportKey] === 'loading';
+              const isCorrelated = workerSelector.suggestedSessions.some(s => s.name === session.name);
+
               return (
                 <button 
                   key={session.name}
                   disabled={isDone || isLoading}
-                  onClick={() => handleReportToJules(fid, session.name, description)}
+                  onClick={() => handleReportToJules(workerSelector.findingId, session.name, workerSelector.description)}
                   className={clsx(
-                    "w-full text-left px-4 py-3 text-xs border-b border-slate-800 last:border-0 transition-colors flex items-center justify-between",
-                    isDone ? "bg-green-500/5 cursor-default" : "text-slate-300 hover:bg-slate-800"
+                    "w-full text-left px-5 py-4 rounded-xl mb-1 transition-all flex items-center justify-between group/row border",
+                    isDone ? "bg-green-500/5 border-green-500/20 cursor-default" : "bg-transparent border-transparent hover:bg-slate-800 hover:border-slate-700"
                   )}
                 >
-                  <div className="flex flex-col min-w-0 pr-2">
-                    <span className={clsx("truncate font-medium", isDone ? "text-green-400" : "text-slate-100")}>
-                      {session.title || session.name.split('/').pop()}
-                    </span>
-                    <span className="text-[9px] opacity-60 uppercase font-bold tracking-tighter">{session.state}</span>
+                  <div className="flex-1 min-w-0 pr-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={clsx("font-bold truncate", isDone ? "text-green-400" : "text-slate-200 group-hover/row:text-white")}>
+                        {session.title || session.name.split('/').pop()}
+                      </span>
+                      {isCorrelated && <Badge variant="blue" className="text-[8px] py-0">Correlated</Badge>}
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
+                      <span className="flex items-center gap-1"><Terminal className="w-3 h-3" /> {session.name.split('/').pop()}</span>
+                      <span className="h-1 w-1 bg-slate-700 rounded-full" />
+                      <span className="uppercase font-bold tracking-tighter opacity-70">{session.state}</span>
+                    </div>
                   </div>
-                  {isDone ? <Check className="w-4 h-4 text-green-500 shrink-0" /> : (
-                    isLoading ? <Loader2 className="w-4 h-4 animate-spin text-purple-400 shrink-0" /> : <MessageSquareShare className="w-4 h-4 text-slate-500 shrink-0" />
-                  )}
+                  <div className="shrink-0 flex items-center justify-center w-10 h-10 rounded-full transition-colors">
+                    {isDone ? <CheckCircle2 className="w-6 h-6 text-green-500" /> : isLoading ? <Loader2 className="w-6 h-6 animate-spin text-purple-400" /> : (
+                      <div className="p-2 bg-slate-800 rounded-lg group-hover/row:bg-purple-600 transition-colors">
+                        <Send className="w-4 h-4 text-slate-400 group-hover/row:text-white" />
+                      </div>
+                    )}
+                  </div>
                 </button>
               );
             })}
@@ -240,17 +316,21 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-8 pb-20">
+      <WorkerSelectorModal />
+      
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
           <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
             <Activity className="text-cyan-400 w-8 h-8" /> Workflow Pulse
           </h2>
-          <p className="text-slate-400">Deep audit of CI health, flakiness, and qualitative efficacy.</p>
+          <p className="text-slate-400">Targeted audit of CI health and hidden flakiness across workflow definitions.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => loadData(false)} isLoading={loading} icon={RefreshCw}>Refresh Data</Button>
-          {activeTab === 'runs' ? (
-            <Button variant="primary" size="sm" onClick={handleRunAnalysis} isLoading={isAnalyzingRuns} icon={Activity}>Deep Audit ({runs.length})</Button>
+          <Button variant="secondary" size="sm" onClick={() => loadData(false)} isLoading={loading} icon={RefreshCw}>Refresh Workflows</Button>
+          {activeTab !== 'qualitative' ? (
+            <Button variant="primary" size="sm" onClick={handleRunAnalysis} isLoading={isAnalyzingRuns} icon={Activity}>
+              Audit {activeTab === 'failures' ? failingRuns.length : successRuns.length} Workflows
+            </Button>
           ) : (
             <Button variant="primary" size="sm" onClick={handleRunQualitativeAnalysis} isLoading={qualitativeAnalysis.status === AnalysisStatus.LOADING} icon={Zap} className="bg-purple-600 hover:bg-purple-500 border-purple-400/50">Run Qualitative Audit</Button>
           )}
@@ -259,10 +339,16 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
       <div className="flex border-b border-slate-700">
         <button 
-          onClick={() => setActiveTab('runs')} 
-          className={clsx("px-6 py-3 font-medium transition-all border-b-2", activeTab === 'runs' ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-500 hover:text-slate-300")}
+          onClick={() => setActiveTab('failures')} 
+          className={clsx("px-6 py-3 font-medium transition-all border-b-2", activeTab === 'failures' ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-500 hover:text-slate-300")}
         >
-          Operational Health
+          Operational Failures
+        </button>
+        <button 
+          onClick={() => setActiveTab('false-positives')} 
+          className={clsx("px-6 py-3 font-medium transition-all border-b-2", activeTab === 'false-positives' ? "border-amber-500 text-amber-400" : "border-transparent text-slate-500 hover:text-slate-300")}
+        >
+          False Positive Review
         </button>
         <button 
           onClick={() => setActiveTab('qualitative')} 
@@ -272,27 +358,29 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
         </button>
       </div>
 
-      {activeTab === 'runs' ? (
+      {activeTab !== 'qualitative' ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* RUN HISTORY & JOB BLAME */}
+          {/* RUN HISTORY SIDEBAR */}
           <div className="lg:col-span-1 space-y-4">
              <div className="bg-surface border border-slate-700 rounded-xl flex flex-col h-[800px]">
                 <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
                    <div className="flex items-center gap-2">
                      <History className="w-4 h-4 text-slate-500" />
-                     <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Recent Unique Pairs</span>
+                     <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                       {activeTab === 'failures' ? 'Failing Workflows' : 'Successful Workflows'}
+                     </span>
                    </div>
-                   <Badge variant="slate">{runs.length} Pairs</Badge>
+                   <Badge variant="slate">{currentVisibleRuns.length} Files</Badge>
                 </div>
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
-                   {loading && runs.length === 0 ? (
+                   {loading ? (
                      <div className="flex flex-col items-center justify-center h-full text-slate-600 gap-3">
                         <Loader2 className="w-8 h-8 animate-spin" />
                         <p className="text-xs">{loadingStep}</p>
                      </div>
-                   ) : runs.length === 0 ? (
-                     <div className="p-12 text-center text-slate-600 italic text-sm">No workflow runs found.</div>
-                   ) : runs.map(run => {
+                   ) : currentVisibleRuns.length === 0 ? (
+                     <div className="p-12 text-center text-slate-600 italic text-sm">No workflow runs found for this criteria.</div>
+                   ) : currentVisibleRuns.map(run => {
                      const blame = blameMap[run.id];
                      const result = runResults[run.id];
                      return (
@@ -300,7 +388,7 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                        key={run.id} 
                        className={clsx(
                          "block p-4 rounded-xl border transition-all group",
-                         result ? "border-cyan-500/30 bg-cyan-500/5" : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/60"
+                         result ? (activeTab === 'failures' ? "border-cyan-500/30 bg-cyan-500/5" : "border-amber-500/30 bg-amber-500/5") : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/60"
                        )}
                      >
                         <div className="flex justify-between items-start mb-2">
@@ -327,32 +415,12 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                         {result && (
                           <div className="mt-4 p-3 bg-slate-900/60 rounded-lg border border-slate-800">
                              <div className="flex items-center gap-2 mb-2">
-                               <ShieldAlert className="w-3 h-3 text-cyan-400" />
+                               <ShieldAlert className={clsx("w-3 h-3", activeTab === 'failures' ? "text-cyan-400" : "text-amber-400")} />
                                <span className="text-[9px] font-bold text-slate-400 uppercase">AI Diagnosis</span>
                              </div>
                              <div className="text-[10px] text-slate-300 leading-relaxed prose prose-invert prose-xs line-clamp-3">
                                <ReactMarkdown>{result.report}</ReactMarkdown>
                              </div>
-                          </div>
-                        )}
-
-                        {blame && (blame.prs.length > 0 || blame.julesSessions.length > 0) && (
-                          <div className="mt-4 space-y-2">
-                             {blame.prs.map(pr => (
-                               <div key={pr.number} className="flex items-center gap-2 text-[10px] text-slate-400 bg-slate-950/40 p-1.5 rounded border border-slate-800">
-                                  <GitPullRequest className="w-3 h-3 text-purple-400" />
-                                  <span className="truncate flex-1">PR #{pr.number}: {pr.title}</span>
-                               </div>
-                             ))}
-                             {blame.julesSessions.map(session => (
-                               <div key={session.name} className="flex items-center gap-2 text-[10px] text-blue-300 bg-blue-900/10 p-1.5 rounded border border-blue-900/20">
-                                  <Bot className="w-3 h-3 text-blue-400" />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="truncate">Jules: {session.title || session.name.split('/').pop()}</div>
-                                    <div className="text-[7px] uppercase font-bold opacity-60">{session.state}</div>
-                                  </div>
-                               </div>
-                             ))}
                           </div>
                         )}
                      </div>
@@ -361,51 +429,56 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
              </div>
           </div>
 
-          {/* ANALYSIS VIEW */}
+          {/* AUDIT OUTPUT */}
           <div className="lg:col-span-2 space-y-6">
              {isAnalyzingRuns && (
                <div className="bg-surface border border-slate-700 rounded-2xl p-20 flex flex-col items-center justify-center text-slate-500">
                   <Loader2 className="w-12 h-12 animate-spin text-cyan-500 mb-4" />
-                  <p className="font-medium text-slate-300">Performing Deep Job Audits...</p>
-                  <p className="text-xs mt-2 opacity-60">Analyzing each of the {runs.length} recent environment/branch runs individually.</p>
+                  <p className="font-medium text-slate-300">Auditing Workflow Context...</p>
+                  <p className="text-xs mt-2 opacity-60">Analyzing {currentVisibleRuns.length} unique workflow files individually.</p>
                </div>
              )}
 
-             {Object.keys(runResults).length === 0 && !isAnalyzingRuns && (
+             {aggregatedFindings.syntax.length === 0 && aggregatedFindings.flakes.length === 0 && aggregatedFindings.runtime.length === 0 && !isAnalyzingRuns && (
                <div className="bg-surface border border-slate-700 border-dashed rounded-2xl p-20 flex flex-col items-center justify-center text-slate-500">
                   <Search className="w-16 h-16 mb-4 opacity-10" />
-                  <h3 className="text-lg font-bold text-slate-400">CI Health Analyzer Ready</h3>
-                  <p className="text-sm max-w-xs text-center mt-2">Deploy individual deep analyses for your {runs.length} most recent unique environment runs.</p>
+                  <h3 className="text-lg font-bold text-slate-400">CI Auditor Ready</h3>
+                  <p className="text-sm max-w-xs text-center mt-2">Deploy AI to analyze the {currentVisibleRuns.length} targeted workflow files for {activeTab === 'failures' ? 'operational errors' : 'hidden flakiness'}.</p>
                </div>
              )}
 
              {Object.keys(runResults).length > 0 && !isAnalyzingRuns && (
                <div className="animate-in fade-in slide-in-from-bottom-4 space-y-6">
-                  {/* Specific Findings Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                      <div className="bg-red-900/10 border border-red-500/20 rounded-xl p-6">
                         <div className="flex items-center gap-3 mb-6">
                            <div className="p-2 bg-red-500/10 rounded-lg">
                               <FileWarning className="w-5 h-5 text-red-400" />
                            </div>
-                           <h4 className="text-white font-bold text-lg">Syntax Failures</h4>
+                           <h4 className="text-white font-bold text-lg">Structural Issues</h4>
                         </div>
                         <div className="space-y-4">
                            {aggregatedFindings.syntax.length === 0 ? (
-                             <p className="text-sm text-slate-500 italic">No YML syntax failures detected across selected runs.</p>
+                             <p className="text-sm text-slate-500 italic">No YML or configuration failures detected.</p>
                            ) : aggregatedFindings.syntax.map((f, i) => {
                              const fid = `syntax-${i}`;
-                             const allCorrelated = Array.from(new Set((Object.values(blameMap) as RunBlameData[]).flatMap(b => b.julesSessions)));
                              return (
                              <div key={fid} className="bg-slate-950/50 border border-red-500/20 rounded-lg p-4 group">
                                 <div className="flex justify-between items-start mb-2">
                                   <p className="text-xs font-bold text-red-200">{f.workflowName}</p>
-                                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <JulesReportMenu fid={fid} description={`SYNTAX FAILURE: ${f.workflowName}. Reason: ${f.reason}`} sessions={allCorrelated} />
+                                  <div className="flex gap-2">
                                     <Button 
                                       variant="ghost" 
                                       size="sm" 
-                                      className="h-6 px-2 text-[8px] border border-red-500/30 text-red-400 hover:bg-red-500/10"
+                                      className="h-7 w-8 p-0 border border-purple-500/20 text-purple-400 hover:bg-purple-500/10"
+                                      onClick={() => openWorkerSelector(fid, `SYNTAX FAILURE: ${f.workflowName}. Reason: ${f.reason}`, [])}
+                                    >
+                                      <Bot className="w-4 h-4" />
+                                    </Button>
+                                    <Button 
+                                      variant="ghost" 
+                                      size="sm" 
+                                      className="h-7 px-2 text-[8px] border border-red-500/30 text-red-400 hover:bg-red-500/10"
                                       onClick={() => handleDispatchIssue(fid, f.suggestedTitle, f.suggestedBody, 'syntax')}
                                       isLoading={dispatchStatus[fid] === 'loading'}
                                       disabled={dispatchStatus[fid] === 'success'}
@@ -425,27 +498,33 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                            <div className="p-2 bg-amber-500/10 rounded-lg">
                               <Bug className="w-5 h-5 text-amber-400" />
                            </div>
-                           <h4 className="text-white font-bold text-lg">False Positives</h4>
+                           <h4 className="text-white font-bold text-lg">{activeTab === 'failures' ? 'False Positives' : 'Silent Flakes'}</h4>
                         </div>
                         <div className="space-y-4">
                            {aggregatedFindings.flakes.length === 0 ? (
-                             <p className="text-sm text-slate-500 italic">No flaky patterns identified in recent jobs.</p>
+                             <p className="text-sm text-slate-500 italic">No flaky patterns identified in targeted workflows.</p>
                            ) : aggregatedFindings.flakes.map((fp, i) => {
                              const fpid = `flake-${i}`;
-                             const allCorrelated = Array.from(new Set((Object.values(blameMap) as RunBlameData[]).flatMap(b => b.julesSessions)));
                              return (
                              <div key={fpid} className="bg-slate-950/50 border border-amber-500/20 rounded-lg p-4 group">
                                 <div className="flex justify-between items-start mb-2">
                                    <div className="flex flex-col">
                                       <p className="text-xs font-bold text-amber-200">{fp.jobName}</p>
-                                      <Badge variant="yellow" className="text-[8px] w-fit mt-1">Flake Index: {fp.flakinessScore}/10</Badge>
+                                      <Badge variant="yellow" className="text-[8px] w-fit mt-1">Severity: {fp.flakinessScore}/10</Badge>
                                    </div>
-                                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                     <JulesReportMenu fid={fpid} description={`FLAKY PATTERN: ${fp.jobName}. Observation: ${fp.reason}`} sessions={allCorrelated} />
+                                   <div className="flex gap-2">
                                      <Button 
                                       variant="ghost" 
                                       size="sm" 
-                                      className="h-6 px-2 text-[8px] border border-red-500/30 text-red-400 hover:bg-red-500/10"
+                                      className="h-7 w-8 p-0 border border-purple-500/20 text-purple-400 hover:bg-purple-500/10"
+                                      onClick={() => openWorkerSelector(fpid, `FLAKY PATTERN: ${fp.jobName}. Observation: ${fp.reason}`, [])}
+                                     >
+                                      <Bot className="w-4 h-4" />
+                                     </Button>
+                                     <Button 
+                                      variant="ghost" 
+                                      size="sm" 
+                                      className="h-7 px-2 text-[8px] border border-red-500/30 text-red-400 hover:bg-red-500/10"
                                       onClick={() => handleDispatchIssue(fpid, fp.suggestedTitle, fp.suggestedBody, 'flake')}
                                       isLoading={dispatchStatus[fpid] === 'loading'}
                                       disabled={dispatchStatus[fpid] === 'success'}
@@ -461,92 +540,49 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                      </div>
                   </div>
 
-                  {/* Runtime Errors List */}
-                  <div className="bg-slate-900/50 border border-slate-700 rounded-2xl">
-                     <div className="p-4 border-b border-slate-700 bg-slate-800/30 flex items-center gap-3 rounded-t-2xl">
+                  {/* Operational Errors List */}
+                  <div className="bg-slate-900/50 border border-slate-700 rounded-2xl overflow-hidden">
+                     <div className="p-4 border-b border-slate-700 bg-slate-800/30 flex items-center gap-3">
                         <ShieldAlert className="w-5 h-5 text-purple-400" />
-                        <h4 className="text-white font-bold uppercase tracking-widest text-xs">Runtime Job Errors</h4>
+                        <h4 className="text-white font-bold uppercase tracking-widest text-xs">Runtime Job Audit</h4>
                      </div>
                      <div className="divide-y divide-slate-800">
                         {aggregatedFindings.runtime.length === 0 ? (
-                           <div className="p-12 text-center text-slate-600 italic text-sm">No specific runtime job errors found across selected unique pairs.</div>
+                           <div className="p-12 text-center text-slate-600 italic text-sm">No specific runtime anomalies detected.</div>
                         ) : aggregatedFindings.runtime.map((err, i) => {
                            const reid = `runtime-${i}`;
-                           const runBlame = blameMap[err.runId];
-                           // Correlated sessions for this specific run, or falls back to all sessions if user needs broader choice
-                           const linkedSessions = runBlame?.julesSessions || [];
-                           const otherSessions = allSessions.filter(as => !linkedSessions.some(ls => ls.name === as.name));
+                           const linkedSessions = blameMap[err.runId]?.julesSessions || [];
 
                            return (
-                           <div key={reid} className="p-6 flex gap-6 hover:bg-slate-800/20 transition-colors group">
+                           <div key={reid} className="p-6 flex gap-6 hover:bg-slate-800/20 transition-colors">
                               <div className="pt-1 flex flex-col items-center gap-3">
                                  <Badge variant={err.confidence === 'high' ? 'red' : 'yellow'}>{err.confidence}</Badge>
                                  <Button 
                                     variant="primary" 
                                     size="sm" 
                                     className="h-8 w-8 p-0"
-                                    title="Dispatch Issue to GitHub"
                                     onClick={() => handleDispatchIssue(reid, err.suggestedTitle, err.suggestedBody, 'runtime')}
                                     isLoading={dispatchStatus[reid] === 'loading'}
                                     disabled={dispatchStatus[reid] === 'success'}
                                   >
                                     {dispatchStatus[reid] === 'success' ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                                   </Button>
-
-                                  <div className="relative group/worker">
-                                    <Button 
-                                      variant="ghost" 
-                                      size="sm" 
-                                      className={clsx("h-8 w-8 p-0 border border-purple-500/30 text-purple-400 hover:bg-purple-500/10")}
-                                      title="Report to AI session"
-                                    >
-                                      <Bot className="w-4 h-4" />
-                                    </Button>
-                                    <div className="absolute left-full top-0 ml-3 w-80 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[110] hidden group-hover/worker:block">
-                                       <div className="p-3 border-b border-slate-700 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-800/50">Select remediation worker</div>
-                                       <div className="max-h-72 overflow-y-auto custom-scrollbar">
-                                         {/* Prioritize linked sessions by blame, then show other active/stale ones */}
-                                         {[...linkedSessions, ...otherSessions.slice(0, 10)].map(session => {
-                                            const reportKey = `${reid}-${session.name}`;
-                                            const isDone = julesReportStatus[reportKey] === 'success';
-                                            const isLoading = julesReportStatus[reportKey] === 'loading';
-                                            const isLinked = linkedSessions.some(ls => ls.name === session.name);
-                                            return (
-                                              <button 
-                                                key={session.name}
-                                                disabled={isDone || isLoading}
-                                                onClick={() => handleReportToJules(reid, session.name, `Job "${err.jobName}" failed in Run #${err.runId}. AI Fingerprint: ${err.errorSnippet}`)}
-                                                className={clsx(
-                                                  "w-full text-left px-4 py-3 text-xs border-b border-slate-800 last:border-0 transition-colors flex items-center justify-between",
-                                                  isDone ? "bg-green-500/5 cursor-default" : "text-slate-300 hover:bg-slate-800"
-                                                )}
-                                              >
-                                                <div className="flex flex-col min-w-0 pr-2">
-                                                  <span className={clsx("truncate font-medium", isDone ? "text-green-400" : "text-slate-100")}>
-                                                    {session.title || session.name.split('/').pop()}
-                                                  </span>
-                                                  <div className="flex items-center gap-1.5 mt-0.5">
-                                                    {isLinked && <span className="text-[8px] text-blue-400 font-bold uppercase tracking-tighter">Linked Branch</span>}
-                                                    <span className="text-[8px] text-slate-500 uppercase font-bold tracking-tighter">{session.state}</span>
-                                                  </div>
-                                                </div>
-                                                {isDone ? <Check className="w-4 h-4 text-green-500 shrink-0" /> : (
-                                                  isLoading ? <Loader2 className="w-4 h-4 animate-spin text-purple-400 shrink-0" /> : <MessageSquareShare className="w-4 h-4 text-slate-600 shrink-0" />
-                                                )}
-                                              </button>
-                                            );
-                                         })}
-                                       </div>
-                                    </div>
-                                  </div>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="h-8 w-8 p-0 border border-purple-500/20 text-purple-400 hover:bg-purple-500/10"
+                                    onClick={() => openWorkerSelector(reid, `CI FINDING: Job "${err.jobName}" at Run #${err.runId}. AI Diagnostic: ${err.errorSnippet}`, linkedSessions)}
+                                  >
+                                    <Bot className="w-4 h-4" />
+                                  </Button>
                               </div>
                               <div className="flex-1 min-w-0">
-                                 <h5 className="text-slate-200 font-bold text-sm mb-1">{err.jobName} (Run #{err.runId})</h5>
+                                 <h5 className="text-slate-200 font-bold text-sm mb-1">{err.jobName} (Run ID: {err.runId})</h5>
                                  <div className="bg-slate-950 rounded-lg p-4 mt-3 border border-slate-800">
                                     <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-slate-500 uppercase tracking-tighter">
-                                       <Terminal className="w-3 h-3" /> Error Fingerprint
+                                       <Terminal className="w-3 h-3" /> Technical Fingerprint
                                     </div>
-                                    <pre className="text-[11px] font-mono text-red-300/80 whitespace-pre-wrap overflow-x-auto">{err.errorSnippet}</pre>
+                                    <pre className="text-[11px] font-mono text-slate-300 whitespace-pre-wrap overflow-x-auto">{err.errorSnippet}</pre>
                                  </div>
                               </div>
                            </div>
@@ -563,18 +599,17 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
              <div className="bg-surface border border-slate-700 rounded-2xl p-20 flex flex-col items-center justify-center text-slate-500">
                 <Loader2 className="w-12 h-12 animate-spin text-purple-500 mb-4" />
                 <p className="font-medium text-slate-300">Auditing Pipeline Qualitative Gaps...</p>
-                <p className="text-xs mt-2 opacity-60">Analyzing workflow definitions vs repo structure across {runs.length} unique recent runs.</p>
+                <p className="text-xs mt-2 opacity-60">Comparing workflow definitions against repository structure.</p>
              </div>
            ) : !currentQualitativeResult ? (
              <div className="bg-surface border border-slate-700 border-dashed rounded-2xl p-20 flex flex-col items-center justify-center text-slate-500">
                 <Gauge className="w-16 h-16 mb-4 opacity-10" />
                 <h3 className="text-lg font-bold text-slate-400">Qualitative Auditor Ready</h3>
-                <p className="text-sm max-w-xs text-center mt-2">Deploy AI to analyze testing efficacy, missing coverage, and redundant triggers.</p>
+                <p className="text-sm max-w-xs text-center mt-2">Evaluate testing efficacy, missing coverage, and redundant triggers across the entire repo.</p>
                 <Button variant="primary" size="lg" className="mt-8 bg-purple-600 hover:bg-purple-500" onClick={handleRunQualitativeAnalysis}>Start Qualitative Audit</Button>
              </div>
            ) : (
              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* Scoring Sidebar */}
                 <div className="lg:col-span-1 space-y-6">
                    <div className="bg-surface border border-slate-700 rounded-2xl p-8 shadow-xl">
                       <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6">Auditor Scorecard</h4>
@@ -598,32 +633,13 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                          <p className="text-xs text-slate-400 leading-relaxed italic">"{currentQualitativeResult.summary}"</p>
                       </div>
                    </div>
-
-                   {allSessions.length > 0 && (
-                     <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
-                        <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Correlated Workers</h4>
-                        <div className="space-y-2">
-                           {allSessions.filter(s => s.state !== 'CANCELLED' && s.state !== 'TERMINATED').slice(0, 8).map(s => (
-                             <div key={s.name} className="flex items-center justify-between p-2 bg-slate-950/40 rounded border border-slate-800">
-                                <div className="flex flex-col min-w-0">
-                                  <span className="text-[10px] font-mono text-blue-400 truncate max-w-[150px]">{s.title || s.name.split('/').pop()}</span>
-                                  <span className="text-[7px] text-slate-600 uppercase font-bold">{s.sourceContext?.githubRepoContext?.startingBranch || 'main'}</span>
-                                </div>
-                                <Badge variant="blue" className="text-[8px]">{s.state}</Badge>
-                             </div>
-                           ))}
-                        </div>
-                        <p className="mt-4 text-[10px] text-slate-500 italic">Audit findings can be sent directly to these workers for remediation.</p>
-                     </div>
-                   )}
                 </div>
 
-                {/* Findings List */}
                 <div className="lg:col-span-2 space-y-4">
                    {currentQualitativeResult.findings.map((f, i) => {
                      const fid = `qual-${i}`;
                      return (
-                     <div key={fid} className="bg-surface border border-slate-700 rounded-xl hover:border-slate-600 transition-all p-6 flex gap-6 group">
+                     <div key={fid} className="bg-surface border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-all p-6 flex gap-6 group">
                         <div className="shrink-0 pt-1">
                            {f.type === 'efficacy' && <FileCheck className="w-6 h-6 text-green-400" />}
                            {f.type === 'coverage' && <Layers className="w-6 h-6 text-red-400" />}
@@ -636,12 +652,19 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                                  <h4 className="text-white font-bold">{f.title}</h4>
                                  <Badge variant={f.severity === 'critical' ? 'red' : f.severity === 'moderate' ? 'yellow' : 'slate'} className="text-[8px]">{f.severity}</Badge>
                               </div>
-                              <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                 <JulesReportMenu fid={fid} description={`TECHNICAL AUDIT FINDING: ${f.title}. Description: ${f.description}. Recommendation: ${f.recommendation}`} sessions={allSessions.filter(s => s.state !== 'CANCELLED' && s.state !== 'TERMINATED').slice(0, 10)} />
+                              <div className="flex gap-2">
                                  <Button 
                                   variant="ghost" 
                                   size="sm" 
-                                  className="h-8 w-8 p-0"
+                                  className="h-7 w-8 p-0 border border-purple-500/20 text-purple-400 hover:bg-purple-500/10"
+                                  onClick={() => openWorkerSelector(fid, `QUALITATIVE AUDIT: ${f.title}. Recommendation: ${f.recommendation}`, [])}
+                                 >
+                                  <Bot className="w-4 h-4" />
+                                 </Button>
+                                 <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  className="h-7 w-8 p-0"
                                   onClick={() => handleDispatchIssue(fid, f.suggestedTitle, f.suggestedBody, 'qualitative')}
                                   isLoading={dispatchStatus[fid] === 'loading'}
                                   disabled={dispatchStatus[fid] === 'success'}
