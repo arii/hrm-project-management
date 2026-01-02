@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+python/gemini_service/__pycache__/
+python/tests/__pycache__/
+*.pyc
