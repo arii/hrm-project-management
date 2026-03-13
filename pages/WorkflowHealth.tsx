@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, X, CheckSquare, Play, Link2, User, Cpu, Code2, AlertOctagon } from 'lucide-react';
-import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchWorkflowRun, fetchPrsForCommit, createIssue, fetchWorkflowsContent, fetchCoreRepoContext, fetchJobAnnotations } from '../services/githubService';
+import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchWorkflowRun, createIssue, fetchWorkflowsContent, fetchCoreRepoContext, fetchJobAnnotations } from '../services/githubService';
 import { analyzeWorkflowHealth, analyzeWorkflowQualitative } from '../services/geminiService';
 import { listSessions, sendMessage } from '../services/julesService';
 import { GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, AnalysisStatus, GithubPullRequest, JulesSession, WorkflowQualitativeResult, GithubAnnotation } from '../types';
@@ -122,10 +122,8 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
       const allActiveRuns = [...failingList, ...successList];
 
       for (const run of allActiveRuns) {
-        const [jobs, associatedPrs] = await Promise.all([
-          fetchWorkflowRunJobs(repoName, run.id, token).catch(() => []),
-          fetchPrsForCommit(repoName, run.head_sha, token).catch(() => [])
-        ]);
+        const jobs = await fetchWorkflowRunJobs(repoName, run.id, token).catch(() => []);
+        const associatedPrs: GithubPullRequest[] = []; // PR correlation disabled for performance
         
         newJobsMap[run.id] = jobs;
 

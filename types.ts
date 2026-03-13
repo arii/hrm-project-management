@@ -72,15 +72,6 @@ export interface EnrichedPullRequest extends GithubPullRequest {
   isApproved: boolean;
 }
 
-export interface GithubBranch {
-  name: string;
-  commit: {
-    sha: string;
-    url: string;
-  };
-  protected: boolean;
-}
-
 export interface RepoStats {
   openIssuesCount: number;
   openPRsCount: number;
@@ -190,9 +181,6 @@ export interface WorkflowQualitativeResult {
   }>;
 }
 
-// Audit Types
-export type AuditAgentType = 'full-stack' | 'testing' | 'performance' | 'frontend' | 'cicd' | 'security';
-
 export interface ProposedIssue {
   title: string;
   body: string;
@@ -200,94 +188,6 @@ export interface ProposedIssue {
   priority: 'High' | 'Medium' | 'Low';
   effort: 'Small' | 'Medium' | 'Large';
   labels: string[];
-}
-
-export interface TechnicalAuditResult {
-  agentType: AuditAgentType;
-  report: string;
-  timestamp: number;
-  criticalFindings: string[];
-  suggestedIssues: ProposedIssue[];
-  score: number; // 1-100
-}
-
-export interface BacklogTransformation {
-  type: 'CONSOLIDATE' | 'REPLACE' | 'TRIAGE_ONLY' | 'PRUNE';
-  targetIssueNumbers: number[];
-  proposedIssue?: {
-    title: string;
-    body: string;
-    labels: string[];
-    priority: 'High' | 'Medium' | 'Low';
-    effort: 'Small' | 'Medium' | 'Large';
-  };
-  reason: string;
-  impact: string;
-}
-
-export interface BacklogMaintenanceResult {
-  summary: string;
-  transformations: BacklogTransformation[];
-  healthScore: number;
-}
-
-export interface RedundancyAnalysisResult {
-  summary: string;
-  redundantIssues: {
-    issueNumber: number;
-    reason: string;
-  }[];
-  consolidatedIssues: {
-    title: string;
-    body: string;
-    labels: string[];
-    reason: string;
-    replacesIssueNumbers: number[];
-  }[];
-}
-
-export interface TriageAction {
-  issueNumber: number;
-  title: string;
-  suggestedLabels: string[];
-  reason: string;
-  priority: 'High' | 'Medium' | 'Low';
-  effort: 'Small' | 'Medium' | 'Large';
-  category: string;
-}
-
-export interface TriageAnalysisResult {
-  report: string;
-  actions: TriageAction[];
-}
-
-export interface IssueImprovementRecommendation {
-  issueNumber: number;
-  title: string;
-  suggestedTitle: string;
-  suggestedBody: string;
-  reason: string;
-}
-
-export interface IssueStalenessRecommendation {
-  issueNumber: number;
-  title: string;
-  reason: string;
-}
-
-export interface QualityAnalysisResult {
-  summary: string;
-  improvements: IssueImprovementRecommendation[];
-  closures: IssueStalenessRecommendation[];
-}
-
-export interface ArchitectAnalysisResult {
-  issues: ProposedIssue[];
-  suggestedPivot?: {
-    mode: string;
-    guidance: string;
-    reason: string;
-  };
 }
 
 export interface PrActionRecommendation {
@@ -308,79 +208,6 @@ export interface LinkSuggestion {
   issueState?: string;
 }
 
-export interface JulesAgentAction {
-  sessionName: string;
-  action: 'delete' | 'recover' | 'publish' | 'message' | 'start_over';
-  reason: string;
-  suggestedCommand?: string;
-  hasPr: boolean;
-  prStatus?: string;
-}
-
-export interface CleanupRecommendation {
-  issueNumber: number;
-  action: 'close' | 'comment';
-  reason: string;
-  prReference?: number;
-  sessionReference?: string;
-  commentBody?: string;
-  confidence: 'high' | 'medium' | 'low';
-}
-
-export interface CleanupAnalysisResult {
-  report: string;
-  actions: CleanupRecommendation[];
-}
-
-export interface BranchCleanupRecommendation {
-  branchName: string;
-  reason: string;
-  type: 'merged' | 'stale' | 'abandoned';
-  confidence: 'high' | 'medium' | 'low';
-}
-
-export interface BranchCleanupResult {
-  report: string;
-  candidates: BranchCleanupRecommendation[];
-}
-
-export interface JulesCleanupRecommendation {
-  sessionName: string;
-  sessionTitle?: string;
-  reason: string;
-  status: 'merged' | 'closed' | 'stale' | 'failed' | 'redundant';
-  publishedPrs: Array<{
-    number: number;
-    url: string;
-    state: string;
-    merged: boolean;
-  }>;
-  relatedIssueNumber?: number;
-}
-
-export interface PrCleanupRecommendation {
-  prNumber: number;
-  title: string;
-  reason: string;
-  action: 'close' | 'comment';
-  evidenceLinks: Array<{
-    type: 'issue' | 'pr';
-    number: number;
-    url: string;
-    state: string;
-  }>;
-}
-
-export interface JulesCleanupResult {
-  report: string;
-  candidates: JulesCleanupRecommendation[];
-}
-
-export interface PrCleanupResult {
-  report: string;
-  candidates: PrCleanupRecommendation[];
-}
-
 export interface PrHealthAction {
   prNumber: number;
   title: string;
@@ -394,15 +221,6 @@ export interface PrHealthAction {
 export interface PrHealthAnalysisResult {
   report: string;
   actions: PrHealthAction[];
-}
-
-export interface MergeProposal {
-  groupName: string;
-  prNumbers: number[];
-  branches: string[];
-  reason: string;
-  risk: 'Low' | 'Medium' | 'High';
-  targetBranch: string;
 }
 
 export interface CodeReviewResult {

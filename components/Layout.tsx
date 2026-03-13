@@ -1,10 +1,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, AlertCircle, GitPullRequest, GitMerge, CheckCircle, Upload, Bot, TerminalSquare, Eye, Sparkles, Menu, X, Activity } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
-import { trackPageVisit } from '../services/telemetryService';
 
 interface LayoutProps {
   repoName: string;
@@ -24,20 +23,14 @@ const Layout: React.FC<LayoutProps> = ({
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    trackPageVisit(location.pathname);
     setIsMobileMenuOpen(false); // Close menu on navigation
   }, [location.pathname]);
 
   const navItems = [
     { path: '/', label: 'Overview', icon: LayoutDashboard },
-    { path: '/audit', label: 'Technical Audit', icon: Sparkles },
-    { path: '/workflow-health', label: 'Workflow Pulse', icon: Activity },
-    { path: '/sessions', label: 'Jules Sessions', icon: TerminalSquare },
-    { path: '/issues', label: 'Issue Analysis', icon: AlertCircle },
     { path: '/pull-requests', label: 'Pull Requests', icon: GitPullRequest },
     { path: '/code-review', label: 'Code Review', icon: Eye },
-    { path: '/agent', label: 'AI Agent', icon: Bot },
-    { path: '/cleanup', label: 'Cleanup Report', icon: CheckCircle },
+    { path: '/workflow-health', label: 'Workflow Pulse', icon: Activity },
     { path: '/batch-create', label: 'Batch Creator', icon: Upload },
   ];
 

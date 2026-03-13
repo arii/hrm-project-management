@@ -1,5 +1,5 @@
 
-import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch, GithubWorkflowRun, GithubWorkflowJob, GithubAnnotation } from '../types';
+import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubWorkflowRun, GithubWorkflowJob, GithubAnnotation } from '../types';
 import { storage, StorageKeys } from './storageService';
 
 const BASE_URL = 'https://api.github.com';
@@ -122,10 +122,6 @@ export const fetchPrDiff = async (repo: string, number: number, token: string): 
   }, true);
 };
 
-export const fetchPrsForCommit = async (repo: string, commitSha: string, token: string): Promise<GithubPullRequest[]> => {
-  return request<GithubPullRequest[]>(`/repos/${repo}/commits/${commitSha}/pulls`, token);
-};
-
 export const fetchCheckRuns = async (repo: string, ref: string, token: string) => {
   try {
     const data = await request<any>(`/repos/${repo}/commits/${ref}/check-runs`, token);
@@ -155,10 +151,6 @@ export const fetchCombinedStatus = async (repo: string, ref: string, token: stri
   } catch (e) {
     return { state: 'unknown', statuses: [] };
   }
-};
-
-export const fetchBranches = async (repo: string, token: string): Promise<GithubBranch[]> => {
-  return request<GithubBranch[]>(`/repos/${repo}/branches?per_page=100`, token);
 };
 
 export const fetchWorkflowRuns = async (repo: string, token: string, skipCache = false, page = 1): Promise<GithubWorkflowRun[]> => {
@@ -198,11 +190,6 @@ export const fetchWorkflowsContent = async (repo: string, token: string): Promis
   } catch (e) {
     return [];
   }
-};
-
-export const deleteBranch = async (repo: string, token: string, branchName: string) => {
-  const refPath = branchName.split('/').map(encodeURIComponent).join('/');
-  return request(`/repos/${repo}/git/refs/heads/${refPath}`, token, { method: 'DELETE' });
 };
 
 export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
@@ -281,7 +268,7 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
   const reviewStates = Object.values(latestReviewsByUser);
   const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
 
-  return {
+  const enrichedPr = {
     ...details,
     testStatus,
     checkResults: allChecks,
@@ -338,24 +325,6 @@ export const fetchCoreRepoContext = async (repo: string, token: string) => {
   };
 };
 
-export const fetchRepoTemplates = async (repo: string, token: string) => {
-  const paths = [
-    '.github/ISSUE_TEMPLATE/bug_report.md',
-    '.github/ISSUE_TEMPLATE/feature_request.md',
-    '.github/CONTRIBUTING.md',
-    'CONTRIBUTING.md',
-    'AUDIT.md',
-    'HACKING.md',
-    'DEVELOPMENT.md'
-  ];
-  
-  const contents = await Promise.all(paths.map(path => fetchRepoContent(repo, path, token)));
-  return paths.reduce((acc, path, i) => {
-    if (contents[i]) acc[path] = contents[i].substring(0, 1000);
-    return acc;
-  }, {} as Record<string, string>);
-};
-
 export const fetchRepoContent = async (repo: string, path: string, token: string): Promise<any> => {
   try {
     const data = await request<any>(`/repos/${repo}/contents/${path}`, token);
@@ -364,13 +333,4 @@ export const fetchRepoContent = async (repo: string, path: string, token: string
     }
     return data;
   } catch (e) { return null; }
-};
-
-export const prefetchRepositoryData = async (repo: string, token: string) => {
-  const [issues, prs, closedPrs] = await Promise.all([
-    fetchIssues(repo, token, 'open'),
-    fetchPullRequests(repo, token, 'open'),
-    fetchPullRequests(repo, token, 'closed'),
-  ]);
-  return { issues, prs, closedPrs };
 };
