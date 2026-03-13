@@ -277,7 +277,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                           <div className="flex items-center gap-2">
                             {dispatchStatuses[action._id] === 'success' && sessionLinks[action._id] && (
                                <button 
-                                 onClick={() => navigate('/sessions', { state: { viewSessionName: sessionLinks[action._id] } })}
+                                 onClick={() => {
+                                   const sessionUrl = `https://jules.ai/sessions/${sessionLinks[action._id].split('/').pop()}`;
+                                   window.open(sessionUrl, '_blank', 'noopener,noreferrer');
+                                 }}
                                  className="text-[9px] font-bold text-blue-400 hover:underline flex items-center gap-1 uppercase"
                                >
                                  View Session
@@ -346,7 +349,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                               onClick={() => {
                                 const sessionKey = repairSuccess ? `repair-${pr.number}` : `restart-${pr.number}`;
                                 const sessionName = sessionLinks[sessionKey];
-                                if (sessionName) navigate('/sessions', { state: { viewSessionName: sessionName } });
+                                if (sessionName) {
+                                  const sessionUrl = `https://jules.ai/sessions/${sessionName.split('/').pop()}`;
+                                  window.open(sessionUrl, '_blank', 'noopener,noreferrer');
+                                }
                               }}
                               className="text-[10px] font-bold text-blue-400 hover:underline uppercase flex items-center gap-1"
                             >

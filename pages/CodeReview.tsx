@@ -231,7 +231,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       const session = await createSession(julesApiKey, `Audit Fix Task:\n\nTitle: ${issue.title}\nDetails:\n${issue.body}`, sourceId, selectedPr.base.ref, `Audit Fix: ${issue.title.substring(0, 30)}`);
       setAiSuggestions(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
       setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
-      navigate('/sessions', { state: { viewSessionName: session.name } });
+      
+      // Open Jules session in a new tab instead of internal navigation
+      const sessionUrl = `https://jules.ai/sessions/${session.name.split('/').pop()}`;
+      window.open(sessionUrl, '_blank', 'noopener,noreferrer');
     } catch (e: any) { 
       setActionError(`Dispatch failed: ${e.message}`); 
     } finally { 
@@ -292,31 +295,39 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
             {prs.map(pr => {
               const enriched = enrichedMap[pr.number];
               return (
-              <div key={pr.id} onClick={() => handleSelectPr(pr)} className={clsx("p-3 rounded-lg border cursor-pointer transition-all flex flex-col group", selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700")}>
-                <div className="flex justify-between items-start">
-                  <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
-                  <div className="shrink-0 flex items-center gap-1.5">
-                    {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
-                    {statuses[pr.number] === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
+                <button 
+                  key={pr.id} 
+                  onClick={() => handleSelectPr(pr)} 
+                  className={clsx(
+                    "w-full text-left p-3 rounded-lg border transition-all flex flex-col group", 
+                    selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
+                  )}
+                >
+                  <div className="flex justify-between items-start w-full">
+                    <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
+                    <div className="shrink-0 flex items-center gap-1.5">
+                      {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
+                      {statuses[pr.number] === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-500 font-mono">
-                   #{pr.number}
-                   {enriched ? (
-                     <>
+                  <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-500 font-mono">
+                    #{pr.number}
+                    {enriched ? (
+                      <>
                         <span className="h-1 w-1 bg-slate-800 rounded-full" />
                         <span className={clsx(
                           enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
                           enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
                           enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
                         )}>{enriched.testStatus}</span>
-                     </>
-                   ) : (
-                     <span className="text-[9px] opacity-40">Loading...</span>
-                   )}
-                </div>
-              </div>
-            )})}
+                      </>
+                    ) : (
+                      <span className="text-[9px] opacity-40">Loading...</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
 

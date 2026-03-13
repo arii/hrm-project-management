@@ -31,20 +31,26 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
   const [parsedIssues, setParsedIssues] = useState<ParsedIssueUI[]>([]);
   const [isParsing, setIsParsing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAiParse = async () => {
     if (!textInput.trim()) return;
     setIsParsing(true);
+    setParseError(null);
     try {
       const issues = await parseIssuesFromText(textInput);
       setParsedIssues(issues.map(i => ({ ...i, id: Math.random().toString(36).substr(2, 9), selected: true, status: 'idle' })));
-    } catch (e: any) { alert(`AI parsing failed: ${e.message}`); } finally { setIsParsing(false); }
+    } catch (e: any) { 
+      setParseError(e.message || 'AI parsing failed');
+    } finally { 
+      setIsParsing(false); 
+    }
   };
 
   const executeBatch = async () => {
-    if (!token) return alert("Configure token in settings.");
+    if (!token) return;
     const issuesToCreate = parsedIssues.filter(i => i.selected && i.status !== 'success');
     if (issuesToCreate.length === 0) return;
 
@@ -83,6 +89,12 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
           </div>
 
           <div className="bg-surface border border-slate-700 rounded-xl p-6 shadow-xl">
+             {parseError && (
+               <div className="mb-4 p-3 bg-red-900/20 border border-red-800/50 text-red-300 rounded-lg flex items-center gap-3 text-sm animate-in fade-in">
+                 <AlertCircle className="w-4 h-4 shrink-0" />
+                 <span>{parseError}</span>
+               </div>
+             )}
              <textarea 
                value={textInput} onChange={(e) => setTextInput(e.target.value)}
                placeholder={`Paste raw notes here...`}

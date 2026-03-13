@@ -25,9 +25,12 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState(false);
 
   const handleSave = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    setErrorMessage(null);
     setSaveStatus('saving');
 
     const cleanRepo = localRepo.trim();
@@ -35,7 +38,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     const cleanJulesKey = localJulesKey.trim();
 
     if (!cleanRepo) {
-      alert("Repository Name cannot be empty.");
+      setErrorMessage("Repository Name cannot be empty.");
       setSaveStatus('idle');
       return;
     }
@@ -72,6 +75,9 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setErrorMessage(null);
+    setImportSuccess(false);
+
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
@@ -80,10 +86,11 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
           setLocalRepo(settings.repoName);
           setLocalToken(settings.githubToken || '');
           setLocalJulesKey(settings.julesApiKey || '');
-          alert("Settings loaded. Don't forget to Save.");
+          setImportSuccess(true);
+          setTimeout(() => setImportSuccess(false), 3000);
         }
       } catch (err) {
-        alert("Invalid configuration file.");
+        setErrorMessage("Invalid configuration file.");
       }
     };
     reader.readAsText(file);
@@ -103,6 +110,20 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
           <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
             <Settings className="w-5 h-5" /> Configuration
           </h2>
+          
+          {errorMessage && (
+            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 text-red-400 text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
+          {importSuccess && (
+            <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-center gap-2 text-green-400 text-xs">
+              <Check className="w-4 h-4 shrink-0" />
+              <span>Settings loaded. Don't forget to Save.</span>
+            </div>
+          )}
           
           <form onSubmit={handleSave} className="space-y-4">
             <div>

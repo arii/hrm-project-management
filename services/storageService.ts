@@ -22,14 +22,12 @@ export interface AppSettings {
   githubToken: string;
   julesApiKey: string;
   theme?: 'dark' | 'light';
-  autoRunMaintenance?: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   repoName: 'arii/hrm',
   githubToken: (process.env as any).GITHUB_TOKEN || '',
   julesApiKey: '',
-  autoRunMaintenance: true,
 };
 
 interface CacheEntry<T> {
