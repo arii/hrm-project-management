@@ -58,7 +58,9 @@ export const MaintenanceProvider: React.FC<MaintenanceProviderProps> = ({ childr
   }, [repoName]);
 
   const runMaintenance = async (isBackground = false) => {
-    if (!token) return;
+    if (!token) {
+      throw new Error("GitHub token is missing. Please provide a valid GitHub token in the settings.");
+    }
     
     // If background run, check if we already have fresh results (e.g. from another tab or persistent storage reload)
     if (isBackground && results) return;

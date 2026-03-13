@@ -1,6 +1,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { AnalysisStatus } from '../types';
+import { StorageKeys } from '../services/storageService';
 
 export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>, persistenceKey?: string) {
   const [status, setStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
@@ -9,7 +10,8 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
   const [result, setResult] = useState<T | null>(() => {
     if (persistenceKey) {
       try {
-        const cached = localStorage.getItem(`audit_analysis_v2_${persistenceKey}`);
+        const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
+        const cached = localStorage.getItem(fullKey);
         if (cached) {
           return JSON.parse(cached);
         }
@@ -36,8 +38,11 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
       
       if (persistenceKey) {
         try {
-          localStorage.setItem(`audit_analysis_v2_${persistenceKey}`, JSON.stringify(data));
-        } catch (e) {}
+          const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
+          localStorage.setItem(fullKey, JSON.stringify(data));
+        } catch (e) {
+          console.warn('[useGeminiAnalysis] Persistence failed (likely quota). Analysis succeeded but result will not be cached.');
+        }
       }
     } catch (e: any) {
       setError(e.message || 'Analysis failed');
@@ -50,7 +55,8 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
     setResult(null);
     setError(null);
     if (persistenceKey) {
-      localStorage.removeItem(`audit_analysis_v2_${persistenceKey}`);
+      const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
+      localStorage.removeItem(fullKey);
     }
   }, [persistenceKey]);
 

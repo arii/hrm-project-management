@@ -1,23 +1,21 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
-  fetchEnrichedPullRequests, 
+  fetchPullRequests,
   fetchPrDiff, 
   addComment, 
   addLabels, 
   removeLabel, 
   createIssue, 
-  fetchPrDetails, 
+  enrichSinglePr,
   fetchComments, 
-  fetchReviewComments,
-  fetchCheckRuns,
-  fetchPrReviews
+  fetchReviewComments
 } from '../services/githubService';
 import { generateCodeReview, extractIssuesFromComments } from '../services/geminiService';
 import { createSession, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
-import { EnrichedPullRequest, CodeReviewResult, ProposedIssue } from '../types';
+import { EnrichedPullRequest, GithubPullRequest, CodeReviewResult, ProposedIssue } from '../types';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import { Eye, Loader2, RefreshCw, Send, FileSearch, Plus, Check, TerminalSquare, RotateCcw, Bot, AlertTriangle, ExternalLink, FileCode, CheckCircle2, ShieldCheck, XCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
@@ -39,10 +37,13 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
+  const [prs, setPrs] = useState<GithubPullRequest[]>([]);
+  const [enrichedMap, setEnrichedMap] = useState<Record<number, EnrichedPullRequest>>({});
   const [loading, setLoading] = useState(false);
   const [isRefreshingPr, setIsRefreshingPr] = useState(false);
   const [selectedPr, setSelectedPr] = useState<EnrichedPullRequest | null>(null);
+  
+  const currentFetchPrRef = useRef<number | null>(null);
   
   const [reviews, setReviews] = useState<Record<number, CodeReviewResult>>({});
   const [statuses, setStatuses] = useState<Record<number, ReviewStatus>>({});
@@ -59,10 +60,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
   useEffect(() => {
     if (repoName && token) {
-      loadPrs().then((data) => {
+      loadPrList().then((list) => {
         const prNumber = location.state?.selectedPrNumber;
-        if (prNumber && data) {
-           const match = data.find(p => p.number === prNumber);
+        if (prNumber && list) {
+           const match = list.find(p => p.number === prNumber);
            if (match) handleSelectPr(match);
         }
       });
@@ -79,68 +80,67 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     });
   };
 
-  const loadPrs = async () => {
+  const loadPrList = async () => {
     setLoading(true);
     try {
-      const data = await fetchEnrichedPullRequests(repoName, token);
-      setPrs(data);
-      return data;
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+      const list = await fetchPullRequests(repoName, token);
+      setPrs(list);
+      return list;
+    } catch (e) { 
+      console.error(e); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
-  const refreshSelectedPr = async () => {
-    if (!selectedPr) return;
-    setIsRefreshingPr(true);
-    try {
-      const [updated, checkResults, reviewsData] = await Promise.all([
-        fetchPrDetails(repoName, selectedPr.number, token, true),
-        fetchCheckRuns(repoName, selectedPr.head.sha, token),
-        token ? fetchPrReviews(repoName, selectedPr.number, token) : Promise.resolve([])
-      ]);
-
-      const failedCount = checkResults.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out').length;
-      const pendingCount = checkResults.filter(r => r.status !== 'completed').length;
-      let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
-      if (failedCount > 0) testStatus = 'failed';
-      else if (pendingCount > 0) testStatus = 'pending';
-      else if (checkResults.length > 0) testStatus = 'passed';
-
-      const latestReviewsByUser: Record<string, string> = {};
-      reviewsData.forEach((r: any) => {
-        latestReviewsByUser[r.user.login] = r.state;
-      });
-      const reviewStates = Object.values(latestReviewsByUser);
-      const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
-
-      const enriched: EnrichedPullRequest = {
-        ...updated,
-        testStatus,
-        checkResults,
-        isApproved,
-        isBig: (updated.changed_files || 0) > 15,
-        isReadyToMerge: updated.mergeable === true,
-        isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(updated.base.ref.toLowerCase())
-      };
-      setPrs(prev => prev.map(p => p.number === updated.number ? enriched : p));
-      setSelectedPr(enriched);
-    } catch (e) { console.error(e); } finally { setIsRefreshingPr(false); }
-  };
-
-  const handleSelectPr = (pr: EnrichedPullRequest) => {
-    setSelectedPr(pr);
+  const handleSelectPr = async (pr: GithubPullRequest) => {
+    currentFetchPrRef.current = pr.number;
+    
+    // Immediate selection feedback
+    const fastEnriched: EnrichedPullRequest = {
+      ...pr,
+      testStatus: 'pending',
+      isApproved: false,
+      isBig: false,
+      isReadyToMerge: false,
+      isLeaderBranch: false
+    };
+    setSelectedPr(fastEnriched);
+    
+    // Clear temporary UI state
     setLoadingMessage("");
     setExtractedIssues([]);
     setAiSuggestions([]);
     setActionError(null);
-    
-    let review = reviews[pr.number];
-    if (!review) {
-       review = storage.getPrReview(repoName, pr.number);
-       if (review) setReviews(prev => ({ ...prev, [pr.number]: review }));
+
+    // Check storage for existing reviews
+    let review = storage.getPrReview(repoName, pr.number);
+    if (review) {
+      setReviews(prev => ({ ...prev, [pr.number]: review }));
+      if (review.suggestedIssues) {
+        setAiSuggestions(review.suggestedIssues.map((i: any) => ({ ...i, _id: Math.random().toString(36).substr(2, 9) })));
+      }
     }
 
-    if (review?.suggestedIssues) {
-       setAiSuggestions(review.suggestedIssues!.map(i => ({ ...i, _id: Math.random().toString(36).substr(2, 9) })));
+    // Heavy enrichment in background
+    setIsRefreshingPr(true);
+    try {
+      const full = await enrichSinglePr(repoName, pr, token, true);
+      
+      // Prevent race condition: only update if this is still the active PR
+      if (currentFetchPrRef.current === pr.number) {
+        setEnrichedMap(prev => ({ ...prev, [pr.number]: full }));
+        setSelectedPr(full);
+      }
+    } catch (e) {
+      console.error("Enrichment failed", e);
+      if (currentFetchPrRef.current === pr.number) {
+        setActionError("Failed to fetch full technical metadata. Results may be incomplete.");
+      }
+    } finally {
+      if (currentFetchPrRef.current === pr.number) {
+        setIsRefreshingPr(false);
+      }
     }
   };
 
@@ -286,10 +286,12 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         <div className="w-full lg:w-[400px] bg-surface border border-slate-700 rounded-xl flex flex-col overflow-hidden shrink-0">
           <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex items-center justify-between">
              <span className="font-semibold text-white">Active Pull Requests</span>
-             <Button variant="ghost" size="sm" onClick={loadPrs} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
+             <Button variant="ghost" size="sm" onClick={loadPrList} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
           </div>
           <div className="max-h-64 lg:max-h-none overflow-y-auto flex-1 p-2 space-y-2 custom-scrollbar">
-            {prs.map(pr => (
+            {prs.map(pr => {
+              const enriched = enrichedMap[pr.number];
+              return (
               <div key={pr.id} onClick={() => handleSelectPr(pr)} className={clsx("p-3 rounded-lg border cursor-pointer transition-all flex flex-col group", selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700")}>
                 <div className="flex justify-between items-start">
                   <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
@@ -299,11 +301,22 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                   </div>
                 </div>
                 <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-500 font-mono">
-                   #{pr.number} • {pr.changed_files} files
-                   {pr.testStatus === 'failed' && <span className="text-red-400 font-bold ml-auto">Failed</span>}
+                   #{pr.number}
+                   {enriched ? (
+                     <>
+                        <span className="h-1 w-1 bg-slate-800 rounded-full" />
+                        <span className={clsx(
+                          enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
+                          enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
+                          enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
+                        )}>{enriched.testStatus}</span>
+                     </>
+                   ) : (
+                     <span className="text-[9px] opacity-40">Loading...</span>
+                   )}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         </div>
 
@@ -317,7 +330,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                  <div className="min-w-0 flex-1">
                     <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2 truncate">
                        {selectedPr.title} 
-                       <Button variant="ghost" size="sm" onClick={refreshSelectedPr} isLoading={isRefreshingPr} icon={RefreshCw} className="h-6 w-6 p-0" />
+                       <Button variant="ghost" size="sm" onClick={() => handleSelectPr(selectedPr)} isLoading={isRefreshingPr} icon={RefreshCw} className="h-6 w-6 p-0" />
                     </h3>
                     <div className="flex gap-3 text-[10px] text-slate-400 font-mono">
                       <span className="truncate max-w-[100px]">{selectedPr.head.ref}</span>
@@ -334,14 +347,22 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 lg:p-8 bg-[#0B1120] custom-scrollbar space-y-8">
+                {isRefreshingPr && (
+                  <div className="flex items-center gap-3 text-sm text-blue-400 font-mono animate-pulse bg-blue-900/10 p-3 rounded-lg border border-blue-500/20">
+                     <Loader2 className="w-4 h-4 animate-spin" /> Fetching technical metadata (Checks & Statuses)...
+                  </div>
+                )}
+
                 {selectedPr.checkResults && selectedPr.checkResults.length > 0 && (
-                   <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
-                      <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">Checks</h4>
+                   <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4 animate-in fade-in slide-in-from-top-1">
+                      <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">Checks & Statuses</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                          {selectedPr.checkResults.map((check, idx) => (
                            <a key={idx} href={check.url} target="_blank" rel="noopener noreferrer" className="p-2 bg-slate-950/50 border border-slate-800 rounded flex items-center justify-between group hover:border-slate-600 transition-all">
                               <span className="text-[10px] text-slate-300 truncate font-medium">{check.name}</span>
-                              {check.conclusion === 'success' ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : <XCircle className="w-3 h-3 text-red-500" />}
+                              {check.conclusion === 'success' ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : 
+                               (check.conclusion === 'failure' || check.conclusion === 'timed_out') ? <XCircle className="w-3 h-3 text-red-500" /> :
+                               <Clock className="w-3 h-3 text-yellow-500 animate-pulse" />}
                            </a>
                          ))}
                       </div>

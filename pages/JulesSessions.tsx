@@ -19,6 +19,7 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   const [activeSession, setActiveSession] = useState<JulesSession | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [deletedSessionId, setDeletedSessionId] = useState<string | null>(null);
 
   const location = useLocation();
   const initialSessionName = location.state?.viewSessionName;
@@ -65,13 +66,22 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
   };
 
   const handleDeleteSession = async (sessionName: string) => {
-    if (!julesApiKey || !window.confirm("Are you sure you want to delete this session?")) return;
+    console.log('handleDeleteSession called for session:', sessionName);
+    console.log('Jules API Key present:', !!julesApiKey);
+    if (!julesApiKey || !window.confirm("Are you sure you want to delete this session?")) {
+      console.log('Delete cancelled or API key missing.');
+      return;
+    }
     try {
-      const shortName = sessionName.split('/').pop() || sessionName;
-      await deleteSession(julesApiKey, shortName);
+      console.log('Attempting to delete session:', sessionName);
+      await deleteSession(julesApiKey, sessionName);
+      console.log('Session deleted successfully:', sessionName);
       setSessions(prev => prev.filter(s => s.name !== sessionName));
       if (activeSession?.name === sessionName) setActiveSession(null);
+      setDeletedSessionId(sessionName);
+      setTimeout(() => setDeletedSessionId(null), 2000); // Clear feedback after 2 seconds
     } catch (e: any) {
+      console.error('Failed to delete session:', e);
       alert(`Failed to delete session: ${e.message}`);
     }
   };
@@ -113,12 +123,19 @@ const JulesSessions: React.FC<JulesSessionsProps> = ({ repoName, julesApiKey }) 
                 <h4 className="text-sm font-medium text-slate-200 line-clamp-1 mb-2">{s.title || 'Untitled Session'}</h4>
                 <div className="flex justify-between items-center">
                   <span className="text-[10px] text-slate-500">{new Date(s.createTime).toLocaleDateString()}</span>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.name); }}
-                    className="p-1 text-slate-600 hover:text-red-400 lg:opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {deletedSessionId === s.name ? (
+                    <span className="text-xs text-green-500 flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Deleted!
+                    </span>
+                  ) : (
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.name); }}
+                      className="p-1 text-slate-600 hover:text-red-400 lg:opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                  
                 </div>
               </div>
             ))

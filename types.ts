@@ -102,6 +102,16 @@ export interface AnalysisResult {
   timestamp: string;
 }
 
+export interface GithubAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: 'notice' | 'warning' | 'failure';
+  message: string;
+  title: string;
+  raw_details: string | null;
+}
+
 // Workflow Health Types
 export interface GithubWorkflowRun {
   id: number;
@@ -118,6 +128,7 @@ export interface GithubWorkflowRun {
   html_url: string;
   created_at: string;
   updated_at: string;
+  check_suite_id?: number;
 }
 
 export interface GithubWorkflowJob {
@@ -129,6 +140,7 @@ export interface GithubWorkflowJob {
   started_at: string;
   completed_at: string | null;
   html_url: string;
+  check_run_url: string;
   steps: Array<{
     name: string;
     status: string;

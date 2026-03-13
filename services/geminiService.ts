@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult, ArchitectAnalysisResult, CodeReviewResult, QualityAnalysisResult, RecoveryAnalysisResult, RepoStats, AuditAgentType, TechnicalAuditResult, BacklogMaintenanceResult, PrCleanupResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, PrActionRecommendation, LinkSuggestion, CleanupAnalysisResult, RedundancyAnalysisResult, TriageAnalysisResult, BranchCleanupResult, JulesSession, JulesAgentAction, EnrichedPullRequest, PrHealthAnalysisResult, MergeProposal, JulesCleanupResult, ArchitectAnalysisResult, CodeReviewResult, QualityAnalysisResult, RecoveryAnalysisResult, RepoStats, AuditAgentType, TechnicalAuditResult, BacklogMaintenanceResult, PrCleanupResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation } from '../types';
 
 /**
  * Clean a string that might contain Markdown JSON code blocks
@@ -54,7 +54,11 @@ export const generateRepoBriefing = async (
   return response.text || "No briefing available.";
 };
 
-export const analyzeWorkflowHealth = async (run: GithubWorkflowRun, jobs: GithubWorkflowJob[]): Promise<WorkflowHealthResult> => {
+export const analyzeWorkflowHealth = async (
+  run: GithubWorkflowRun, 
+  jobs: GithubWorkflowJob[], 
+  annotations: Record<number, GithubAnnotation[]> = {}
+): Promise<WorkflowHealthResult> => {
   const client = getClient();
   
   const runContext = {
@@ -65,10 +69,18 @@ export const analyzeWorkflowHealth = async (run: GithubWorkflowRun, jobs: Github
     head_branch: run.head_branch,
     event: run.event,
     jobs: jobs.map(j => ({ 
+      id: j.id,
       name: j.name, 
       conclusion: j.conclusion, 
       status: j.status,
-      steps: j.steps.map(s => ({ name: s.name, conclusion: s.conclusion, status: s.status }))
+      steps: j.steps.map(s => ({ name: s.name, conclusion: s.conclusion, status: s.status })),
+      annotations: (annotations[j.id] || []).map(a => ({
+        path: a.path,
+        line: a.start_line,
+        level: a.annotation_level,
+        msg: a.message,
+        title: a.title
+      }))
     }))
   };
 
@@ -77,11 +89,11 @@ export const analyzeWorkflowHealth = async (run: GithubWorkflowRun, jobs: Github
     
     GOAL: Provide a deep technical audit of this specific run.
     
-    RUN DATA:
+    RUN DATA (INCLUDING JOB ANNOTATIONS):
     ${JSON.stringify(runContext)}
 
     INSTRUCTIONS:
-    1. If the run failed, explain exactly WHY based on the job/step outcomes.
+    1. If the run failed, explain exactly WHY. Look at the 'annotations' as they contain compiler/test error logs.
     2. Identify if this looks like a flaky test (e.g. random step failure in a mature job).
     3. Generate high-quality suggested titles and bodies for GitHub issues if a fix is needed.
     4. The 'report' property should be a detailed Markdown analysis of this specific run.
@@ -285,7 +297,12 @@ export const runTechnicalAudit = async (
     
     CRITICAL REQUIREMENT: For every item in 'suggestedIssues', the 'body' MUST be a comprehensive, step-by-step implementation guide. 
     It MUST include specific code samples or configuration snippets (e.g. YAML for CI/CD, TS for Fullstack) so the developer can implement it immediately.
-    Do not be vague. Provide the actual code needed in the issue body.
+    
+    ANTI-AI-SLOP DIRECTIVES:
+    1. MINIMIZATION: Prioritize removing or consolidating code. If a solution adds 50 lines but can be solved by deleting 100 lines of old code, choose deletion.
+    2. NO REDUNDANCY: Do not suggest creating new hooks, types, or utilities that are "very similar" to what's already likely in the repo.
+    3. OVER-ENGINEERING: Reject complex architectural patterns (e.g. unnecessary Providers, Factories, or generic wrappers) if simple direct logic suffices.
+    4. DECOMMISSIONING: If suggesting a refactor, explicitly include steps to DELETE the old feature/code.
   `;
   const response = await client.models.generateContent({
     model: 'gemini-3-pro-preview',
@@ -326,7 +343,7 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
   const response = await client.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: `Audit PR health: ${JSON.stringify(summary)}`,
+    contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -356,13 +373,19 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
     
     TASK: Provide a DEEP, COMPREHENSIVE Code Review for PR #${pr.number} - "${pr.title}".
     
+    ### ANTI-AI-SLOP DIRECTIVES (EXPLICIT SECTION REQUIRED IN OUTPUT)
+    You MUST identify and flag the following:
+    1. OVERLY VERBOSE COMMENTS: Flag comments that state the obvious or are generated by LLMs without adding value.
+    2. OVER-ENGINEERING: Identify systems that are more complex than necessary for the requirement.
+    3. DUPLICATE HOOKS/TYPES: Identify where the PR adds a new type or hook that likely exists or is very similar to existing features.
+    4. CODE RATIO: If the PR adds > 100 lines, you MUST find at least 10 lines that can be removed. Prioritize deletion.
+    5. STALE FEATURES: If this PR replaces a feature, verify that the OLD feature is being DELETED in the diff.
+    
     GUIDELINES:
     1. FILE-BY-FILE ANALYSIS: Group your feedback by file. For every major issue, provide a "Problem" description and an "Implementation Sample" (Actual code snippet).
     2. ARCHITECTURAL IMPACT: How does this change affect the overall system? 
     3. BEST PRACTICES: Check for type safety (TypeScript), performance bottlenecks, and security vulnerabilities.
     4. GITHUB CHECKS: I will provide the status of the automated tests (checks). Correlate any failures with the code changes in the diff.
-    5. SUGGESTED ISSUES: For every item in the 'suggestedIssues' array, the 'body' MUST be a comprehensive, step-by-step implementation guide. 
-       It MUST include the "Implementation Sample" (code snippet) mentioned in your analysis so the developer has everything they need in the issue itself.
     
     PR CONTEXT:
     Title: ${pr.title}
@@ -383,7 +406,7 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review." },
+          reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section." },
           labels: { type: Type.ARRAY, items: { type: Type.STRING } },
           suggestedIssues: { 
             type: Type.ARRAY, 
@@ -444,7 +467,12 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string)
   const client = getClient();
   const response = await client.models.generateContent({
     model: 'gemini-3-pro-preview',
-    contents: `Analyze intent for fresh restart: ${diff.substring(0, 40000)}`,
+    contents: `
+      Analyze intent for fresh restart: ${diff.substring(0, 40000)}.
+      The plan MUST focus on MINIMALISM. 
+      Identify every line of code in the current PR that is 'slop' (boilerplate, over-engineered, redundant) and explicitly plan to EXCLUDE it from the new version.
+      Include a "Decommissioning Phase" to remove the old feature/code being replaced.
+    `,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -484,19 +512,73 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
 };
 
 export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<RedundancyAnalysisResult> => {
+  await ensureProApiKey();
   const client = getClient();
-  const summary = issues.map(i => ({ number: i.number, title: i.title }));
+  
+  // SIGNIFICANTLY INCREASED CONTEXT: 1200 characters per issue to capture root technical details
+  // Increased snippet size to ensure the AI sees actual logic/error reports, not just boilerplate.
+  const summary = issues.map(i => ({ 
+    number: i.number, 
+    title: i.title, 
+    bodySnippet: i.body?.substring(0, 1200),
+    labels: i.labels.map(l => l.name)
+  }));
+
+  const prompt = `
+    TASK: BACKLOG SEMANTIC REDUNDANCY AUDIT.
+    
+    GOAL: Detect redundant, overlapping, or identical issues in the provided backlog. 
+    You are a Technical Lead known for "Pattern Recognition".
+    
+    CRITICAL RULES FOR REDUNDANCY:
+    1. LOOK PAST TITLES: Two issues might have different titles but report the same underlying bug (e.g., "Page 404" and "Router link broken").
+    2. TECHNICAL CORE: Look for shared error messages, file paths, or specific components mentioned in the body snippets.
+    3. STALE OVERLAPS: Identify if multiple "Cleanup" or "Refactoring" tasks are requesting the same outcome.
+    
+    DATA (Issue List with 1200-char snippets):
+    ${JSON.stringify(summary)}
+    
+    OUTPUT SCHEMA:
+    - 'redundantIssues': List items that are clearly solved by or identical to another existing issue. Provide a detailed 'reason' explaining the technical link.
+    - 'consolidatedIssues': Propose a NEW, comprehensive ticket that merges 2 or more related smaller issues into one master specification.
+  `;
+
   const response = await client.models.generateContent({
     model: 'gemini-3-pro-preview',
-    contents: `Identify duplicate issues: ${JSON.stringify(summary)}`,
+    contents: prompt,
     config: {
+      // ENABLE REASONING BUDGET: Redundancy detection requires deep cross-comparison reasoning
+      thinkingConfig: { thinkingBudget: 8000 },
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
         properties: {
           summary: { type: Type.STRING },
-          redundantIssues: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { issueNumber: { type: Type.INTEGER }, reason: { type: Type.STRING } }, required: ['issueNumber', 'reason'] } },
-          consolidatedIssues: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, body: { type: Type.STRING }, labels: { type: Type.ARRAY, items: { type: Type.STRING } }, reason: { type: Type.STRING }, replacesIssueNumbers: { type: Type.ARRAY, items: { type: Type.INTEGER } } }, required: ['title', 'body', 'labels', 'reason', 'replacesIssueNumbers'] } }
+          redundantIssues: { 
+            type: Type.ARRAY, 
+            items: { 
+              type: Type.OBJECT, 
+              properties: { 
+                issueNumber: { type: Type.INTEGER }, 
+                reason: { type: Type.STRING, description: "Detailed explanation of why this is a duplicate or redundant." } 
+              }, 
+              required: ['issueNumber', 'reason'] 
+            } 
+          },
+          consolidatedIssues: { 
+            type: Type.ARRAY, 
+            items: { 
+              type: Type.OBJECT, 
+              properties: { 
+                title: { type: Type.STRING }, 
+                body: { type: Type.STRING, description: "Highly detailed combined specification capturing all sub-requirements." }, 
+                labels: { type: Type.ARRAY, items: { type: Type.STRING } }, 
+                reason: { type: Type.STRING }, 
+                replacesIssueNumbers: { type: Type.ARRAY, items: { type: Type.INTEGER } } 
+              }, 
+              required: ['title', 'body', 'labels', 'reason', 'replacesIssueNumbers'] 
+            } 
+          }
         },
         required: ['summary', 'redundantIssues', 'consolidatedIssues']
       }
@@ -507,20 +589,65 @@ export const analyzeIssueRedundancy = async (issues: GithubIssue[]): Promise<Red
 
 export const generateCleanupReport = async (openIssues: GithubIssue[], closedPrs: GithubPullRequest[]): Promise<CleanupAnalysisResult> => {
   const client = getClient();
-  const issues = openIssues.map(i => ({ number: i.number, title: i.title }));
-  // Strictly filter for PRs merged to leader
-  const prs = closedPrs.filter(p => !!p.merged_at && ['leader', 'main', 'master'].includes(p.base.ref.toLowerCase())).map(p => ({ number: p.number, title: p.title }));
+  
+  // Extract essential data for audit, including snippet of bodies for explicit linking
+  const issues = openIssues.slice(0, 100).map(i => ({ 
+    number: i.number, 
+    title: i.title, 
+    body: i.body?.substring(0, 400) 
+  }));
+  
+  // Strictly filter for PRs that were successfully MERGED to the default branch.
+  // A PR that was closed WITHOUT merging does not satisfy the resolution of an issue.
+  const mergedPrs = closedPrs
+    .filter(p => !!p.merged_at && ['leader', 'main', 'master'].includes(p.base.ref.toLowerCase()))
+    .slice(0, 100)
+    .map(p => ({ 
+      number: p.number, 
+      title: p.title, 
+      body: p.body?.substring(0, 400) 
+    }));
+  
+  const prompt = `
+    TASK: Identify "Zombie Issues" for cleanup.
+    
+    Definition: A "Zombie Issue" is an open issue that should be closed because its intended task has already been completed and MERGED into the default branch via a Pull Request.
+    
+    STRICT AUDIT RULES:
+    1. ONLY suggest closing an issue if you find EXPLICIT evidence of resolution in the "Merged PRs" list.
+    2. Explicit evidence includes:
+       - The PR body containing "Closes #number", "Fixes #number", "Resolves #number".
+       - The PR and Issue having near-identical titles and overlapping technical descriptions.
+    3. If a PR was closed but NOT merged (merged_at is null), it DOES NOT solve the issue.
+    4. Do not recommend closing based on vague semantic similarity.
+    
+    DATA:
+    Open Issues: ${JSON.stringify(issues)}
+    Merged PRs: ${JSON.stringify(mergedPrs)}
+  `;
   
   const response = await client.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: `Cleanup zombie issues: ${JSON.stringify(issues)} against PRs MERGED to leader: ${JSON.stringify(prs)}. ONLY suggest closing if the issue is solved by a MERGED PR on leader branch.`,
+    contents: prompt,
     config: {
-      responseMimeType: 'application/json',
+      responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
           report: { type: Type.STRING },
-          actions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { issueNumber: { type: Type.INTEGER }, action: { type: Type.STRING, enum: ['close', 'comment'] }, reason: { type: Type.STRING }, confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] } }, required: ['issueNumber', 'action', 'reason', 'confidence'] } }
+          actions: { 
+            type: Type.ARRAY, 
+            items: { 
+              type: Type.OBJECT, 
+              properties: { 
+                issueNumber: { type: Type.INTEGER }, 
+                action: { type: Type.STRING, enum: ['close', 'comment'] }, 
+                reason: { type: Type.STRING }, 
+                confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] } 
+              }, 
+              required: ['issueNumber', 'action', 'reason', 'confidence'] 
+            } 
+          }
         },
         required: ['report', 'actions']
       }

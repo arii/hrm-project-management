@@ -1,5 +1,5 @@
 
-import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch, GithubWorkflowRun, GithubWorkflowJob } from '../types';
+import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubBranch, GithubWorkflowRun, GithubWorkflowJob, GithubAnnotation } from '../types';
 import { storage, StorageKeys } from './storageService';
 
 const BASE_URL = 'https://api.github.com';
@@ -28,9 +28,10 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
      headers['Content-Type'] = 'application/json';
   }
   
-  if (token && token.trim()) {
-    headers['Authorization'] = `token ${token.trim()}`;
+  if (!token || !token.trim()) {
+    throw new Error("GitHub token is missing or invalid. Please provide a valid token in the settings.");
   }
+  headers['Authorization'] = `token ${token.trim()}`;
 
   const fetchOptions = { ...options };
   if (fetchOptions.headers) {
@@ -116,7 +117,9 @@ export const fetchPrReviews = async (repo: string, number: number, token?: strin
 };
 
 export const fetchPrDiff = async (repo: string, number: number, token: string): Promise<string> => {
-  return request<string>(`/repos/${repo}/pulls/${number}`, token, {}, true);
+  return request<string>(`/repos/${repo}/pulls/${number}`, token, {
+    headers: { 'Accept': 'application/vnd.github.v3.diff' }
+  }, true);
 };
 
 export const fetchPrsForCommit = async (repo: string, commitSha: string, token: string): Promise<GithubPullRequest[]> => {
@@ -137,18 +140,48 @@ export const fetchCheckRuns = async (repo: string, ref: string, token: string) =
   }
 };
 
+export const fetchCombinedStatus = async (repo: string, ref: string, token: string) => {
+  try {
+    const data = await request<any>(`/repos/${repo}/commits/${ref}/status`, token);
+    return {
+      state: data.state, // 'failure', 'pending', 'success', 'error'
+      statuses: data.statuses.map((s: any) => ({
+        name: s.context,
+        status: s.state,
+        conclusion: s.state === 'success' ? 'success' : (s.state === 'pending' ? null : 'failure'),
+        url: s.target_url
+      }))
+    };
+  } catch (e) {
+    return { state: 'unknown', statuses: [] };
+  }
+};
+
 export const fetchBranches = async (repo: string, token: string): Promise<GithubBranch[]> => {
   return request<GithubBranch[]>(`/repos/${repo}/branches?per_page=100`, token);
 };
 
-export const fetchWorkflowRuns = async (repo: string, token: string): Promise<GithubWorkflowRun[]> => {
-  const data = await request<{ workflow_runs: GithubWorkflowRun[] }>(`/repos/${repo}/actions/runs?per_page=50`, token);
+export const fetchWorkflowRuns = async (repo: string, token: string, skipCache = false, page = 1): Promise<GithubWorkflowRun[]> => {
+  const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
+  const data = await request<{ workflow_runs: GithubWorkflowRun[] }>(`/repos/${repo}/actions/runs?per_page=100&page=${page}`, token, options);
   return data.workflow_runs || [];
+};
+
+export const fetchWorkflowRun = async (repo: string, runId: number, token: string): Promise<GithubWorkflowRun> => {
+  return request<GithubWorkflowRun>(`/repos/${repo}/actions/runs/${runId}`, token);
 };
 
 export const fetchWorkflowRunJobs = async (repo: string, runId: number, token: string): Promise<GithubWorkflowJob[]> => {
   const data = await request<{ jobs: GithubWorkflowJob[] }>(`/repos/${repo}/actions/runs/${runId}/jobs`, token);
   return data.jobs || [];
+};
+
+export const fetchJobAnnotations = async (repo: string, jobId: number, token: string): Promise<GithubAnnotation[]> => {
+  try {
+    return request<GithubAnnotation[]>(`/repos/${repo}/check-runs/${jobId}/annotations`, token);
+  } catch (e) {
+    return [];
+  }
 };
 
 export const fetchWorkflowsContent = async (repo: string, token: string): Promise<Array<{ name: string, path: string, content: string }>> => {
@@ -209,50 +242,84 @@ export const publishPullRequest = async (repo: string, token: string, number: nu
   return request('/graphql', token, { method: 'POST', body: JSON.stringify({ query }) });
 };
 
+/**
+ * HIGH-FIDELITY SINGLE PR ENRICHMENT
+ * Fetches both Checks and Statuses to determine test health.
+ */
+export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, skipCache = false): Promise<EnrichedPullRequest> => {
+  const cacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}`;
+  if (!skipCache) {
+    const cached = storage.getCached<EnrichedPullRequest>(cacheKey);
+    if (cached) return cached;
+  }
+  const [details, reviews, checkResults, commitStatus] = await Promise.all([
+    fetchPrDetails(repo, pr.number, token, skipCache),
+    token ? fetchPrReviews(repo, pr.number, token) : Promise.resolve([]),
+    token ? fetchCheckRuns(repo, pr.head.sha, token) : Promise.resolve([]),
+    token ? fetchCombinedStatus(repo, pr.head.sha, token) : Promise.resolve({ state: 'unknown', statuses: [] })
+  ]);
+
+  // Merge Check Runs and Statuses
+  const allChecks = [
+    ...checkResults,
+    ...commitStatus.statuses
+  ];
+
+  const failedCount = allChecks.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out').length;
+  const pendingCount = allChecks.filter(r => r.status !== 'completed' && r.status !== 'success').length;
+  
+  let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
+  if (failedCount > 0) testStatus = 'failed';
+  else if (pendingCount > 0) testStatus = 'pending';
+  else if (allChecks.length > 0) testStatus = 'passed';
+  else if (commitStatus.state === 'success') testStatus = 'passed';
+  else if (commitStatus.state === 'failure' || commitStatus.state === 'error') testStatus = 'failed';
+  else if (commitStatus.state === 'pending') testStatus = 'pending';
+
+  const latestReviewsByUser: Record<string, string> = {};
+  reviews.forEach(r => { latestReviewsByUser[r.user.login] = r.state; });
+  const reviewStates = Object.values(latestReviewsByUser);
+  const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
+
+  return {
+    ...details,
+    testStatus,
+    checkResults: allChecks,
+    isApproved,
+    isBig: (details.changed_files || 0) > 15,
+    isReadyToMerge: details.mergeable === true,
+    isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(details.base.ref.toLowerCase())
+  } as EnrichedPullRequest;
+
+  storage.setCached(cacheKey, enrichedPr);
+  return enrichedPr;
+};
+
+/**
+ * HIGH-SPEED PARALLEL ENRICHMENT
+ */
 export const fetchEnrichedPullRequests = async (repo: string, token?: string, skipCache = false): Promise<EnrichedPullRequest[]> => {
   const list = await fetchPullRequests(repo, token, 'open', skipCache);
-  const subset = list.slice(0, 50);
-  const results: EnrichedPullRequest[] = [];
+  const subset = list.slice(0, 20);
   
-  for (const pr of subset) {
+  const enrichedResults = await Promise.all(subset.map(async (pr) => {
     try {
-      const details = await fetchPrDetails(repo, pr.number, token, skipCache);
-      const reviews = token ? await fetchPrReviews(repo, pr.number, token) : [];
-      let checkResults = [];
-      let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
-      
-      if (token) {
-        checkResults = await fetchCheckRuns(repo, pr.head.sha, token);
-        const failedCount = checkResults.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out').length;
-        const pendingCount = checkResults.filter(r => r.status !== 'completed').length;
-        
-        if (failedCount > 0) testStatus = 'failed';
-        else if (pendingCount > 0) testStatus = 'pending';
-        else if (checkResults.length > 0) testStatus = 'passed';
-      }
-
-      // Check if approved: has at least one 'APPROVED' and no 'CHANGES_REQUESTED' in the latest reviews from each user
-      const latestReviewsByUser: Record<string, string> = {};
-      reviews.forEach(r => {
-        latestReviewsByUser[r.user.login] = r.state;
-      });
-      const reviewStates = Object.values(latestReviewsByUser);
-      const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
-
-      results.push({
-        ...details,
-        testStatus,
-        checkResults,
-        isApproved,
-        isBig: (details.changed_files || 0) > 15,
-        isReadyToMerge: details.mergeable === true,
-        isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(details.base.ref.toLowerCase())
-      });
-    } catch (e) { 
-      results.push({ ...pr, testStatus: 'unknown', isApproved: false, isBig: false, isReadyToMerge: false, isLeaderBranch: false } as EnrichedPullRequest); 
+      return await enrichSinglePr(repo, pr, token, skipCache);
+    } catch (e) {
+      return { ...pr, testStatus: 'unknown', isApproved: false, isBig: false, isReadyToMerge: false, isLeaderBranch: false } as EnrichedPullRequest;
     }
-  }
-  return results;
+  }));
+
+  const nonEnriched = list.slice(20).map(pr => ({
+    ...pr,
+    testStatus: 'unknown',
+    isApproved: false,
+    isBig: false,
+    isReadyToMerge: false,
+    isLeaderBranch: false
+  } as EnrichedPullRequest));
+
+  return [...enrichedResults, ...nonEnriched];
 };
 
 export const fetchCoreRepoContext = async (repo: string, token: string) => {

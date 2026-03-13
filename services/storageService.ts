@@ -14,6 +14,7 @@ export const StorageKeys = {
   JULES_CACHE: `${APP_PREFIX}jules_cache`,
   TELEMETRY: `${APP_PREFIX}telemetry`,
   PR_REVIEWS: `${APP_PREFIX}pr_reviews`,
+  ANALYSIS_PREFIX: `${APP_PREFIX}analysis_`, // For useGeminiAnalysis persistence
 };
 
 export interface AppSettings {
@@ -26,7 +27,7 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
   repoName: 'arii/hrm',
-  githubToken: '',
+  githubToken: (process.env as any).GITHUB_TOKEN || '',
   julesApiKey: '',
   autoRunMaintenance: true,
 };
@@ -55,13 +56,24 @@ export const storage = {
       return true;
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
-        console.error('[Storage] Quota exceeded. Cleaning up old caches...');
-        this.clearCaches();
+        console.warn('[Storage] Quota exceeded. Performing emergency cache eviction...');
+        // First try: Clear temporary caches (GitHub, Jules, Telemetry)
+        this.clearCaches(false);
+        
         try {
           localStorage.setItem(key, JSON.stringify(value));
           return true;
         } catch (retryError) {
-          return false;
+          // Second try: Clear everything except Settings and Reviewed SHAs
+          console.warn('[Storage] Quota still exceeded. Evicting PR Reviews and Analysis persistence...');
+          this.clearCaches(true);
+          try {
+            localStorage.setItem(key, JSON.stringify(value));
+            return true;
+          } catch (finalError) {
+            console.error('[Storage] Critical storage failure: LocalStorage is full and could not be cleared sufficiently.');
+            return false;
+          }
         }
       }
       return false;
@@ -98,19 +110,42 @@ export const storage = {
     localStorage.removeItem(key);
   },
 
-  clearCaches(): void {
-    const keysToKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS, StorageKeys.PR_REVIEWS];
+  /**
+   * Clears app-prefixed storage.
+   * @param aggressive If true, even persistent reviews and analysis data are cleared.
+   */
+  clearCaches(aggressive = false): void {
+    const keysToRemove: string[] = [];
+    const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS];
+    const temporaryKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];
+
+    // Collect keys first to avoid index shifting bugs during forward iteration
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && key.startsWith(APP_PREFIX) && !keysToKeep.includes(key)) {
-        localStorage.removeItem(key);
+      if (!key) continue;
+
+      const isAppKey = key.startsWith(APP_PREFIX) || key.startsWith('repo_auditor_') || key.startsWith('audit_');
+      
+      if (isAppKey) {
+        if (aggressive) {
+          // In aggressive mode, remove everything except the settings and the SHA list
+          if (!absoluteKeep.includes(key)) {
+            keysToRemove.push(key);
+          }
+        } else {
+          // In normal mode, only remove known transient caches
+          const isTransient = temporaryKeys.some(tk => key.startsWith(tk)) || key.includes('_cache');
+          if (isTransient) {
+            keysToRemove.push(key);
+          }
+        }
       }
     }
+
+    keysToRemove.forEach(k => localStorage.removeItem(k));
   },
 
   savePrReview(repo: string, prNumber: number, review: any): void {
-    // FIX: Removed explicit type argument to avoid "Untyped function calls may not accept type arguments" error.
-    // Use type casting on the default value to drive generic inference instead.
     const reviews = this.get(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
     reviews[`${repo}_${prNumber}`] = {
       ...review,
@@ -120,8 +155,6 @@ export const storage = {
   },
 
   getPrReview(repo: string, prNumber: number): any | null {
-    // FIX: Removed explicit type argument to avoid "Untyped function calls may not accept type arguments" error.
-    // Use type casting on the default value to drive generic inference instead.
     const reviews = this.get(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
     return reviews[`${repo}_${prNumber}`] || null;
   },

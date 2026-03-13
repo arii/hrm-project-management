@@ -31,7 +31,8 @@ import {
   AlertTriangle,
   ShieldAlert,
   Plus,
-  Bot
+  Bot,
+  ExternalLink as ExternalLinkIcon
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
@@ -55,6 +56,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [repairStatuses, setRepairStatuses] = useState<Record<number, ActionStatus>>({});
   const [restartStatuses, setRestartStatuses] = useState<Record<number, ActionStatus>>({});
   const [dispatchStatuses, setDispatchStatuses] = useState<Record<string, ActionStatus>>({});
+  const [sessionLinks, setSessionLinks] = useState<Record<string, string>>({}); // Stores session name for deep links
   const [processingMessages, setProcessingMessages] = useState<Record<number, string>>({});
   const [errorMessages, setErrorMessages] = useState<Record<number, string>>({});
 
@@ -102,17 +104,28 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("Source context not found.");
       
-      // CHECK FOR EXISTING AUDIT
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
       const auditPart = existingReview 
         ? `\n\nPRINCIPAL ENGINEER DIRECTIVES (FROM PREVIOUS AUDIT):\n${existingReview.reviewComment}` 
         : "";
 
-      const prompt = `REPAIR PR #${pr.number} on branch '${pr.head.ref}'.\n${auditPart}\n\nGOAL: Implement all architectural improvements and fixes identified in the directives above. Ensure type safety, resolve conflicts, and maintain repository patterns.`;
+      const prompt = `
+        REPAIR PR #${pr.number} on branch '${pr.head.ref}'.
+        ${auditPart}
+        
+        GOAL: Implement all architectural improvements and fixes identified in the directives above.
+        
+        ### ANTI-AI-SLOP DIRECTIVES:
+        1. MINIMIZATION: Prioritize code reduction. Remove old features being replaced.
+        2. NO OVER-ENGINEERING: Avoid adding complex abstractions, generic wrappers, or unnecessary Providers.
+        3. NO VERBOSE COMMENTS: Delete any comments that explain the "how" (code should do that) rather than the "why".
+        4. LEVERAGE EXISTING: Do not create new types/hooks if similar ones exist.
+      `;
       
       const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Repair Audit: #${pr.number}`);
+      setSessionLinks(prev => ({ ...prev, [`repair-${pr.number}`]: session.name }));
       setRepairStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
-      setTimeout(() => navigate('/sessions', { state: { viewSessionName: session.name } }), 1000);
+      updateProcessingMessage(pr.number, "Repair session dispatched successfully.");
     } catch (e: any) {
       setRepairStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
       setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
@@ -130,18 +143,32 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("Source context not found.");
       
-      // CHECK FOR EXISTING AUDIT
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
       const auditPart = existingReview 
         ? `\n\nTECHNICAL ROADMAP FROM PREVIOUS AUDIT:\n${existingReview.reviewComment}` 
         : "";
 
-      const prompt = `RESTART PR #${pr.number} FROM SCRATCH.\n\n${auditPart}\n\nIMPLEMENTATION PLAN:\n${plan}\n\nGOAL: Build a clean version of this feature on ${pr.base.ref} following the roadmap above.`;
+      const prompt = `
+        RESTART PR #${pr.number} FROM SCRATCH.
+        
+        ${auditPart}
+        
+        IMPLEMENTATION PLAN:
+        ${plan}
+        
+        GOAL: Build a clean version of this feature on ${pr.base.ref} following the roadmap above.
+        
+        ### ZERO-SLOP REQUIREMENTS:
+        1. ZERO-WASTE: Do not carry over any boilerplate or over-engineered abstractions from the previous PR.
+        2. FULL DECOMMISSIONING: Ensure all old code/files intended to be replaced are DELETED in your first few steps.
+        3. CODE MINIMIZATION: Prioritize a solution that uses the fewest lines of code possible.
+      `;
       
       const session = await createSession(julesApiKey, prompt, sourceId, pr.base.ref, `Restart: ${title}`);
       
+      setSessionLinks(prev => ({ ...prev, [`restart-${pr.number}`]: session.name }));
       setRestartStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
-      setTimeout(() => navigate('/sessions', { state: { viewSessionName: session.name } }), 1000);
+      updateProcessingMessage(pr.number, "Fresh restart session dispatched successfully.");
     } catch (e: any) {
       setRestartStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
       setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
@@ -156,10 +183,15 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       if (!sourceId) throw new Error("Source not found.");
       const pr = prs.find(p => p.number === action.prNumber);
       const branch = pr?.head.ref || 'leader';
-      const prompt = `AI Recommendation Task for PR #${action.prNumber}: ${action.reason}. Suggested Action: ${action.action.toUpperCase()}.`;
+      const prompt = `
+        AI Recommendation Task for PR #${action.prNumber}: ${action.reason}. 
+        Suggested Action: ${action.action.toUpperCase()}.
+        
+        CRITICAL: Follow ANTI-AI-SLOP protocols. Reduce lines of code, remove redundant comments, and avoid complex abstractions.
+      `;
       const session = await createSession(julesApiKey, prompt, sourceId, branch, `Audit Fix: #${action.prNumber}`);
+      setSessionLinks(prev => ({ ...prev, [action._id]: session.name }));
       setDispatchStatuses(prev => ({ ...prev, [action._id]: 'success' }));
-      setTimeout(() => navigate('/sessions', { state: { viewSessionName: session.name } }), 800);
     } catch (e: any) {
       setDispatchStatuses(prev => ({ ...prev, [action._id]: 'error' }));
     }
@@ -242,14 +274,24 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                              <span className="text-[10px] font-mono text-slate-500">#{action.prNumber}</span>
                              <Badge variant="blue" className="text-[9px]">{action.action.toUpperCase()}</Badge>
                           </div>
-                          <button 
-                            onClick={() => handleDispatchActionToJules(action)}
-                            disabled={dispatchStatuses[action._id] === 'loading' || dispatchStatuses[action._id] === 'success'}
-                            className="text-[9px] font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 uppercase disabled:opacity-50"
-                          >
-                             {dispatchStatuses[action._id] === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <TerminalSquare className="w-3 h-3" />}
-                             Solve with AI
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {dispatchStatuses[action._id] === 'success' && sessionLinks[action._id] && (
+                               <button 
+                                 onClick={() => navigate('/sessions', { state: { viewSessionName: sessionLinks[action._id] } })}
+                                 className="text-[9px] font-bold text-blue-400 hover:underline flex items-center gap-1 uppercase"
+                               >
+                                 View Session
+                               </button>
+                            )}
+                            <button 
+                              onClick={() => handleDispatchActionToJules(action)}
+                              disabled={dispatchStatuses[action._id] === 'loading' || dispatchStatuses[action._id] === 'success'}
+                              className="text-[9px] font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 uppercase disabled:opacity-50"
+                            >
+                               {dispatchStatuses[action._id] === 'loading' ? <Loader2 className="w-3 h-3 animate-spin" /> : <TerminalSquare className="w-3 h-3" />}
+                               {dispatchStatuses[action._id] === 'success' ? 'Dispatched' : 'Solve with AI'}
+                            </button>
+                          </div>
                        </div>
                        <p className="text-[11px] text-slate-400 leading-relaxed">{action.reason}</p>
                     </div>
@@ -268,6 +310,9 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
              <div className="bg-surface border border-slate-700 border-dashed rounded-xl p-20 flex flex-col items-center justify-center text-slate-500"><GitPullRequest className="w-12 h-12 mb-4 opacity-20" /><p>No open PRs found matching filters.</p></div>
            ) : filteredPrs.map(pr => {
              const hasAudit = !!storage.getPrReview(repoName, pr.number);
+             const repairSuccess = repairStatuses[pr.number] === 'success';
+             const restartSuccess = restartStatuses[pr.number] === 'success';
+
              return (
              <div key={pr.id} className="bg-surface border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-all p-5 flex flex-col md:flex-row gap-6 items-center">
                 <div className="flex-1 min-w-0 w-full">
@@ -278,7 +323,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <h4 className="font-bold text-white text-lg truncate hover:text-primary cursor-pointer transition-colors" onClick={() => navigate('/code-review', { state: { selectedPrNumber: pr.number } })}>{pr.title}</h4>
-                        {hasAudit && <Bot className="w-4 h-4 text-blue-400 shrink-0" title="Full Audit Context Available" />}
+                        {hasAudit && <span title="Full Audit Context Available"><Bot className="w-4 h-4 text-blue-400 shrink-0" /></span>}
                       </div>
                       <div className="text-xs text-slate-500 flex items-center gap-3 mt-1">
                         <span className="font-mono text-blue-400 font-bold">#{pr.number}</span>
@@ -292,8 +337,23 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                   {(processingMessages[pr.number] || errorMessages[pr.number]) && (
                     <div className={clsx("mt-4 p-3 rounded-lg text-xs flex items-center gap-3 animate-in slide-in-from-top-1", errorMessages[pr.number] ? "bg-red-900/20 text-red-300 border border-red-800/50" : "bg-blue-900/10 text-blue-300 border border-blue-800/30")}>
                        {(repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading') && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
+                       {(repairSuccess || restartSuccess) && <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
                        {errorMessages[pr.number] ? <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" /> : null}
-                       <span className="font-medium">{errorMessages[pr.number] || processingMessages[pr.number]}</span>
+                       <div className="flex-1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <span className="font-medium">{errorMessages[pr.number] || processingMessages[pr.number]}</span>
+                          {(repairSuccess || restartSuccess) && (
+                            <button 
+                              onClick={() => {
+                                const sessionKey = repairSuccess ? `repair-${pr.number}` : `restart-${pr.number}`;
+                                const sessionName = sessionLinks[sessionKey];
+                                if (sessionName) navigate('/sessions', { state: { viewSessionName: sessionName } });
+                              }}
+                              className="text-[10px] font-bold text-blue-400 hover:underline uppercase flex items-center gap-1"
+                            >
+                              <ExternalLinkIcon className="w-3 h-3" /> Go to Session
+                            </button>
+                          )}
+                       </div>
                     </div>
                   )}
                 </div>
@@ -301,27 +361,27 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                 <div className="flex flex-col gap-2 w-full md:w-56 shrink-0 border-l border-slate-700/50 pl-6">
                   <Button 
                     size="sm" 
-                    variant="primary" 
+                    variant={repairSuccess ? "success" : "primary"}
                     onClick={() => handleDispatchToJules(pr)} 
                     isLoading={repairStatuses[pr.number] === 'loading'} 
-                    disabled={repairStatuses[pr.number] === 'success' || restartStatuses[pr.number] === 'loading'}
-                    icon={Wrench}
+                    disabled={repairSuccess || restartStatuses[pr.number] === 'loading'}
+                    icon={repairSuccess ? Check : Wrench}
                     className="w-full relative"
                   >
-                    AI Repair Session
-                    {hasAudit && <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-400 rounded-full border-2 border-surface shadow-sm animate-pulse" />}
+                    {repairSuccess ? 'Repair Dispatched' : 'AI Repair Session'}
+                    {hasAudit && !repairSuccess && <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-400 rounded-full border-2 border-surface shadow-sm animate-pulse" />}
                   </Button>
                   
                   <Button 
                     size="sm" 
-                    variant="secondary" 
+                    variant={restartSuccess ? "success" : "secondary"}
                     onClick={() => handleRestartFresh(pr)} 
                     isLoading={restartStatuses[pr.number] === 'loading'} 
-                    disabled={restartStatuses[pr.number] === 'success' || repairStatuses[pr.number] === 'loading'}
-                    icon={RotateCcw}
-                    className="w-full bg-slate-800 border-slate-700 hover:bg-slate-700"
+                    disabled={restartSuccess || repairStatuses[pr.number] === 'loading'}
+                    icon={restartSuccess ? Check : RotateCcw}
+                    className={clsx("w-full bg-slate-800 border-slate-700 hover:bg-slate-700", restartSuccess && "!bg-green-600 !border-green-500")}
                   >
-                    Restart Fresh Session
+                    {restartSuccess ? 'Restart Dispatched' : 'Restart Fresh Session'}
                   </Button>
 
                   <div className="flex gap-2 mt-1">
