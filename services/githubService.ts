@@ -7,6 +7,12 @@ const CACHE_DURATION = 15 * 60 * 1000;
 
 const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}, isText = false): Promise<T> => {
   const isGet = !options.method || options.method === 'GET';
+  
+  // Basic URL validation
+  if (!endpoint.startsWith('/')) {
+    throw new Error(`Invalid endpoint: ${endpoint}. Endpoints must start with /`);
+  }
+
   const customHeaders = options.headers as Record<string, string> | undefined;
   const skipCache = customHeaders?.['X-Skip-Cache'] === 'true';
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_${endpoint}`;
@@ -18,48 +24,60 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     }
   }
 
-  const headers: HeadersInit = {
+  const headers: Record<string, string> = {
     'Accept': isText ? 'application/vnd.github.v3.diff' : 'application/vnd.github.v3+json',
-    ...options.headers,
   };
 
-  if (!isText && !headers['Content-Type']) {
-     // @ts-ignore
-     headers['Content-Type'] = 'application/json';
+  // Add token if provided
+  if (token && token.trim()) {
+    headers['Authorization'] = `token ${token.trim()}`;
   }
-  
-  if (!token || !token.trim()) {
-    throw new Error("GitHub token is missing or invalid. Please provide a valid token in the settings.");
-  }
-  headers['Authorization'] = `token ${token.trim()}`;
 
-  const fetchOptions = { ...options };
-  if (fetchOptions.headers) {
-     const h = { ...(fetchOptions.headers as any) };
-     if (h['X-Skip-Cache']) delete h['X-Skip-Cache'];
-     fetchOptions.headers = h;
+  // Add options headers, but filter out internal ones
+  if (options.headers) {
+    Object.entries(options.headers).forEach(([key, value]) => {
+      if (key.toLowerCase() !== 'x-skip-cache') {
+        headers[key] = value as string;
+      }
+    });
   }
+
+  if (!isGet && !isText && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const fetchOptions: RequestInit = { 
+    ...options,
+    headers,
+    mode: 'cors'
+  };
 
   let response: Response | undefined;
   let retries = 2;
+  const fullUrl = `${BASE_URL}${endpoint}`;
+
   while (retries >= 0) {
     try {
-      response = await fetch(`${BASE_URL}${endpoint}`, {
-        ...fetchOptions,
-        headers: { ...headers, ...fetchOptions.headers },
-      });
+      response = await fetch(fullUrl, fetchOptions);
+      
       if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
           throw new Error("GitHub API Rate Limit Exceeded.");
       }
       break;
     } catch (e: any) {
-      if (retries === 0) throw e;
+      if (retries === 0) {
+        console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
+        if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
+          throw new Error(`Network error: Failed to reach GitHub API. This often happens due to CORS issues, network blocks, or invalid headers. (Target: ${fullUrl})`);
+        }
+        throw e;
+      }
       retries--;
       await new Promise(r => setTimeout(r, 1000 * (2 - retries))); 
     }
   }
 
-  if (!response) throw new Error("Unknown network error");
+  if (!response) throw new Error("Unknown network error: No response received from GitHub.");
 
   if (!response.ok) {
     let errorMessage = `Error: ${response.status}`;
@@ -84,22 +102,6 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     storage.set(cacheKey, { timestamp: Date.now(), data });
   }
   return data;
-};
-
-export const fetchRepoStats = async (repo: string, token?: string): Promise<RepoStats> => {
-  const data = await request<any>(`/repos/${repo}`, token);
-  return {
-    openIssuesCount: data.open_issues_count,
-    openPRsCount: 0,
-    lastUpdated: data.updated_at,
-    stars: data.stargazers_count,
-    forks: data.forks_count,
-  };
-};
-
-export const fetchIssues = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GithubIssue[]> => {
-  const data = await request<GithubIssue[]>(`/repos/${repo}/issues?state=${state}&per_page=100`, token);
-  return data.filter(item => !item.pull_request);
 };
 
 export const fetchPullRequests = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open', skipCache = false): Promise<GithubPullRequest[]> => {
@@ -234,6 +236,9 @@ export const publishPullRequest = async (repo: string, token: string, number: nu
  * Fetches both Checks and Statuses to determine test health.
  */
 export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, skipCache = false): Promise<EnrichedPullRequest> => {
+  if (!repo || !repo.includes('/')) {
+    throw new Error(`Invalid repository name: "${repo}". Must be in "owner/repo" format.`);
+  }
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}`;
   if (!skipCache) {
     const cached = storage.getCached<EnrichedPullRequest>(cacheKey);

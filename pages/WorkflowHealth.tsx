@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, X, CheckSquare, Play, Link2, User, Cpu, Code2, AlertOctagon, Key } from 'lucide-react';
 import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchWorkflowRun, createIssue, fetchWorkflowsContent, fetchCoreRepoContext, fetchJobAnnotations } from '../services/githubService';
 import { analyzeWorkflowHealth, analyzeWorkflowQualitative } from '../services/geminiService';
@@ -37,6 +38,7 @@ interface ManualPreview {
 }
 
 const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesApiKey }) => {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'failures' | 'false-positives' | 'qualitative'>('failures');
   
   const [failingRuns, setFailingRuns] = useState<GithubWorkflowRun[]>([]);
@@ -330,6 +332,20 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
   const WorkerSelectorModal = () => {
     if (!workerSelector.isOpen) return null;
+
+    if (!julesApiKey) {
+      return (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={closeWorkerSelector} />
+          <div className="relative bg-slate-900 border border-slate-700 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden p-8 text-center animate-in fade-in zoom-in-95">
+            <Key className="w-12 h-12 text-amber-400 mx-auto mb-4" />
+            <h3 className="text-xl font-bold text-white mb-2">Jules Key Required</h3>
+            <p className="text-slate-400 mb-6">You must configure your Jules API Key in Settings to dispatch findings to active sessions.</p>
+            <Button variant="primary" onClick={() => { closeWorkerSelector(); navigate('/'); }} icon={Plus}>Go to Settings</Button>
+          </div>
+        </div>
+      );
+    }
     
     const suggestedIds = new Set(workerSelector.suggestedSessions.map(s => s.name));
     const otherRecentSessions = allSessions.filter(s => !suggestedIds.has(s.name));

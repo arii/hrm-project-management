@@ -7,6 +7,7 @@ import PullRequests from './pages/PullRequests';
 import BatchCreate from './pages/BatchCreate';
 import CodeReview from './pages/CodeReview';
 import WorkflowHealth from './pages/WorkflowHealth';
+import JulesManagement from './pages/JulesManagement';
 import { storage, AppSettings } from './services/storageService';
 
 const App: React.FC = () => {
@@ -58,6 +59,7 @@ const App: React.FC = () => {
           <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="workflow-health" element={<WorkflowHealth repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
           <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
+          <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

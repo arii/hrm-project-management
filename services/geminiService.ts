@@ -10,7 +10,7 @@ const cleanJsonString = (str: string): string => {
 };
 
 const getClient = () => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
     throw new Error("Gemini API Key is missing. Please check your settings.");
   }
@@ -19,6 +19,7 @@ const getClient = () => {
 
 /**
  * Ensures the user has selected a Pro API key if using a Pro model.
+ * Non-blocking to avoid hangs in sandboxed environments.
  */
 const ensureProApiKey = async () => {
   // @ts-ignore
@@ -27,10 +28,13 @@ const ensureProApiKey = async () => {
     const hasKey = await window.aistudio.hasSelectedApiKey();
     if (!hasKey) {
       // @ts-ignore
-      await window.aistudio.openSelectKey();
+      window.aistudio.openSelectKey(); // Non-blocking
     }
   }
 };
+
+const PRO_MODEL = 'gemini-3.1-pro-preview';
+const FLASH_MODEL = 'gemini-3-flash-preview';
 
 export const analyzeWorkflowHealth = async (
   run: GithubWorkflowRun, 
@@ -78,7 +82,7 @@ export const analyzeWorkflowHealth = async (
   `;
 
   const response = await client.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: PRO_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -135,7 +139,13 @@ export const analyzeWorkflowHealth = async (
     }
   });
 
-  return JSON.parse(cleanJsonString(response.text || "{}"));
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse workflow health JSON:", text);
+    throw new Error("AI returned an invalid format for workflow health analysis.");
+  }
 };
 
 export const analyzeWorkflowQualitative = async (
@@ -143,7 +153,6 @@ export const analyzeWorkflowQualitative = async (
   runs: GithubWorkflowRun[],
   repoContext: { fileList: string, readmeSnippet: string, packageJson: string }
 ): Promise<WorkflowQualitativeResult> => {
-  await ensureProApiKey();
   const client = getClient();
   
   const prompt = `
@@ -167,7 +176,7 @@ export const analyzeWorkflowQualitative = async (
   `;
 
   const response = await client.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: PRO_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -199,14 +208,20 @@ export const analyzeWorkflowQualitative = async (
     }
   });
 
-  return JSON.parse(cleanJsonString(response.text || "{}"));
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse qualitative analysis JSON:", text);
+    throw new Error("AI returned an invalid format for qualitative workflow analysis.");
+  }
 };
 
 export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrHealthAnalysisResult> => {
   const client = getClient();
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
   const response = await client.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: FLASH_MODEL,
     contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
     config: {
       responseMimeType: 'application/json',
@@ -220,7 +235,14 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
       }
     }
   });
-  return JSON.parse(cleanJsonString(response.text || "{}"));
+  
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse PR analysis JSON:", text);
+    throw new Error("AI returned an invalid format for PR health analysis.");
+  }
 };
 
 /**
@@ -228,7 +250,6 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
  */
 
 export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string): Promise<CodeReviewResult> => {
-  await ensureProApiKey();
   const client = getClient();
   
   const checksSummary = pr.checkResults?.map(c => `- ${c.name}: ${c.status} (${c.conclusion || 'Pending'})`).join('\n') || "No checks found.";
@@ -264,7 +285,7 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
   `;
 
   const response = await client.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: PRO_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -294,14 +315,20 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
     }
   });
 
-  return JSON.parse(cleanJsonString(response.text || "{}"));
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse code review JSON:", text);
+    throw new Error("AI returned an invalid format for the code review.");
+  }
 };
 
 
 export const extractIssuesFromComments = async (comments: Array<{ id: number, user: string, body: string, url: string }>): Promise<ProposedIssue[]> => {
   const client = getClient();
   const response = await client.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: FLASH_MODEL,
     contents: `
       Extract follow-up issues from these comments: ${JSON.stringify(comments)}.
       Each issue's 'body' MUST be a full implementation plan including any code suggestions mentioned in the comments.
@@ -325,15 +352,21 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
       }
     }
   });
-  return JSON.parse(cleanJsonString(response.text || "[]"));
+  
+  const text = response.text || "[]";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse issues from comments JSON:", text);
+    throw new Error("AI returned an invalid format for extracted issues.");
+  }
 };
 
 
 export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string): Promise<{ plan: string; title: string }> => {
-  await ensureProApiKey();
   const client = getClient();
   const response = await client.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: PRO_MODEL,
     contents: `
       Analyze intent for fresh restart: ${diff.substring(0, 40000)}.
       The plan MUST focus on MINIMALISM. 
@@ -349,14 +382,66 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string)
       }
     }
   });
-  return JSON.parse(cleanJsonString(response.text || "{}"));
+
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse restart plan JSON:", text);
+    throw new Error("AI returned an invalid format for the restart plan. Please try again.");
+  }
+};
+
+
+export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): Promise<{ syncIssues: string[] }> => {
+  const client = getClient();
+  const prompt = `
+    Analyze PR #${pr.number} for synchronization and conflict resolution issues.
+    
+    GOAL: Identify specific areas where the feature branch '${pr.head.ref}' has diverged from '${pr.base.ref}' in a way that creates "git noise" or "phantom changes".
+    
+    ### TARGET AREAS:
+    1. MERGE CONFLICTS: Identify files likely to have conflicts.
+    2. PHANTOM CHANGES: Identify lines that appear as changes but are actually already in the base branch (stale feature branch).
+    3. CI SYNC ISSUES: Identify test failures or snapshot mismatches caused by base branch updates.
+    4. REBASE DISCREPANCIES: Identify where the branch structure is misaligned.
+    
+    PR CONTEXT:
+    Title: ${pr.title}
+    Diff: ${diff.substring(0, 40000)}
+    
+    OUTPUT: A JSON object with a list of specific 'syncIssues' found.
+  `;
+
+  const response = await client.models.generateContent({
+    model: FLASH_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          syncIssues: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
+        required: ['syncIssues']
+      }
+    }
+  });
+
+  const text = response.text || "{}";
+  try {
+    return JSON.parse(cleanJsonString(text));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse sync analysis JSON:", text);
+    throw new Error("AI returned an invalid format for sync analysis.");
+  }
 };
 
 
 export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
   const client = getClient();
   const response = await client.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: FLASH_MODEL,
     contents: `Extract tasks from this text: ${text}. Ensure bodies are comprehensive and contain all technical details and code found in the source.`,
     config: {
       responseMimeType: 'application/json',
@@ -376,7 +461,14 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
       }
     }
   });
-  return JSON.parse(cleanJsonString(response.text || "[]"));
+  
+  const responseText = response.text || "[]";
+  try {
+    return JSON.parse(cleanJsonString(responseText));
+  } catch (e) {
+    console.error("[GeminiService] Failed to parse issues from text JSON:", responseText);
+    throw new Error("AI returned an invalid format for parsed issues.");
+  }
 };
 
 

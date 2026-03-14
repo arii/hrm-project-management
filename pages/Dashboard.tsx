@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { GitPullRequest, Eye, Activity, PlusCircle, ArrowRight, Github } from 'lucide-react';
+import { GitPullRequest, Eye, Activity, PlusCircle, ArrowRight, Github, Terminal } from 'lucide-react';
 
 interface DashboardProps {
   repoName: string;
@@ -44,6 +44,15 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
       color: 'text-orange-400',
       bgColor: 'bg-orange-500/10',
       borderColor: 'border-orange-500/20'
+    },
+    {
+      title: 'Jules Sessions',
+      description: 'Manage and clean up your AI repair sessions to free up quota.',
+      path: '/jules-management',
+      icon: Terminal,
+      color: 'text-rose-400',
+      bgColor: 'bg-rose-500/10',
+      borderColor: 'border-rose-500/20'
     }
   ];
 

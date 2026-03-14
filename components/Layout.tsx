@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 
@@ -32,6 +32,7 @@ const Layout: React.FC<LayoutProps> = ({
     { path: '/code-review', label: 'Code Review', icon: Eye },
     { path: '/workflow-health', label: 'Workflow Pulse', icon: Activity },
     { path: '/batch-create', label: 'Batch Creator', icon: Upload },
+    { path: '/jules-management', label: 'Jules Sessions', icon: Terminal },
   ];
 
   const SidebarContent = () => (

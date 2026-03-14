@@ -25,15 +25,12 @@ interface ParsedIssueUI {
 }
 
 const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
-  const [inputMode, setInputMode] = useState<'file' | 'text'>('text');
   const [textInput, setTextInput] = useState('');
-  const [dragActive, setDragActive] = useState(false);
   const [parsedIssues, setParsedIssues] = useState<ParsedIssueUI[]>([]);
   const [isParsing, setIsParsing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAiParse = async () => {
     if (!textInput.trim()) return;
@@ -83,11 +80,6 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
 
       {parsedIssues.length === 0 && (
         <div className="animate-in fade-in duration-500">
-          <div className="flex border-b border-slate-700 mb-6">
-            <button onClick={() => setInputMode('text')} className={clsx("px-6 py-3 font-medium border-b-2 transition-colors", inputMode === 'text' ? "border-primary text-primary" : "border-transparent text-slate-400")}>Source Text</button>
-            <button onClick={() => setInputMode('file')} className={clsx("px-6 py-3 font-medium border-b-2 transition-colors", inputMode === 'file' ? "border-primary text-primary" : "border-transparent text-slate-400")}>Upload Doc</button>
-          </div>
-
           <div className="bg-surface border border-slate-700 rounded-xl p-6 shadow-xl">
              {parseError && (
                <div className="mb-4 p-3 bg-red-900/20 border border-red-800/50 text-red-300 rounded-lg flex items-center gap-3 text-sm animate-in fade-in">

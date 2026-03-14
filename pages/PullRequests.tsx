@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff } from '../services/githubService';
-import { analyzePullRequests, analyzePrForRestart } from '../services/geminiService';
+import { analyzePullRequests, analyzePrForRestart, analyzePrForSync } from '../services/geminiService';
 import { listSessions, createSession, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
 import { EnrichedPullRequest, JulesSession, PrHealthAction, CodeReviewResult } from '../types';
@@ -32,6 +32,8 @@ import {
   ShieldAlert,
   Plus,
   Bot,
+  Key,
+  Layers,
   ExternalLink as ExternalLinkIcon
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -50,11 +52,13 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const navigate = useNavigate();
   const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   
   const [repairStatuses, setRepairStatuses] = useState<Record<number, ActionStatus>>({});
   const [restartStatuses, setRestartStatuses] = useState<Record<number, ActionStatus>>({});
+  const [syncStatuses, setSyncStatuses] = useState<Record<number, ActionStatus>>({});
   const [dispatchStatuses, setDispatchStatuses] = useState<Record<string, ActionStatus>>({});
   const [sessionLinks, setSessionLinks] = useState<Record<string, string>>({}); // Stores session name for deep links
   const [processingMessages, setProcessingMessages] = useState<Record<number, string>>({});
@@ -65,14 +69,18 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
 
-  const analysis = useGeminiAnalysis(async (inputPrs) => {
-    const result = await analyzePullRequests(inputPrs);
-    setProposedActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
-    return result;
-  }, 'pr_health_check_v4');
+  const analysis = useGeminiAnalysis(
+    useCallback(async (inputPrs: EnrichedPullRequest[]) => {
+      const result = await analyzePullRequests(inputPrs);
+      setProposedActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
+      return result;
+    }, []), 
+    'pr_health_check_v4'
+  );
 
   const loadPrs = async (silent = false, skipCache = false) => {
     if (!silent) setLoading(true);
+    setError(null);
     try {
       const data = await fetchEnrichedPullRequests(repoName, token, skipCache);
       setPrs(data);
@@ -82,6 +90,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       }
     } catch (e: any) {
       console.error(e);
+      setError(e.message || "Failed to load pull requests. Please check your connection and settings.");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -138,8 +147,14 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     updateProcessingMessage(pr.number, "Analyzing PR intent for fresh restart...");
     try {
       const diff = await fetchPrDiff(repoName, pr.number, token);
-      const { plan, title } = await analyzePrForRestart(pr, diff);
+      if (!diff) throw new Error("Could not retrieve PR diff from GitHub.");
       
+      const { plan, title } = await analyzePrForRestart(pr, diff);
+      if (!plan || !title) {
+        throw new Error("AI failed to generate a restart plan. Please try again.");
+      }
+      
+      updateProcessingMessage(pr.number, "Plan generated. Creating Jules session...");
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("Source context not found.");
       
@@ -171,6 +186,56 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       updateProcessingMessage(pr.number, "Fresh restart session dispatched successfully.");
     } catch (e: any) {
       setRestartStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
+      setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
+    }
+  };
+
+  const handleSyncConflictResolution = async (pr: EnrichedPullRequest) => {
+    if (!julesApiKey || !token) return;
+    setSyncStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
+    updateProcessingMessage(pr.number, "Analyzing PR for synchronization issues...");
+    try {
+      const diff = await fetchPrDiff(repoName, pr.number, token);
+      if (!diff) throw new Error("Could not retrieve PR diff from GitHub.");
+
+      const { syncIssues } = await analyzePrForSync(pr, diff);
+      
+      updateProcessingMessage(pr.number, "Issues identified. Creating Jules session...");
+      const sourceId = await findSourceForRepo(julesApiKey, repoName);
+      if (!sourceId) throw new Error("Source context not found.");
+
+      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
+      const auditPart = existingReview 
+        ? `\n\nADDITIONAL AUDIT CONTEXT:\n${existingReview.reviewComment}` 
+        : "";
+
+      const issuesList = syncIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n');
+
+      const prompt = `
+        AI SYNCHRONIZATION & CONFLICT RESOLUTION SESSION for PR #${pr.number} on branch '${pr.head.ref}'.
+        
+        GOAL: Restore structural alignment between the feature branch and its parent branch ('${pr.base.ref}').
+        
+        ### IDENTIFIED SYNCHRONIZATION ISSUES:
+        ${issuesList}
+        ${auditPart}
+        
+        ### SURGICAL REPAIR DIRECTIVES:
+        1. TARGETED REMEDIATION: Focus exclusively on resolving the identified merge conflicts, rebase discrepancies, and "stale-state" issues listed above.
+        2. NOISE REDUCTION: Explicitly ignore architectural patterns, business logic improvements, or general code quality feedback. Success is defined ONLY by a clean, synchronized state.
+        3. SYSTEMIC AWARENESS: Identify and resolve "phantom changes"—lines of code that appear as PR changes only because the feature branch is missing commits already merged into the base.
+        4. OPERATIONAL PRECISION: Operate at the git-structure level. Purge environmental or synchronization artifacts.
+        5. CI FIXES: Resolve CI test errors specifically related to synchronization, such as visual regression snapshots that are out of scope or outdated due to base branch changes.
+        
+        The final delta must represent ONLY the intentional work of the developer.
+      `;
+      
+      const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Sync & Conflict: #${pr.number}`);
+      setSessionLinks(prev => ({ ...prev, [`sync-${pr.number}`]: session.name }));
+      setSyncStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
+      updateProcessingMessage(pr.number, "Synchronization session dispatched successfully.");
+    } catch (e: any) {
+      setSyncStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
       setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
     }
   };
@@ -228,6 +293,27 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     pr.title.toLowerCase().includes(searchQuery.toLowerCase()) || pr.number.toString().includes(searchQuery)
   );
 
+  if (!repoName || !token) {
+    return (
+      <div className="max-w-4xl mx-auto mt-20">
+        <div className="bg-amber-900/20 border border-amber-500/30 rounded-2xl p-12 text-center space-y-6">
+          <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto">
+            <Key className="w-10 h-10 text-amber-500" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-bold text-white">Credentials Required</h2>
+            <p className="text-slate-400 max-w-md mx-auto">
+              To audit pull requests, you must configure your GitHub Repository and Personal Access Token in the settings.
+            </p>
+          </div>
+          <Button variant="primary" onClick={() => navigate('/')} icon={ChevronRight}>
+            Go to Settings
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-[1600px] mx-auto space-y-8 pb-20">
       <div className="flex justify-between items-end">
@@ -248,6 +334,13 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
           <Button variant="secondary" onClick={() => loadPrs(false, true)} isLoading={loading} icon={RefreshCw}>Refresh</Button>
         </div>
       </div>
+
+      {error && (
+        <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400 animate-in fade-in slide-in-from-top-2">
+          <AlertTriangle className="w-5 h-5 shrink-0" />
+          <p className="text-sm">{error}</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-8 items-start">
         {/* LEFT: Audit Results & Recommendations */}
@@ -278,7 +371,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                             {dispatchStatuses[action._id] === 'success' && sessionLinks[action._id] && (
                                <button 
                                  onClick={() => {
-                                   const sessionUrl = `https://jules.ai/sessions/${sessionLinks[action._id].split('/').pop()}`;
+                                   const sessionUrl = `https://jules.google.com/session/${sessionLinks[action._id].split('/').pop()}`;
                                    window.open(sessionUrl, '_blank', 'noopener,noreferrer');
                                  }}
                                  className="text-[9px] font-bold text-blue-400 hover:underline flex items-center gap-1 uppercase"
@@ -315,6 +408,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
              const hasAudit = !!storage.getPrReview(repoName, pr.number);
              const repairSuccess = repairStatuses[pr.number] === 'success';
              const restartSuccess = restartStatuses[pr.number] === 'success';
+             const syncSuccess = syncStatuses[pr.number] === 'success';
 
              return (
              <div key={pr.id} className="bg-surface border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-all p-5 flex flex-col md:flex-row gap-6 items-center">
@@ -339,18 +433,22 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                   </div>
                   {(processingMessages[pr.number] || errorMessages[pr.number]) && (
                     <div className={clsx("mt-4 p-3 rounded-lg text-xs flex items-center gap-3 animate-in slide-in-from-top-1", errorMessages[pr.number] ? "bg-red-900/20 text-red-300 border border-red-800/50" : "bg-blue-900/10 text-blue-300 border border-blue-800/30")}>
-                       {(repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading') && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
-                       {(repairSuccess || restartSuccess) && <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
+                       {(repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading' || syncStatuses[pr.number] === 'loading') && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
+                       {(repairSuccess || restartSuccess || syncSuccess) && <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
                        {errorMessages[pr.number] ? <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" /> : null}
                        <div className="flex-1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                           <span className="font-medium">{errorMessages[pr.number] || processingMessages[pr.number]}</span>
-                          {(repairSuccess || restartSuccess) && (
+                          {(repairSuccess || restartSuccess || syncSuccess) && (
                             <button 
                               onClick={() => {
-                                const sessionKey = repairSuccess ? `repair-${pr.number}` : `restart-${pr.number}`;
+                                let sessionKey = "";
+                                if (repairSuccess) sessionKey = `repair-${pr.number}`;
+                                else if (restartSuccess) sessionKey = `restart-${pr.number}`;
+                                else if (syncSuccess) sessionKey = `sync-${pr.number}`;
+                                
                                 const sessionName = sessionLinks[sessionKey];
                                 if (sessionName) {
-                                  const sessionUrl = `https://jules.ai/sessions/${sessionName.split('/').pop()}`;
+                                  const sessionUrl = `https://jules.google.com/session/${sessionName.split('/').pop()}`;
                                   window.open(sessionUrl, '_blank', 'noopener,noreferrer');
                                 }
                               }}
@@ -388,6 +486,18 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                     className={clsx("w-full bg-slate-800 border-slate-700 hover:bg-slate-700", restartSuccess && "!bg-green-600 !border-green-500")}
                   >
                     {restartSuccess ? 'Restart Dispatched' : 'Restart Fresh Session'}
+                  </Button>
+
+                  <Button 
+                    size="sm" 
+                    variant={syncSuccess ? "success" : "secondary"}
+                    onClick={() => handleSyncConflictResolution(pr)} 
+                    isLoading={syncStatuses[pr.number] === 'loading'} 
+                    disabled={syncSuccess || repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading'}
+                    icon={syncSuccess ? Check : Layers}
+                    className={clsx("w-full bg-slate-800 border-slate-700 hover:bg-slate-700", syncSuccess && "!bg-green-600 !border-green-500")}
+                  >
+                    {syncSuccess ? 'Sync Dispatched' : 'AI Sync & Conflict'}
                   </Button>
 
                   <div className="flex gap-2 mt-1">

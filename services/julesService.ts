@@ -28,15 +28,29 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   }
 
   const headers: HeadersInit = {
-    'Content-Type': 'application/json',
     'X-Goog-Api-Key': apiKey.trim(),
     ...options.headers,
   };
 
-  const response = await fetch(`${JULES_API_BASE}/${endpoint}`, {
-    ...options,
-    headers,
-  });
+  if (!isGet && !headers['Content-Type']) {
+    // @ts-ignore
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const fullUrl = `${JULES_API_BASE}/${endpoint}`;
+  let response: Response;
+  try {
+    response = await fetch(fullUrl, {
+      ...options,
+      headers,
+    });
+  } catch (e: any) {
+    console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+    if (e.message === 'Failed to fetch') {
+      throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
+    }
+    throw e;
+  }
 
   if (!response.ok) {
     let errorMessage = `Jules API Error: ${response.status}`;
@@ -87,10 +101,6 @@ export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
   return allSessions;
 };
 
-export const getSession = async (apiKey: string, sessionName: string): Promise<JulesSession> => {
-  return request<JulesSession>(`sessions/${sessionName}`, apiKey);
-};
-
 export const createSession = async (
   apiKey: string, 
   prompt: string, 
@@ -113,14 +123,16 @@ export const createSession = async (
 };
 
 export const sendMessage = async (apiKey: string, sessionName: string, text: string): Promise<any> => {
-  return request(`sessions/${sessionName}:sendMessage`, apiKey, {
+  const endpoint = sessionName.startsWith('sessions/') ? `${sessionName}:sendMessage` : `sessions/${sessionName}:sendMessage`;
+  return request(endpoint, apiKey, {
     method: 'POST',
     body: JSON.stringify({ prompt: text })
   });
 };
 
 export const deleteSession = async (apiKey: string, sessionName: string): Promise<void> => {
-  return request<void>(`sessions/${sessionName}`, apiKey, { method: 'DELETE' });
+  const endpoint = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
+  return request<void>(endpoint, apiKey, { method: 'DELETE' });
 };
 
 export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {

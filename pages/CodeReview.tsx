@@ -132,10 +132,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         setEnrichedMap(prev => ({ ...prev, [pr.number]: full }));
         setSelectedPr(full);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Enrichment failed", e);
       if (currentFetchPrRef.current === pr.number) {
-        setActionError("Failed to fetch full technical metadata. Results may be incomplete.");
+        setActionError(e.message || "Failed to fetch full technical metadata. Results may be incomplete.");
       }
     } finally {
       if (currentFetchPrRef.current === pr.number) {
@@ -233,7 +233,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
       
       // Open Jules session in a new tab instead of internal navigation
-      const sessionUrl = `https://jules.ai/sessions/${session.name.split('/').pop()}`;
+      const sessionUrl = `https://jules.google.com/session/${session.name.split('/').pop()}`;
       window.open(sessionUrl, '_blank', 'noopener,noreferrer');
     } catch (e: any) { 
       setActionError(`Dispatch failed: ${e.message}`); 
@@ -244,6 +244,27 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
   const currentStatus = selectedPr ? statuses[selectedPr.number] || 'idle' : 'idle';
   const isCurrentReviewed = selectedPr ? reviewedShas[selectedPr.number] === selectedPr.head.sha : false;
+
+  if (!repoName || !token) {
+    return (
+      <div className="max-w-4xl mx-auto mt-20">
+        <div className="bg-amber-900/20 border border-amber-500/30 rounded-2xl p-12 text-center space-y-6">
+          <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto">
+            <ShieldCheck className="w-10 h-10 text-amber-500" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-bold text-white">Credentials Required</h2>
+            <p className="text-slate-400 max-w-md mx-auto">
+              To perform code reviews, you must configure your GitHub Repository and Personal Access Token in the settings.
+            </p>
+          </div>
+          <Button variant="primary" onClick={() => navigate('/')} icon={Plus}>
+            Go to Settings
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-[1600px] mx-auto h-auto lg:h-[calc(100vh-8rem)] flex flex-col">
