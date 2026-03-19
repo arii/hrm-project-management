@@ -410,60 +410,74 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
             </div>
           )}
           <div className="max-h-64 lg:max-h-none overflow-y-auto flex-1 p-2 space-y-2 custom-scrollbar">
-            {prs.map(pr => {
-              const enriched = enrichedMap[pr.number];
-              const isSelected = selectedPrIds.has(pr.number);
-              const status = statuses[pr.number] || 'idle';
-              
-              return (
-                <div 
-                  key={pr.id}
-                  className={clsx(
-                    "group relative flex items-center gap-2 p-1 rounded-lg transition-all border",
-                    selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
-                  )}
-                >
-                  <div className="pl-2">
-                    <input 
-                      type="checkbox" 
-                      className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500/20 cursor-pointer"
-                      checked={isSelected}
-                      onChange={(e) => toggleSelectPr(e, pr.number)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
+            {loading ? (
+              Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2 p-3 rounded-lg border border-slate-800 bg-slate-900/40 animate-pulse">
+                  <div className="w-4 h-4 rounded bg-slate-800 ml-1" />
+                  <div className="flex-1 space-y-2 ml-2">
+                    <div className="h-4 bg-slate-800 rounded w-3/4" />
+                    <div className="h-3 bg-slate-800 rounded w-1/4" />
                   </div>
-                  <button 
-                    onClick={() => handleSelectPr(pr)} 
-                    className="flex-1 text-left p-2 rounded-lg flex flex-col"
-                  >
-                    <div className="flex justify-between items-start w-full">
-                      <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
-                      <div className="shrink-0 flex items-center gap-1.5">
-                        {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
-                        {status === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
-                        {(status === 'analyzing' || status === 'posting') && <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />}
-                        {status === 'error' && <AlertTriangle className="w-3 h-3 text-red-400" />}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500 font-mono">
-                      #{pr.number}
-                      {enriched ? (
-                        <>
-                          <span className="h-1 w-1 bg-slate-800 rounded-full" />
-                          <span className={clsx(
-                            enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
-                            enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
-                            enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
-                          )}>{enriched.testStatus}</span>
-                        </>
-                      ) : (
-                        <span className="text-[9px] opacity-40">Loading...</span>
-                      )}
-                    </div>
-                  </button>
                 </div>
-              );
-            })}
+              ))
+            ) : prs.length === 0 ? (
+              <div className="text-center py-10 text-slate-500 text-xs italic">No active pull requests found.</div>
+            ) : (
+              prs.map(pr => {
+                const enriched = enrichedMap[pr.number];
+                const isSelected = selectedPrIds.has(pr.number);
+                const status = statuses[pr.number] || 'idle';
+                
+                return (
+                  <div 
+                    key={pr.id}
+                    className={clsx(
+                      "group relative flex items-center gap-2 p-1 rounded-lg transition-all border",
+                      selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
+                    )}
+                  >
+                    <div className="pl-2">
+                      <input 
+                        type="checkbox" 
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500/20 cursor-pointer"
+                        checked={isSelected}
+                        onChange={(e) => toggleSelectPr(e, pr.number)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                    <button 
+                      onClick={() => handleSelectPr(pr)} 
+                      className="flex-1 text-left p-2 rounded-lg flex flex-col"
+                    >
+                      <div className="flex justify-between items-start w-full">
+                        <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
+                        <div className="shrink-0 flex items-center gap-1.5">
+                          {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
+                          {status === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
+                          {(status === 'analyzing' || status === 'posting') && <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />}
+                          {status === 'error' && <AlertTriangle className="w-3 h-3 text-red-400" />}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500 font-mono">
+                        #{pr.number}
+                        {enriched ? (
+                          <>
+                            <span className="h-1 w-1 bg-slate-800 rounded-full" />
+                            <span className={clsx(
+                              enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
+                              enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
+                              enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
+                            )}>{enriched.testStatus}</span>
+                          </>
+                        ) : (
+                          <span className="text-[9px] opacity-40">Loading...</span>
+                        )}
+                      </div>
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -608,10 +622,27 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                 )}
 
                 {reviews[selectedPr.number] && (currentStatus === 'completed' || currentStatus === 'idle') && (
-                  <div className="bg-slate-900/50 border border-slate-700/50 p-4 lg:p-8 rounded-2xl animate-in fade-in duration-700">
-                     <div className="prose prose-invert prose-sm max-w-none prose-blue">
-                        <ReactMarkdown>{reviews[selectedPr.number].reviewComment}</ReactMarkdown>
-                     </div>
+                  <div className="space-y-4 animate-in fade-in duration-700">
+                    <div className="flex items-center justify-between px-2">
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                        <Bot className="w-3 h-3 text-blue-400" /> Detailed Audit Report
+                      </h4>
+                      <span className="text-[10px] text-slate-600 font-mono">
+                        Generated by Principal AI
+                      </span>
+                    </div>
+                    <div className="bg-slate-900/80 border border-slate-700/50 p-6 lg:p-10 rounded-2xl shadow-2xl backdrop-blur-sm">
+                       <div className="prose prose-invert prose-base max-w-none prose-blue 
+                         prose-headings:text-white prose-headings:font-bold prose-headings:tracking-tight
+                         prose-p:text-slate-300 prose-p:leading-relaxed
+                         prose-strong:text-white prose-strong:font-semibold
+                         prose-code:text-blue-300 prose-code:bg-blue-900/30 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+                         prose-pre:bg-slate-950 prose-pre:border prose-pre:border-slate-800 prose-pre:shadow-inner
+                         prose-li:text-slate-300
+                         prose-hr:border-slate-800">
+                          <ReactMarkdown>{reviews[selectedPr.number].reviewComment}</ReactMarkdown>
+                       </div>
+                    </div>
                   </div>
                 )}
               </div>
