@@ -23,7 +23,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
 
   if (isGet) {
-    const cached = storage.getCached<T>(cacheKey);
+    const cached = storage.get<T>(cacheKey);
     if (cached) return cached;
   }
 

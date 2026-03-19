@@ -93,6 +93,24 @@ export interface AnalysisResult {
   timestamp: string;
 }
 
+export interface WorkflowAnalysis {
+  healthScore: number;
+  summary: string;
+  technicalFindings: Array<{
+    type: 'failure' | 'warning' | 'info';
+    title: string;
+    description: string;
+    location?: string;
+    remediation?: string;
+  }>;
+  qualitativeAnalysis: {
+    efficacy: string;
+    coverage: string;
+    efficiency: string;
+    recommendations: string[];
+  };
+}
+
 export interface GithubAnnotation {
   path: string;
   start_line: number;

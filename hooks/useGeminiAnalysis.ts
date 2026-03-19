@@ -1,7 +1,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { AnalysisStatus } from '../types';
-import { StorageKeys } from '../services/storageService';
+import { storage, StorageKeys } from '../services/storageService';
 
 export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>, persistenceKey?: string) {
   const [status, setStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
@@ -9,24 +9,20 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
   
   const [result, setResult] = useState<T | null>(() => {
     if (persistenceKey) {
-      try {
-        const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
-        const cached = localStorage.getItem(fullKey);
-        if (cached) {
-          return JSON.parse(cached);
-        }
-      } catch (e) {
-        console.warn('Failed to parse cached analysis', e);
+      const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
+      const cached = storage.getRaw<T | null>(fullKey, null);
+      if (cached) {
+        // If we have a cached result, we start as COMPLETE
+        return cached;
       }
     }
     return null;
   });
 
-  useEffect(() => {
-    if (result && status === AnalysisStatus.IDLE) {
-      setStatus(AnalysisStatus.COMPLETE);
-    }
-  }, []);
+  // If we have an initial result, ensure status is COMPLETE
+  if (result && status === AnalysisStatus.IDLE) {
+    setStatus(AnalysisStatus.COMPLETE);
+  }
 
   const run = useCallback(async (...args: any[]) => {
     setStatus(AnalysisStatus.LOADING);
@@ -37,10 +33,9 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
       setStatus(AnalysisStatus.COMPLETE);
       
       if (persistenceKey) {
-        try {
-          const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
-          localStorage.setItem(fullKey, JSON.stringify(data));
-        } catch (e) {
+        const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
+        const success = storage.set(fullKey, data);
+        if (!success) {
           console.warn('[useGeminiAnalysis] Persistence failed (likely quota). Analysis succeeded but result will not be cached.');
         }
       }
@@ -56,7 +51,7 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
     setError(null);
     if (persistenceKey) {
       const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
-      localStorage.removeItem(fullKey);
+      storage.remove(fullKey);
     }
   }, [persistenceKey]);
 

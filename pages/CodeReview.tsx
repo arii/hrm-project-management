@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   fetchPullRequests,
@@ -22,6 +22,10 @@ import Badge from '../components/ui/Badge';
 import { Eye, Loader2, RefreshCw, Send, FileSearch, Plus, Check, TerminalSquare, RotateCcw, Bot, AlertTriangle, ExternalLink, FileCode, CheckCircle2, ShieldCheck, XCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
+import CredentialsRequired from '../components/ui/CredentialsRequired';
+import WorkerSelectorModal from '../components/ui/WorkerSelectorModal';
+import { useIssueDispatch } from '../hooks/useIssueDispatch';
+import { useJulesSessions } from '../hooks/useJulesSessions';
 
 interface CodeReviewProps {
   repoName: string;
@@ -62,32 +66,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [aiSuggestions, setAiSuggestions] = useState<ExtractedIssueUI[]>([]);
   const [reviewedShas, setReviewedShas] = useState<Record<number, string>>({});
 
-  useEffect(() => {
-    if (repoName && token) {
-      loadPrList().then((list) => {
-        const prNumber = location.state?.selectedPrNumber;
-        if (prNumber && list) {
-           const match = list.find(p => p.number === prNumber);
-           if (match) handleSelectPr(match);
-        }
-      });
-      const stored = localStorage.getItem(`audit_reviewed_shas_${repoName}`);
-      if (stored) { try { setReviewedShas(JSON.parse(stored)); } catch (e) {} }
-    } else {
-      setLoading(false);
-      setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
-    }
-  }, [repoName, token]);
+  const { isDispatching, dispatchIssue } = useIssueDispatch(repoName, token);
+  const {
+    allSessions,
+    suggestedSessions,
+    julesReportStatus,
+    onReportToJules
+  } = useJulesSessions(julesApiKey, repoName);
 
-  const updateReviewedSha = (prNumber: number, sha: string) => {
-    setReviewedShas(prev => {
-      const next = { ...prev, [prNumber]: sha };
-      localStorage.setItem(`audit_reviewed_shas_${repoName}`, JSON.stringify(next));
-      return next;
-    });
-  };
+  const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
 
-  const loadPrList = async () => {
+  const loadPrList = useCallback(async () => {
     setLoading(true);
     try {
       const list = await fetchEnrichedPullRequests(repoName, token);
@@ -106,9 +95,35 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     } finally { 
       setLoading(false); 
     }
+  }, [repoName, token]);
+
+  useEffect(() => {
+    if (repoName && token) {
+      loadPrList().then((list) => {
+        const prNumber = location.state?.selectedPrNumber;
+        if (prNumber && list) {
+           const match = list.find(p => p.number === prNumber);
+           if (match) handleSelectPr(match);
+        }
+      });
+      const stored = storage.getReviewedShas(repoName);
+      setReviewedShas(stored);
+    } else {
+      setLoading(false);
+      setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
+    }
+  }, [repoName, token, loadPrList]);
+
+  const updateReviewedSha = (prNumber: number, sha: string) => {
+    setReviewedShas(prev => {
+      const next = { ...prev, [prNumber]: sha };
+      storage.saveReviewedShas(repoName, next);
+      return next;
+    });
   };
 
   const handleSelectPr = async (pr: GithubPullRequest) => {
+    if (currentFetchPrRef.current === pr.number) return;
     currentFetchPrRef.current = pr.number;
     
     // Check if we already have enriched data
@@ -130,6 +145,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setExtractedIssues([]);
     setAiSuggestions([]);
     setActionError(null);
+    setReviews({}); // Clear reviews when selecting a new PR
 
     // Check storage for existing reviews
     let review = storage.getPrReview(repoName, pr.number);
@@ -210,39 +226,44 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     const ids = Array.from(selectedPrIds);
     
     // Concurrency control to avoid rate limits
-    const CONCURRENCY_LIMIT = 3;
+    const CONCURRENCY_LIMIT = 2; // Reduced for safety
     const chunks = [];
     for (let i = 0; i < ids.length; i += CONCURRENCY_LIMIT) {
       chunks.push(ids.slice(i, i + CONCURRENCY_LIMIT));
     }
 
-    for (const chunk of chunks) {
-      await Promise.all(chunk.map(async (id) => {
-        const pr = prs.find(p => p.number === id);
-        if (!pr) return;
-        
-        const enriched = enrichedMap[id] || pr;
-        if (statuses[id] === 'completed' && reviewedShas[id] === enriched.head.sha) return;
-        
-        let fullPr = enrichedMap[id];
-        if (!fullPr || !fullPr.checkResults) {
-          try {
-            fullPr = await enrichSinglePr(repoName, pr, token, true);
-            setEnrichedMap(prev => ({ ...prev, [id]: fullPr }));
-          } catch (e) {
-            setErrors(prev => ({ ...prev, [id]: "Enrichment failed" }));
-            setStatuses(prev => ({ ...prev, [id]: 'error' }));
-            return;
+    try {
+      for (const chunk of chunks) {
+        await Promise.all(chunk.map(async (id) => {
+          const pr = prs.find(p => p.number === id);
+          if (!pr) return;
+          
+          const enriched = enrichedMap[id] || pr;
+          // Skip if already reviewed at this SHA
+          if (reviewedShas[id] === enriched.head.sha && statuses[id] === 'completed') return;
+          
+          let fullPr = enrichedMap[id];
+          if (!fullPr || !fullPr.checkResults) {
+            try {
+              fullPr = await enrichSinglePr(repoName, pr, token, true);
+              setEnrichedMap(prev => ({ ...prev, [id]: fullPr }));
+            } catch (e) {
+              setErrors(prev => ({ ...prev, [id]: "Enrichment failed" }));
+              setStatuses(prev => ({ ...prev, [id]: 'error' }));
+              return;
+            }
           }
-        }
-        
-        // Use Flash and Low Thinking for bulk audits to reduce cost and increase speed
-        await runFullCodeReview(fullPr as EnrichedPullRequest, true, { useFlash: true, lowThinking: true });
-      }));
+          
+          // Use Flash and Low Thinking for bulk audits to reduce cost and increase speed
+          await runFullCodeReview(fullPr as EnrichedPullRequest, true, { useFlash: true, lowThinking: true });
+        }));
+      }
+    } catch (e: any) {
+      setActionError(`Bulk audit encountered errors: ${e.message}`);
+    } finally {
+      setIsBulkAuditing(false);
+      setSelectedPrIds(new Set());
     }
-    
-    setIsBulkAuditing(false);
-    setSelectedPrIds(new Set());
   };
 
   const toggleSelectPr = (e: React.ChangeEvent<HTMLInputElement>, prNumber: number) => {
@@ -288,63 +309,31 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     if (!token) return;
     setCreatingIssueId(issue._id);
     try {
-      await createIssue(repoName, token, { 
-        title: issue.title, 
-        body: `${issue.body}\n\n---\n*Extracted from PR #${selectedPr?.number} via RepoAuditor.*`, 
-        labels: [...issue.labels, 'follow-up'] 
-      });
-      if (source === 'human') setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isCreated: true } : p));
-      else setAiSuggestions(prev => prev.map(p => p._id === issue._id ? { ...p, isCreated: true } : p));
-    } catch (e: any) { 
-      setActionError(`Creation failed: ${e.message}`); 
-    } finally { setCreatingIssueId(null); }
-  };
-
-  const handleDispatchTaskToJules = async (issue: ExtractedIssueUI) => {
-    if (!julesApiKey || !selectedPr) {
-      setActionError("Jules API Key Required.");
-      return;
-    }
-    setCreatingIssueId(issue._id);
-    try {
-      const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("Could not identify Jules source.");
-      const session = await createSession(julesApiKey, `Audit Fix Task:\n\nTitle: ${issue.title}\nDetails:\n${issue.body}`, sourceId, selectedPr.head.ref, `Audit Fix: ${issue.title.substring(0, 30)}`);
-      setAiSuggestions(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
-      setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
+      const success = await dispatchIssue(
+        issue._id,
+        issue.title,
+        `${issue.body}\n\n---\n*Extracted from PR #${selectedPr?.number} via RepoAuditor.*`,
+        [...issue.labels, 'follow-up']
+      );
       
-      // Open Jules session in a new tab instead of internal navigation
-      const sessionUrl = `https://jules.google.com/session/${session.name.split('/').pop()}`;
-      window.open(sessionUrl, '_blank', 'noopener,noreferrer');
-    } catch (e: any) { 
-      setActionError(`Dispatch failed: ${e.message}`); 
+      if (success) {
+        if (source === 'human') setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isCreated: true } : p));
+        else setAiSuggestions(prev => prev.map(p => p._id === issue._id ? { ...p, isCreated: true } : p));
+      }
     } finally { 
       setCreatingIssueId(null); 
     }
   };
 
+  const handleDispatchTaskToJules = (issue: ExtractedIssueUI) => {
+    setWorkerModal({ isOpen: true, finding: issue });
+  };
+
   const currentStatus = selectedPr ? statuses[selectedPr.number] || 'idle' : 'idle';
-  const isCurrentReviewed = selectedPr ? reviewedShas[selectedPr.number] === selectedPr.head.sha : false;
+  const hasExistingReview = selectedPr ? reviewedShas[selectedPr.number] === selectedPr.head.sha : false;
 
   if (!repoName || !token) {
-    return (
-      <div className="max-w-4xl mx-auto mt-20">
-        <div className="bg-amber-900/20 border border-amber-500/30 rounded-2xl p-12 text-center space-y-6">
-          <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto">
-            <ShieldCheck className="w-10 h-10 text-amber-500" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-2xl font-bold text-white">Credentials Required</h2>
-            <p className="text-slate-400 max-w-md mx-auto">
-              To perform code reviews, you must configure your GitHub Repository and Personal Access Token in the settings.
-            </p>
-          </div>
-          <Button variant="primary" onClick={() => navigate('/')} icon={Plus}>
-            Go to Settings
-          </Button>
-        </div>
-      </div>
-    );
+    return <CredentialsRequired />;
   }
 
   return (
@@ -372,7 +361,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                </Button>
                {(currentStatus === 'idle' || currentStatus === 'completed' || currentStatus === 'error') && (
                   <Button variant="primary" size="sm" onClick={() => runFullCodeReview(selectedPr)} icon={Send} className="flex-1 md:flex-none">
-                    {isCurrentReviewed ? 'Refresh' : 'Run Audit'}
+                    {hasExistingReview ? 'Refresh' : 'Run Audit'}
                   </Button>
                )}
              </div>
@@ -528,22 +517,86 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                    </div>
                 )}
 
-                {aiSuggestions.length > 0 && (
-                   <div className="bg-blue-900/10 border border-blue-500/20 rounded-2xl p-4 lg:p-6 animate-in fade-in">
-                      <h4 className="text-blue-300 font-bold flex items-center gap-2 text-sm mb-4">Roadmap</h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                         {aiSuggestions.map(issue => (
-                           <div key={issue._id} className="bg-slate-900/60 rounded-xl p-4 border border-blue-500/20">
-                              <h5 className="text-slate-200 font-bold text-xs mb-2 line-clamp-1">{issue.title}</h5>
-                              <div className="flex gap-2">
-                                <Button size="sm" variant="ghost" onClick={() => handleCreateIssue(issue, 'ai')} disabled={!!issue.isCreated} icon={issue.isCreated ? Check : Plus} className="text-[10px] flex-1 py-1 h-7">Issue</Button>
-                                {!issue.isCreated && (
-                                  <Button size="sm" variant="ghost" onClick={() => handleDispatchTaskToJules(issue)} icon={TerminalSquare} className="text-[10px] flex-1 py-1 h-7 text-purple-400">AI Solve</Button>
-                                )}
-                              </div>
+                {/* Roadmap Section: Suggestions & Extracted Issues */}
+                {(aiSuggestions.length > 0 || extractedIssues.length > 0) && (
+                   <div className="space-y-6">
+                      {aiSuggestions.length > 0 && (
+                        <div className="bg-blue-900/10 border border-blue-500/20 rounded-2xl p-4 lg:p-6 animate-in fade-in">
+                           <h4 className="text-blue-300 font-bold flex items-center gap-2 text-sm mb-4">
+                             <Bot className="w-4 h-4" /> AI Audit Roadmap
+                           </h4>
+                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {aiSuggestions.map(issue => (
+                                <div key={issue._id} className="bg-slate-900/60 rounded-xl p-4 border border-blue-500/20 hover:border-blue-500/40 transition-colors">
+                                   <div className="flex justify-between items-start mb-2">
+                                     <h5 className="text-slate-200 font-bold text-xs line-clamp-1">{issue.title}</h5>
+                                     <Badge variant={issue.priority === 'High' ? 'red' : (issue.priority === 'Medium' ? 'yellow' : 'blue')} className="text-[8px] px-1 py-0 h-4">
+                                       {issue.priority}
+                                     </Badge>
+                                   </div>
+                                   <p className="text-[10px] text-slate-400 line-clamp-2 mb-3 h-8">{issue.reason}</p>
+                                   <div className="flex gap-2">
+                                      <Button 
+                                        size="sm" 
+                                        variant="ghost" 
+                                        onClick={() => handleCreateIssue(issue, 'ai')} 
+                                        disabled={!!issue.isCreated || isDispatching(issue._id)} 
+                                        isLoading={isDispatching(issue._id)}
+                                        icon={issue.isCreated ? Check : Plus} 
+                                        className="text-[10px] flex-1 py-1 h-7"
+                                      >
+                                       {issue.isCreated ? 'Created' : 'Issue'}
+                                     </Button>
+                                     {!issue.isCreated && (
+                                       <Button size="sm" variant="ghost" onClick={() => handleDispatchTaskToJules(issue)} icon={TerminalSquare} className="text-[10px] flex-1 py-1 h-7 text-purple-400">
+                                         AI Solve
+                                       </Button>
+                                     )}
+                                   </div>
+                                </div>
+                              ))}
                            </div>
-                         ))}
-                      </div>
+                        </div>
+                      )}
+
+                      {extractedIssues.length > 0 && (
+                        <div className="bg-emerald-900/10 border border-emerald-500/20 rounded-2xl p-4 lg:p-6 animate-in fade-in">
+                           <h4 className="text-emerald-300 font-bold flex items-center gap-2 text-sm mb-4">
+                             <FileSearch className="w-4 h-4" /> Issues Extracted from Comments
+                           </h4>
+                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {extractedIssues.map(issue => (
+                                <div key={issue._id} className="bg-slate-900/60 rounded-xl p-4 border border-emerald-500/20 hover:border-emerald-500/40 transition-colors">
+                                   <div className="flex justify-between items-start mb-2">
+                                     <h5 className="text-slate-200 font-bold text-xs line-clamp-1">{issue.title}</h5>
+                                     <Badge variant="green" className="text-[8px] px-1 py-0 h-4">
+                                       Extracted
+                                     </Badge>
+                                   </div>
+                                   <p className="text-[10px] text-slate-400 line-clamp-2 mb-3 h-8">{issue.reason}</p>
+                                   <div className="flex gap-2">
+                                      <Button 
+                                        size="sm" 
+                                        variant="ghost" 
+                                        onClick={() => handleCreateIssue(issue, 'human')} 
+                                        disabled={!!issue.isCreated || isDispatching(issue._id)} 
+                                        isLoading={isDispatching(issue._id)}
+                                        icon={issue.isCreated ? Check : Plus} 
+                                        className="text-[10px] flex-1 py-1 h-7"
+                                      >
+                                       {issue.isCreated ? 'Created' : 'Issue'}
+                                     </Button>
+                                     {!issue.isCreated && (
+                                       <Button size="sm" variant="ghost" onClick={() => handleDispatchTaskToJules(issue)} icon={TerminalSquare} className="text-[10px] flex-1 py-1 h-7 text-purple-400">
+                                         AI Solve
+                                       </Button>
+                                     )}
+                                   </div>
+                                </div>
+                              ))}
+                           </div>
+                        </div>
+                      )}
                    </div>
                 )}
 
@@ -566,6 +619,18 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
           )}
         </div>
       </div>
+      {/* Worker Selector Modal */}
+      <WorkerSelectorModal
+        isOpen={workerModal.isOpen}
+        onClose={() => setWorkerModal({ isOpen: false, finding: null })}
+        julesApiKey={julesApiKey}
+        suggestedSessions={suggestedSessions}
+        allSessions={allSessions}
+        findingId={workerModal.finding?._id || ''}
+        description={workerModal.finding?.body || ''}
+        julesReportStatus={julesReportStatus}
+        onReportToJules={onReportToJules}
+      />
     </div>
   );
 };

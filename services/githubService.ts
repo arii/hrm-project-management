@@ -18,7 +18,7 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_${endpoint}`;
 
   if (isGet && !skipCache && !isText) {
-    const cached = storage.get<{ timestamp: number; data: any } | null>(cacheKey, null);
+    const cached = storage.getRaw<{ timestamp: number; data: any } | null>(cacheKey, null);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
       return cached.data as T;
     }
@@ -30,7 +30,12 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
 
   // Add token if provided
   if (token && token.trim()) {
-    headers['Authorization'] = `token ${token.trim()}`;
+    const trimmedToken = token.trim();
+    // Basic validation for GitHub token format
+    if (!/^(ghp_|github_pat_|[a-zA-Z0-9_]+$)/.test(trimmedToken)) {
+      console.warn("[GithubService] Token format looks unusual, but proceeding.");
+    }
+    headers['Authorization'] = `token ${trimmedToken}`;
   }
 
   // Add options headers, but filter out internal ones
@@ -84,6 +89,7 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
         }
         throw e;
       }
+      // Retry up to 2 times with 1s/2s backoff for transient network errors
       retries--;
       await new Promise(r => setTimeout(r, 1000 * (2 - retries))); 
     }
@@ -117,8 +123,19 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
 };
 
 export const fetchPullRequests = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open', skipCache = false): Promise<GithubPullRequest[]> => {
+  const cacheKey = `${StorageKeys.GITHUB_CACHE}_pulls_${repo}_${state}`;
+  if (!skipCache) {
+    const cached = storage.get<GithubPullRequest[]>(cacheKey);
+    if (cached) return cached;
+  }
+
   const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
-  return request<GithubPullRequest[]>(`/repos/${repo}/pulls?state=${state}&per_page=100`, token, options);
+  const prs = await request<GithubPullRequest[]>(`/repos/${repo}/pulls?state=${state}&per_page=100`, token, options);
+  
+  if (prs && !skipCache) {
+    storage.setCached(cacheKey, prs);
+  }
+  return prs;
 };
 
 export const fetchPrDetails = async (repo: string, number: number, token?: string, skipCache = false): Promise<GithubPullRequest> => {
@@ -130,10 +147,23 @@ export const fetchPrReviews = async (repo: string, number: number, token?: strin
   return request<any[]>(`/repos/${repo}/pulls/${number}/reviews`, token);
 };
 
-export const fetchPrDiff = async (repo: string, number: number, token: string): Promise<string> => {
-  return request<string>(`/repos/${repo}/pulls/${number}`, token, {
+export const fetchPrDiff = async (repo: string, number: number, token: string, sha?: string): Promise<string> => {
+  const cacheKey = `${StorageKeys.GITHUB_CACHE}_diff_${repo}_${number}`;
+  
+  if (sha) {
+    const cached = storage.getCachedBySha<string>(cacheKey, sha);
+    if (cached) return cached;
+  }
+
+  const diff = await request<string>(`/repos/${repo}/pulls/${number}`, token, {
     headers: { 'Accept': 'application/vnd.github.v3.diff' }
   }, true);
+
+  if (diff && sha) {
+    storage.setCached(cacheKey, { head: { sha }, data: diff });
+  }
+
+  return diff;
 };
 
 export const fetchCheckRuns = async (repo: string, ref: string, token: string, skipCache = false) => {
@@ -257,12 +287,17 @@ export const fetchWorkflowFileAtSha = async (
     );
 
     if (fileData.encoding === 'base64' && fileData.content) {
-      const decoded = atob(fileData.content.replace(/\n/g, ''));
-      return {
-        path: filePath,
-        ref,
-        content: decoded.substring(0, 8000)
-      };
+      try {
+        const decoded = atob(fileData.content.replace(/\n/g, ''));
+        return {
+          path: filePath,
+          ref,
+          content: decoded.substring(0, 8000)
+        };
+      } catch (decodeError) {
+        console.error(`[githubService] Failed to decode base64 content for ${filePath}:`, decodeError);
+        return null;
+      }
     }
     return null;
   } catch (e) {
@@ -415,6 +450,25 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
   } as EnrichedPullRequest;
 };
 
+function deriveTestStatus(
+  allChecks: any[], 
+  combinedState: string
+): 'passed' | 'failed' | 'pending' | 'unknown' {
+  const failedCount = allChecks.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required').length;
+  const pendingCount = allChecks.filter(r => r.status !== 'completed' && r.status !== 'success' && r.status !== 'skipped' && r.status !== 'cancelled').length;
+  
+  if (failedCount > 0) return 'failed';
+  if (pendingCount > 0) return 'pending';
+  if (allChecks.length > 0) {
+    const allPassed = allChecks.every(r => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+    return allPassed ? 'passed' : 'failed';
+  }
+  if (combinedState === 'success') return 'passed';
+  if (combinedState === 'failure' || combinedState === 'error') return 'failed';
+  if (combinedState === 'pending') return 'pending';
+  return 'unknown';
+}
+
 /**
  * HIGH-FIDELITY SINGLE PR ENRICHMENT
  * Fetches both Checks and Statuses to determine test health.
@@ -461,24 +515,14 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
   }
 
   // Merge Check Runs and Statuses
+  // Check Runs are from the Checks API (modern), Statuses are from the Commits API (legacy)
+  // We merge both to get a complete picture of the commit health.
   const allChecks = [
     ...checkResults,
     ...commitStatus.statuses
   ];
 
-  const failedCount = allChecks.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required').length;
-  const pendingCount = allChecks.filter(r => r.status !== 'completed' && r.status !== 'success' && r.status !== 'skipped' && r.status !== 'cancelled').length;
-  
-  let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
-  if (failedCount > 0) testStatus = 'failed';
-  else if (pendingCount > 0) testStatus = 'pending';
-  else if (allChecks.length > 0) {
-    const allPassed = allChecks.every(r => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
-    testStatus = allPassed ? 'passed' : 'failed';
-  }
-  else if (commitStatus.state === 'success') testStatus = 'passed';
-  else if (commitStatus.state === 'failure' || commitStatus.state === 'error') testStatus = 'failed';
-  else if (commitStatus.state === 'pending') testStatus = 'pending';
+  const testStatus = deriveTestStatus(allChecks, commitStatus.state);
 
   const latestReviewsByUser: Record<string, string> = {};
   reviews.forEach(r => { latestReviewsByUser[r.user.login] = r.state; });
@@ -555,7 +599,12 @@ export const fetchRepoContent = async (repo: string, path: string, token: string
   try {
     const data = await request<any>(`/repos/${repo}/contents/${path}`, token);
     if (!Array.isArray(data) && data.content && data.encoding === 'base64') {
-        return atob(data.content.replace(/\n/g, ''));
+        try {
+          return atob(data.content.replace(/\n/g, ''));
+        } catch (decodeError) {
+          console.error(`[githubService] Failed to decode base64 content for ${path}:`, decodeError);
+          throw new Error(`Failed to decode file content for ${path}. The data might be malformed.`);
+        }
     }
     return data;
   } catch (e) { return null; }

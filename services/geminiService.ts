@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis } from '../types';
 
 /**
  * Clean a string that might contain Markdown JSON code blocks
@@ -42,12 +42,83 @@ const ensureProApiKey = async () => {
 const PRO_MODEL = 'gemini-3.1-pro-preview';
 const FLASH_MODEL = 'gemini-3-flash-preview';
 
+export const analyzeWorkflowBatch = async (
+  repo: string,
+  runs: any[],
+  geminiKey?: string
+): Promise<WorkflowAnalysis> => {
+  const apiKey = geminiKey || globalGeminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const ai = new GoogleGenAI({ apiKey });
+  
+  const prompt = `Analyze the following GitHub Workflow execution data for the repository "${repo}".
+  Provide a comprehensive audit including a health score (0-100), a technical summary, specific findings, and a qualitative analysis of efficacy, coverage, and efficiency.
+  
+  Data: ${JSON.stringify(runs)}
+  
+  Return the analysis in JSON format:
+  {
+    "healthScore": number,
+    "summary": "string",
+    "technicalFindings": [
+      { "type": "failure" | "warning" | "info", "title": "string", "description": "string", "location": "string", "remediation": "string" }
+    ],
+    "qualitativeAnalysis": {
+      "efficacy": "string",
+      "coverage": "string",
+      "efficiency": "string",
+      "recommendations": ["string"]
+    }
+  }`;
+
+  const response = await ai.models.generateContent({
+    model: FLASH_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          healthScore: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          technicalFindings: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, enum: ['failure', 'warning', 'info'] },
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                location: { type: Type.STRING },
+                remediation: { type: Type.STRING }
+              },
+              required: ['type', 'title', 'description']
+            }
+          },
+          qualitativeAnalysis: {
+            type: Type.OBJECT,
+            properties: {
+              efficacy: { type: Type.STRING },
+              coverage: { type: Type.STRING },
+              efficiency: { type: Type.STRING },
+              recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['efficacy', 'coverage', 'efficiency', 'recommendations']
+          }
+        },
+        required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
+      }
+    }
+  });
+
+  return JSON.parse(cleanJsonString(response.text));
+};
+
 export const analyzeWorkflowHealth = async (
   run: GithubWorkflowRun, 
   jobs: GithubWorkflowJob[], 
   annotations: Record<number, GithubAnnotation[]> = {},
   workflowFile?: { path: string; ref: string; content: string } | null
-): Promise<WorkflowHealthResult> => {
+): Promise<WorkflowAnalysis> => {
   const client = getClient();
   
   const workflowSection = workflowFile
@@ -146,59 +217,34 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          report: { type: Type.STRING },
-          syntaxFailures: {
+          healthScore: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          technicalFindings: {
             type: Type.ARRAY,
             items: {
               type: Type.OBJECT,
               properties: {
-                workflowName: { type: Type.STRING },
-                reason: { type: Type.STRING },
-                fileUrl: { type: Type.STRING, nullable: true },
-                suggestedTitle: { type: Type.STRING },
-                suggestedBody: { type: Type.STRING }
+                type: { type: Type.STRING, enum: ['failure', 'warning', 'info'] },
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                location: { type: Type.STRING },
+                remediation: { type: Type.STRING }
               },
-              required: ['workflowName', 'reason', 'suggestedTitle', 'suggestedBody']
+              required: ['type', 'title', 'description']
             }
           },
-          runtimeErrors: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                runId: { type: Type.INTEGER },
-                jobName: { type: Type.STRING },
-                stepName: { type: Type.STRING },
-                errorSnippet: { type: Type.STRING },
-                rootCause: { type: Type.STRING },
-                fixCategory: {
-                  type: Type.STRING,
-                  enum: ['YAML_FIX', 'DEPENDENCY_FIX', 'CODE_FIX', 'ENVIRONMENT_FIX', 'INFRASTRUCTURE_FLAKE']
-                },
-                fixInstructions: { type: Type.STRING },
-                confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] },
-                suggestedTitle: { type: Type.STRING },
-                suggestedBody: { type: Type.STRING }
-              },
-              required: ['runId', 'jobName', 'errorSnippet', 'confidence', 'suggestedTitle', 'suggestedBody', 'fixCategory', 'fixInstructions']
-            }
-          },
-          falsePositives: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                jobName: { type: Type.STRING },
-                reason: { type: Type.STRING },
-                flakinessScore: { type: Type.INTEGER },
-                suggestedTitle: { type: Type.STRING },
-                suggestedBody: { type: Type.STRING }
-              },
-              required: ['jobName', 'reason', 'flakinessScore', 'suggestedTitle', 'suggestedBody']
-            }
+          qualitativeAnalysis: {
+            type: Type.OBJECT,
+            properties: {
+              efficacy: { type: Type.STRING },
+              coverage: { type: Type.STRING },
+              efficiency: { type: Type.STRING },
+              recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['efficacy', 'coverage', 'efficiency', 'recommendations']
           }
         },
-        required: ['report', 'syntaxFailures', 'runtimeErrors', 'falsePositives']
+        required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
       }
     }
   });

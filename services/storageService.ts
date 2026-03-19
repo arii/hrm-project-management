@@ -26,7 +26,7 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  repoName: 'arii/hrm',
+  repoName: '',
   githubToken: (process.env as any).GITHUB_TOKEN || '',
   julesApiKey: (process.env as any).JULES_API_KEY || '',
   geminiApiKey: (process.env as any).GEMINI_API_KEY || (process.env as any).API_KEY || '',
@@ -39,7 +39,7 @@ interface CacheEntry<T> {
 }
 
 export const storage = {
-  get<T>(key: string, defaultValue: T): T {
+  getRaw<T>(key: string, defaultValue: T): T {
     try {
       const item = localStorage.getItem(key);
       if (!item) return defaultValue;
@@ -83,8 +83,8 @@ export const storage = {
   /**
    * Standardized cache getter with TTL check
    */
-  getCached<T>(key: string): T | null {
-    const entry = this.get(key, null as CacheEntry<T> | null);
+  get<T>(key: string): T | null {
+    const entry = this.getRaw(key, null as CacheEntry<T> | null);
     if (!entry) return null;
     
     const isExpired = Date.now() - entry.timestamp > entry.ttl;
@@ -100,7 +100,7 @@ export const storage = {
    * If the cached data has a head.sha that doesn't match the provided sha, it's considered invalid.
    */
   getCachedBySha<T>(key: string, sha: string): T | null {
-    const entry = this.get(key, null as CacheEntry<T> | null);
+    const entry = this.getRaw(key, null as CacheEntry<T> | null);
     if (!entry) return null;
 
     const data = entry.data as any;
@@ -142,6 +142,9 @@ export const storage = {
     const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS];
     const temporaryKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];
 
+    const isAbsoluteKeep = (key: string) => absoluteKeep.some(k => key === k || key.startsWith(StorageKeys.REVIEWED_SHAS));
+    const isTransient = (key: string) => temporaryKeys.some(tk => key.startsWith(tk)) || key.includes('_cache');
+
     // Collect keys first to avoid index shifting bugs during forward iteration
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -152,13 +155,12 @@ export const storage = {
       if (isAppKey) {
         if (aggressive) {
           // In aggressive mode, remove everything except the settings and the SHA list
-          if (!absoluteKeep.includes(key)) {
+          if (!isAbsoluteKeep(key)) {
             keysToRemove.push(key);
           }
         } else {
           // In normal mode, only remove known transient caches
-          const isTransient = temporaryKeys.some(tk => key.startsWith(tk)) || key.includes('_cache');
-          if (isTransient) {
+          if (isTransient(key)) {
             keysToRemove.push(key);
           }
         }
@@ -169,7 +171,7 @@ export const storage = {
   },
 
   savePrReview(repo: string, prNumber: number, review: any): void {
-    const reviews = this.get(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
+    const reviews = this.getRaw(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
     reviews[`${repo}_${prNumber}`] = {
       ...review,
       timestamp: Date.now()
@@ -178,8 +180,16 @@ export const storage = {
   },
 
   getPrReview(repo: string, prNumber: number): any | null {
-    const reviews = this.get(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
+    const reviews = this.getRaw(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
     return reviews[`${repo}_${prNumber}`] || null;
+  },
+
+  saveReviewedShas(repo: string, shas: Record<number, string>): void {
+    this.set(`${StorageKeys.REVIEWED_SHAS}_${repo}`, shas);
+  },
+
+  getReviewedShas(repo: string): Record<number, string> {
+    return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${repo}`, {});
   },
 
   getSettingsKey(): string {
@@ -187,7 +197,7 @@ export const storage = {
   },
 
   getSettings(): AppSettings {
-    const stored = this.get(StorageKeys.SETTINGS, DEFAULT_SETTINGS);
+    const stored = this.getRaw(StorageKeys.SETTINGS, DEFAULT_SETTINGS);
     
     // Merge with defaults but prioritize environment variables if stored values are empty strings
     const settings: AppSettings = {
@@ -219,6 +229,22 @@ export const storage = {
     }
 
     return settings;
+  },
+
+  getRepo(): string {
+    return this.getSettings().repoName || '';
+  },
+
+  getGithubToken(): string {
+    return this.getSettings().githubToken || '';
+  },
+
+  getGeminiKey(): string {
+    return this.getSettings().geminiApiKey || '';
+  },
+
+  getJulesKey(): string {
+    return this.getSettings().julesApiKey || '';
   },
 
   saveSettings(settings: Partial<AppSettings>): void {
