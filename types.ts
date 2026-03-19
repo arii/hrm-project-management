@@ -152,7 +152,11 @@ export interface WorkflowHealthResult {
   runtimeErrors: Array<{
     runId: number;
     jobName: string;
+    stepName?: string;
     errorSnippet: string;
+    rootCause?: string;
+    fixCategory?: string;
+    fixInstructions?: string;
     confidence: 'high' | 'medium' | 'low';
     suggestedTitle: string;
     suggestedBody: string;

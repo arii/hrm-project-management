@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult } from '../types';
 
 /**
@@ -9,8 +9,14 @@ const cleanJsonString = (str: string): string => {
   return str.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
 };
 
+let globalGeminiApiKey: string | null = null;
+
+export const setGeminiApiKey = (key: string) => {
+  globalGeminiApiKey = key;
+};
+
 const getClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const apiKey = globalGeminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
     throw new Error("Gemini API Key is missing. Please check your settings.");
   }
@@ -39,47 +45,98 @@ const FLASH_MODEL = 'gemini-3-flash-preview';
 export const analyzeWorkflowHealth = async (
   run: GithubWorkflowRun, 
   jobs: GithubWorkflowJob[], 
-  annotations: Record<number, GithubAnnotation[]> = {}
+  annotations: Record<number, GithubAnnotation[]> = {},
+  workflowFile?: { path: string; ref: string; content: string } | null
 ): Promise<WorkflowHealthResult> => {
   const client = getClient();
   
-  const runContext = {
-    id: run.id,
-    name: run.name,
-    conclusion: run.conclusion,
-    status: run.status,
-    head_branch: run.head_branch,
-    event: run.event,
-    jobs: jobs.map(j => ({ 
-      id: j.id,
-      name: j.name, 
-      conclusion: j.conclusion, 
-      status: j.status,
-      steps: j.steps.map(s => ({ name: s.name, conclusion: s.conclusion, status: s.status })),
-      annotations: (annotations[j.id] || []).map(a => ({
-        path: a.path,
-        line: a.start_line,
-        level: a.annotation_level,
-        msg: a.message,
-        title: a.title
-      }))
+  const workflowSection = workflowFile
+    ? `
+## WORKFLOW DEFINITION (fetched at ref: \`${workflowFile.ref}\` — this is what GitHub actually executed)
+File: \`${workflowFile.path}\`
+
+\`\`\`yaml
+${workflowFile.content}
+\`\`\`
+
+CRITICAL: Cross-reference the job names and step names in this YAML with the job/step names in the run data.
+If a step name exists in the YAML but is marked as "skipped" in the run, explain why (conditional, needs, if: expressions).
+If a job failed and the YAML shows a specific action version (e.g. actions/checkout@v2), flag outdated actions as a potential cause.
+`
+    : `## WORKFLOW DEFINITION
+(Could not be fetched — the branch may have been force-pushed or deleted.
+Reason may be the run is from a fork PR. Proceed with job/step data only.)
+`;
+
+  const jobsSection = jobs.map(j => ({
+    id: j.id,
+    name: j.name,
+    conclusion: j.conclusion,
+    status: j.status,
+    durationSeconds: j.completed_at && j.started_at
+      ? Math.round(
+          (new Date(j.completed_at).getTime() - new Date(j.started_at).getTime()) / 1000
+        )
+      : null,
+    steps: j.steps.map(s => ({
+      name: s.name,
+      conclusion: s.conclusion,
+      status: s.status,
+      number: s.number
+    })),
+    annotations: (annotations[j.id] || []).map(a => ({
+      level: a.annotation_level,
+      title: a.title,
+      message: a.message,
+      path: a.path,
+      line: a.start_line
     }))
-  };
+  }));
 
   const prompt = `
-    Analyze a specific GitHub Actions Workflow Run for failures, flakes, or syntax issues.
-    
-    GOAL: Provide a deep technical audit of this specific run.
-    
-    RUN DATA (INCLUDING JOB ANNOTATIONS):
-    ${JSON.stringify(runContext)}
+You are a senior DevOps engineer and GitHub Actions specialist.
+Perform a DEEP TECHNICAL AUDIT of this specific workflow run.
 
-    INSTRUCTIONS:
-    1. If the run failed, explain exactly WHY. Look at the 'annotations' as they contain compiler/test error logs.
-    2. Identify if this looks like a flaky test (e.g. random step failure in a mature job).
-    3. Generate high-quality suggested titles and bodies for GitHub issues if a fix is needed.
-    4. The 'report' property should be a detailed Markdown analysis of this specific run.
-  `;
+## RUN METADATA
+- Run ID: ${run.id}
+- Workflow: ${run.name}
+- Event trigger: ${run.event}
+- Branch: ${run.head_branch}
+- Commit SHA: ${run.head_sha}
+- Conclusion: ${run.conclusion}
+- Status: ${run.status}
+
+${workflowSection}
+
+## JOB AND STEP DATA (with annotations / compiler errors)
+${JSON.stringify(jobsSection, null, 2)}
+
+## YOUR TASK
+
+### 1. ROOT CAUSE ANALYSIS (required)
+Identify the EXACT cause of failure. Be surgical:
+- Which step failed and what error did it produce? (Use annotations.message if present)
+- Is this a code error, a configuration error, or a transient infrastructure error?
+- If annotations are empty, reason from step names and job conclusions alone.
+
+### 2. WORKFLOW YAML CORRELATION (if YAML provided)
+- Does the YAML use pinned action versions (e.g. @v3) or floating refs (@main)? Flag floating refs.
+- Are there \`if:\` conditionals that could cause steps to skip unexpectedly?
+- Does the trigger (on: push/pull_request/schedule) match the event that fired (\`${run.event}\`)? Flag mismatches.
+- Does the YAML assume environment secrets or variables that may be missing?
+
+### 3. FIX RECOMMENDATIONS (actionable, specific)
+Provide concrete remediation steps. For each issue:
+- State the EXACT change needed in the workflow YAML or the application code.
+- Include a code snippet where applicable.
+- Categorize as: YAML_FIX | DEPENDENCY_FIX | CODE_FIX | ENVIRONMENT_FIX | INFRASTRUCTURE_FLAKE
+
+### 4. ISSUE QUALITY
+For each finding, generate a GitHub issue title and body suitable for filing directly.
+The body must include: observed behavior, root cause, exact fix steps, and (where applicable) the YAML snippet to change.
+
+OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside the JSON.
+`;
 
   const response = await client.models.generateContent({
     model: PRO_MODEL,
@@ -111,12 +168,19 @@ export const analyzeWorkflowHealth = async (
               properties: {
                 runId: { type: Type.INTEGER },
                 jobName: { type: Type.STRING },
+                stepName: { type: Type.STRING },
                 errorSnippet: { type: Type.STRING },
+                rootCause: { type: Type.STRING },
+                fixCategory: {
+                  type: Type.STRING,
+                  enum: ['YAML_FIX', 'DEPENDENCY_FIX', 'CODE_FIX', 'ENVIRONMENT_FIX', 'INFRASTRUCTURE_FLAKE']
+                },
+                fixInstructions: { type: Type.STRING },
                 confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] },
                 suggestedTitle: { type: Type.STRING },
                 suggestedBody: { type: Type.STRING }
               },
-              required: ['runId', 'jobName', 'errorSnippet', 'confidence', 'suggestedTitle', 'suggestedBody']
+              required: ['runId', 'jobName', 'errorSnippet', 'confidence', 'suggestedTitle', 'suggestedBody', 'fixCategory', 'fixInstructions']
             }
           },
           falsePositives: {
@@ -249,8 +313,13 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
  * COMPREHENSIVE CODE REVIEW ENGINE
  */
 
-export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string): Promise<CodeReviewResult> => {
+export const generateCodeReview = async (
+  pr: EnrichedPullRequest, 
+  diff: string, 
+  options: { useFlash?: boolean, lowThinking?: boolean } = {}
+): Promise<CodeReviewResult> => {
   const client = getClient();
+  const model = options.useFlash ? FLASH_MODEL : PRO_MODEL;
   
   const checksSummary = pr.checkResults?.map(c => `- ${c.name}: ${c.status} (${c.conclusion || 'Pending'})`).join('\n') || "No checks found.";
 
@@ -284,42 +353,53 @@ export const generateCodeReview = async (pr: EnrichedPullRequest, diff: string):
     ${diff.substring(0, 50000)}
   `;
 
-  const response = await client.models.generateContent({
-    model: PRO_MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section." },
-          labels: { type: Type.ARRAY, items: { type: Type.STRING } },
-          suggestedIssues: { 
-            type: Type.ARRAY, 
-            items: { 
-              type: Type.OBJECT, 
-              properties: { 
-                title: { type: Type.STRING }, 
-                body: { type: Type.STRING, description: "Detailed implementation specification including code snippets." }, 
-                reason: { type: Type.STRING }, 
-                priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] }, 
-                effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] }, 
-                labels: { type: Type.ARRAY, items: { type: Type.STRING } } 
-              }, 
-              required: ['title', 'body', 'reason', 'priority', 'effort', 'labels'] 
-            } 
-          }
-        },
-        required: ['reviewComment', 'labels']
-      }
-    }
+  // Wrap in a timeout promise
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error("AI Analysis timed out after 60s. The PR diff might be too complex or the service is busy.")), 60000);
   });
 
-  const text = response.text || "{}";
-  try {
+  const generatePromise = (async () => {
+    const response = await client.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        thinkingConfig: options.lowThinking ? { thinkingLevel: ThinkingLevel.LOW } : undefined,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section." },
+            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            suggestedIssues: { 
+              type: Type.ARRAY, 
+              items: { 
+                type: Type.OBJECT, 
+                properties: { 
+                  title: { type: Type.STRING }, 
+                  body: { type: Type.STRING, description: "Detailed implementation specification including code snippets." }, 
+                  reason: { type: Type.STRING }, 
+                  priority: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] }, 
+                  effort: { type: Type.STRING, enum: ['Small', 'Medium', 'Large'] }, 
+                  labels: { type: Type.ARRAY, items: { type: Type.STRING } } 
+                }, 
+                required: ['title', 'body', 'reason', 'priority', 'effort', 'labels'] 
+              } 
+            }
+          },
+          required: ['reviewComment', 'labels']
+        }
+      }
+    });
+
+    const text = response.text || "{}";
     return JSON.parse(cleanJsonString(text));
-  } catch (e) {
-    console.error("[GeminiService] Failed to parse code review JSON:", text);
+  })();
+
+  try {
+    return await Promise.race([generatePromise, timeoutPromise]);
+  } catch (e: any) {
+    if (e.message.includes("timed out")) throw e;
+    console.error("[GeminiService] Failed to parse code review JSON:", e);
     throw new Error("AI returned an invalid format for the code review.");
   }
 };
@@ -398,13 +478,13 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
   const prompt = `
     Analyze PR #${pr.number} for synchronization and conflict resolution issues.
     
-    GOAL: Identify specific areas where the feature branch '${pr.head.ref}' has diverged from '${pr.base.ref}' in a way that creates "git noise" or "phantom changes".
+    GOAL: Identify specific areas where the feature branch '${pr.head.ref}' has diverged from '${pr.base.ref}' in a way that creates "git noise", "phantom changes", or complex conflicts that standard 'update branch' tools cannot handle.
     
     ### TARGET AREAS:
-    1. MERGE CONFLICTS: Identify files likely to have conflicts.
-    2. PHANTOM CHANGES: Identify lines that appear as changes but are actually already in the base branch (stale feature branch).
-    3. CI SYNC ISSUES: Identify test failures or snapshot mismatches caused by base branch updates.
-    4. REBASE DISCREPANCIES: Identify where the branch structure is misaligned.
+    1. MERGE CONFLICTS: Identify files likely to have conflicts. Pay special attention to large data files, lockfiles, or configuration files.
+    2. PHANTOM CHANGES: Identify lines that appear as changes but are actually already in the base branch (stale feature branch). BE EXTREMELY CAREFUL: Do not misidentify new feature code as phantom changes. Only flag code that is literally a duplicate of what is already in the base branch.
+    3. CI SYNC & SNAPSHOT ISSUES: Identify test failures or snapshot mismatches (e.g., Jest snapshots, visual regression images) caused by base branch updates. These often require surgical reconciliation rather than a simple overwrite.
+    4. REBASE DISCREPANCIES: Identify where the branch structure is misaligned or where commits have been duplicated.
     
     PR CONTEXT:
     Title: ${pr.title}

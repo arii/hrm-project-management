@@ -21,13 +21,15 @@ export interface AppSettings {
   repoName: string;
   githubToken: string;
   julesApiKey: string;
+  geminiApiKey: string;
   theme?: 'dark' | 'light';
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   repoName: 'arii/hrm',
   githubToken: (process.env as any).GITHUB_TOKEN || '',
-  julesApiKey: '',
+  julesApiKey: (process.env as any).JULES_API_KEY || '',
+  geminiApiKey: (process.env as any).GEMINI_API_KEY || (process.env as any).API_KEY || '',
 };
 
 interface CacheEntry<T> {
@@ -85,6 +87,29 @@ export const storage = {
     const entry = this.get(key, null as CacheEntry<T> | null);
     if (!entry) return null;
     
+    const isExpired = Date.now() - entry.timestamp > entry.ttl;
+    if (isExpired) {
+      this.remove(key);
+      return null;
+    }
+    return entry.data;
+  },
+
+  /**
+   * SHA-aware cache getter.
+   * If the cached data has a head.sha that doesn't match the provided sha, it's considered invalid.
+   */
+  getCachedBySha<T>(key: string, sha: string): T | null {
+    const entry = this.get(key, null as CacheEntry<T> | null);
+    if (!entry) return null;
+
+    const data = entry.data as any;
+    const cachedSha = data?.head?.sha;
+
+    if (cachedSha && cachedSha !== sha) {
+      return null;
+    }
+
     const isExpired = Date.now() - entry.timestamp > entry.ttl;
     if (isExpired) {
       this.remove(key);
@@ -162,7 +187,17 @@ export const storage = {
   },
 
   getSettings(): AppSettings {
-    const settings = this.get(StorageKeys.SETTINGS, DEFAULT_SETTINGS);
+    const stored = this.get(StorageKeys.SETTINGS, DEFAULT_SETTINGS);
+    
+    // Merge with defaults but prioritize environment variables if stored values are empty strings
+    const settings: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      ...stored,
+      // If stored values are empty strings, fallback to environment defaults
+      githubToken: stored.githubToken || DEFAULT_SETTINGS.githubToken,
+      julesApiKey: stored.julesApiKey || DEFAULT_SETTINGS.julesApiKey,
+      geminiApiKey: stored.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
+    };
     
     // Migration helper for older individual keys if they exist
     const legacyRepo = localStorage.getItem('audit_repo_name');

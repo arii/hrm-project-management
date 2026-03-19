@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, X, CheckSquare, Play, Link2, User, Cpu, Code2, AlertOctagon, Key } from 'lucide-react';
-import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchWorkflowRun, createIssue, fetchWorkflowsContent, fetchCoreRepoContext, fetchJobAnnotations } from '../services/githubService';
+import { Activity, AlertTriangle, CheckCircle2, XCircle, Loader2, RefreshCw, Terminal, Info, Bug, ShieldAlert, FileWarning, Search, GitPullRequest, GitBranch, History, Bot, ExternalLink, Send, Plus, Check, Zap, Gauge, FileCheck, Layers, Clock, MessageSquareShare, X, CheckSquare, Play, Link2, User, Cpu, Code2, AlertOctagon, Key, Wrench } from 'lucide-react';
+import { fetchWorkflowRuns, fetchWorkflowRunJobs, fetchWorkflowRun, createIssue, fetchWorkflowsContent, fetchCoreRepoContext, fetchJobAnnotations, fetchWorkflowFileAtSha } from '../services/githubService';
 import { analyzeWorkflowHealth, analyzeWorkflowQualitative } from '../services/geminiService';
 import { listSessions, sendMessage } from '../services/julesService';
 import { GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, AnalysisStatus, GithubPullRequest, JulesSession, WorkflowQualitativeResult, GithubAnnotation } from '../types';
@@ -39,10 +39,9 @@ interface ManualPreview {
 
 const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesApiKey }) => {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'failures' | 'false-positives' | 'qualitative'>('failures');
+  const [activeTab, setActiveTab] = useState<'failures' | 'qualitative'>('failures');
   
   const [failingRuns, setFailingRuns] = useState<GithubWorkflowRun[]>([]);
-  const [successRuns, setSuccessRuns] = useState<GithubWorkflowRun[]>([]);
   
   const [jobsMap, setJobsMap] = useState<Record<number, GithubWorkflowJob[]>>({});
   const [blameMap, setBlameMap] = useState<Record<number, RunBlameData>>({});
@@ -76,76 +75,68 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
     }
   }, [repoName, token]);
 
+  const FAILURE_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+
   const loadData = async (silent = false, skipCache = false) => {
     if (!silent) setLoading(true);
-    setLoadingStep('Collecting exactly 15 recent failures and successes...');
+    setLoadingStep('Scanning for relevant failures...');
     
     const failingList: GithubWorkflowRun[] = [];
-    const successList: GithubWorkflowRun[] = [];
     
     try {
       let currentPage = 1;
-      const MAX_PAGES = 15; 
+      const MAX_PAGES = 10; 
       
-      while (currentPage <= MAX_PAGES && (failingList.length < 15 || successList.length < 15)) {
-        setLoadingStep(`Scanning history (page ${currentPage})...`);
-        const runData = await fetchWorkflowRuns(repoName, token, skipCache, currentPage);
+      while (currentPage <= MAX_PAGES && failingList.length < 15) {
+        setLoadingStep(`Scanning history (page ${currentPage} — ${failingList.length}/15 failures found)...`);
+        const runData = await fetchWorkflowRuns(repoName, token, skipCache, currentPage, 'failure');
         
         if (runData.length === 0) break;
 
         for (const run of runData) {
           if (run.status !== 'completed') continue;
+          if (!FAILURE_CONCLUSIONS.has(run.conclusion ?? '')) continue;
           
-          if ((run.conclusion === 'failure' || run.conclusion === 'timed_out') && failingList.length < 15) {
-            failingList.push(run);
-          }
-          
-          if (run.conclusion === 'success' && successList.length < 15) {
-            successList.push(run);
-          }
+          failingList.push(run);
+          if (failingList.length >= 15) break;
         }
 
         currentPage++;
       }
 
       setFailingRuns(failingList);
-      setSuccessRuns(successList);
       
-      setLoadingStep('Correlating session data...');
+      setLoadingStep(`Hydrating ${failingList.length} failure runs in parallel...`);
+      
+      const jobResults = await Promise.allSettled(
+        failingList.map(run => 
+          fetchWorkflowRunJobs(repoName, run.id, token)
+            .then(jobs => ({ runId: run.id, jobs }))
+        )
+      );
+
       const newJobsMap: Record<number, GithubWorkflowJob[]> = {};
-      const newBlameMap: Record<number, RunBlameData> = {};
-      
-      let rawSessions: JulesSession[] = [];
-      if (julesApiKey) {
-        rawSessions = await listSessions(julesApiKey).catch(() => []);
-        setAllSessions(rawSessions);
-      }
-
-      const allActiveRuns = [...failingList, ...successList];
-
-      for (const run of allActiveRuns) {
-        const jobs = await fetchWorkflowRunJobs(repoName, run.id, token).catch(() => []);
-        const associatedPrs: GithubPullRequest[] = []; // PR correlation disabled for performance
-        
-        newJobsMap[run.id] = jobs;
-
-        const correlatedJules = rawSessions.filter(session => {
-          const prMatch = session.outputs?.some(output => 
-            associatedPrs.some(pr => output.pullRequest?.url.includes(`/pull/${pr.number}`))
-          );
-          if (prMatch) return true;
-          const sessionBranch = session.sourceContext?.githubRepoContext?.startingBranch;
-          if (sessionBranch && sessionBranch === run.head_branch) return true;
-          return false;
-        });
-
-        newBlameMap[run.id] = {
-          prs: associatedPrs,
-          julesSessions: correlatedJules
-        };
+      for (const result of jobResults) {
+        if (result.status === 'fulfilled') {
+          newJobsMap[result.value.runId] = result.value.jobs;
+        }
       }
       setJobsMap(newJobsMap);
-      setBlameMap(newBlameMap);
+
+      if (julesApiKey) {
+        const rawSessions = await listSessions(julesApiKey).catch(() => []);
+        setAllSessions(rawSessions);
+
+        const newBlameMap: Record<number, RunBlameData> = {};
+        failingList.forEach(run => {
+          const correlatedJules = rawSessions.filter(session => {
+            const sessionBranch = session.sourceContext?.githubRepoContext?.startingBranch;
+            return sessionBranch && sessionBranch === run.head_branch;
+          });
+          newBlameMap[run.id] = { prs: [], julesSessions: correlatedJules };
+        });
+        setBlameMap(newBlameMap);
+      }
     } catch (e) {
       console.error('[WorkflowHealth] Data load error:', e);
     } finally {
@@ -196,17 +187,19 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
 
       // SET PREVIEW IMMEDIATELY TO GIVE USER EARLY FEEDBACK
       setManualPreview({ run, jobs, annotations, repo: targetRepo });
+      setLoadingStep('Fetching workflow definition at commit SHA...');
+      
+      const workflowYaml = await fetchWorkflowFileAtSha(targetRepo, run, token).catch(() => null);
       setLoadingStep('Context loaded. AI Auditor initiating deep reasoning scan...');
       
-      const result = await analyzeWorkflowHealth(run, jobs, annotations);
+      const result = await analyzeWorkflowHealth(run, jobs, annotations, workflowYaml);
       
       setRunResults(prev => ({ ...prev, [run.id]: result }));
       setJobsMap(prev => ({ ...prev, [run.id]: jobs }));
       
       // Auto-switch tab based on result
       if (run.conclusion === 'success') {
-        setSuccessRuns(prev => [run, ...prev.filter(r => r.id !== run.id)].slice(0, 15));
-        setActiveTab('false-positives');
+        setActiveTab('qualitative');
       } else {
         setFailingRuns(prev => [run, ...prev.filter(r => r.id !== run.id)].slice(0, 15));
         setActiveTab('failures');
@@ -227,27 +220,36 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
   const handleRunAnalysis = async () => {
     if (isAnalyzingRuns) return;
     setIsAnalyzingRuns(true);
-    const targetRuns = activeTab === 'failures' ? failingRuns : successRuns;
-    
+
     try {
       const newResults = { ...runResults };
-      // Audit in parallel chunks
-      const analysisPromises = targetRuns.map(async (run) => {
-        if (newResults[run.id]) return;
+      const analysisPromises = failingRuns.map(async (run) => {
+        if (newResults[run.id]) return; // skip already-analyzed
+
         const jobs = jobsMap[run.id] || [];
         const annotations: Record<number, GithubAnnotation[]> = {};
-        
-        // Background fetch annotations for failure runs during bulk audit
-        if (run.conclusion === 'failure') {
-          const failingJobs = jobs.filter(j => j.conclusion === 'failure');
-          const results = await Promise.all(failingJobs.map(j => fetchJobAnnotations(repoName, j.id, token).catch(() => [])));
-          failingJobs.forEach((j, i) => { if (results[i].length > 0) annotations[j.id] = results[i]; });
-        }
 
-        const res = await analyzeWorkflowHealth(run, jobs, annotations);
-        newResults[run.id] = res;
+        const failingJobs = jobs.filter(
+          j => j.conclusion === 'failure' || j.conclusion === 'timed_out'
+        );
+        const results = await Promise.all(
+          failingJobs.map(j =>
+            fetchJobAnnotations(repoName, j.id, token).catch(() => [])
+          )
+        );
+        failingJobs.forEach((j, i) => {
+          if (results[i].length > 0) annotations[j.id] = results[i];
+        });
+
+        const workflowYaml = await fetchWorkflowFileAtSha(
+          repoName, run, token
+        ).catch(() => null);
+
+        newResults[run.id] = await analyzeWorkflowHealth(
+          run, jobs, annotations, workflowYaml
+        );
       });
-      
+
       await Promise.all(analysisPromises);
       setRunResults(newResults);
     } catch (e) {
@@ -263,7 +265,7 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
       fetchWorkflowsContent(repoName, token),
       fetchCoreRepoContext(repoName, token)
     ]);
-    await qualitativeAnalysis.run(workflows, [...failingRuns, ...successRuns], context);
+    await qualitativeAnalysis.run(workflows, failingRuns, context);
   };
 
   const handleDispatchIssue = async (id: string, title: string, body: string, type: string) => {
@@ -298,24 +300,22 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
   };
 
   const currentQualitativeResult = qualitativeAnalysis.result;
-  const currentVisibleRuns = activeTab === 'failures' ? failingRuns : successRuns;
+  const currentVisibleRuns = failingRuns;
 
   const aggregatedFindings = useMemo(() => {
     const syntax: any[] = [];
     const runtime: any[] = [];
-    const flakes: any[] = [];
-    
-    currentVisibleRuns.forEach(run => {
+
+    failingRuns.forEach(run => {
       const result = runResults[run.id];
       if (result) {
         syntax.push(...result.syntaxFailures);
         runtime.push(...result.runtimeErrors.map(e => ({ ...e, runId: run.id })));
-        flakes.push(...result.falsePositives);
       }
     });
-    
-    return { syntax, runtime, flakes };
-  }, [runResults, activeTab, currentVisibleRuns]);
+
+    return { syntax, runtime };
+  }, [runResults, failingRuns]);
 
   const openWorkerSelector = (fid: string, description: string, suggestedSessions: JulesSession[]) => {
     setWorkerSelector({
@@ -424,6 +424,17 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
     );
   };
 
+  const getFixCategoryBadge = (category?: string) => {
+    switch (category) {
+      case 'YAML_FIX': return <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold border border-amber-500/30">YAML FIX</span>;
+      case 'DEPENDENCY_FIX': return <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-bold border border-blue-500/30">DEPENDENCY</span>;
+      case 'CODE_FIX': return <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-[10px] font-bold border border-purple-500/30">CODE FIX</span>;
+      case 'ENVIRONMENT_FIX': return <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30">ENV FIX</span>;
+      case 'INFRASTRUCTURE_FLAKE': return <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-bold border border-rose-500/30">INFRA FLAKE</span>;
+      default: return null;
+    }
+  };
+
   return (
     <div className="max-w-[1400px] mx-auto space-y-8 pb-20">
       <WorkerSelectorModal />
@@ -528,12 +539,6 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
           Recent Failures
         </button>
         <button 
-          onClick={() => setActiveTab('false-positives')} 
-          className={clsx("px-6 py-3 font-medium transition-all border-b-2", activeTab === 'false-positives' ? "border-amber-500 text-amber-400" : "border-transparent text-slate-500 hover:text-slate-300")}
-        >
-          Successes & Flakes
-        </button>
-        <button 
           onClick={() => setActiveTab('qualitative')} 
           className={clsx("px-6 py-3 font-medium transition-all border-b-2", activeTab === 'qualitative' ? "border-purple-500 text-purple-400" : "border-transparent text-slate-500 hover:text-slate-300")}
         >
@@ -635,7 +640,7 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                 </div>
              )}
 
-             {!isAnalyzingRuns && !isManualLoading && aggregatedFindings.syntax.length === 0 && aggregatedFindings.flakes.length === 0 && aggregatedFindings.runtime.length === 0 && (
+             {!isAnalyzingRuns && !isManualLoading && aggregatedFindings.syntax.length === 0 && aggregatedFindings.runtime.length === 0 && (
                <div className="bg-surface border border-slate-700 border-dashed rounded-2xl p-20 flex flex-col items-center justify-center text-slate-500">
                   <Search className="w-16 h-16 mb-4 opacity-10" />
                   <h3 className="text-lg font-bold text-slate-400">CI Auditor Ready</h3>
@@ -703,49 +708,10 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                            <div className="p-2 bg-amber-500/10 rounded-lg">
                               <Bug className="w-5 h-5 text-amber-400" />
                            </div>
-                           <h4 className="text-white font-bold text-lg">{activeTab === 'failures' ? 'False Positives' : 'Silent Flakes'}</h4>
+                           <h4 className="text-white font-bold text-lg">Analysis Metrics</h4>
                         </div>
                         <div className="space-y-4">
-                           {aggregatedFindings.flakes.length === 0 ? (
-                             <p className="text-sm text-slate-500 italic">No flaky patterns identified in recent runs.</p>
-                           ) : aggregatedFindings.flakes.map((fp, i) => {
-                             const fpid = `flake-${i}`;
-                             return (
-                             <div key={fpid} className="bg-slate-950/50 border border-amber-500/20 rounded-lg p-4 group">
-                                <div className="flex justify-between items-start mb-2">
-                                   <div className="flex flex-col">
-                                      <p className="text-xs font-bold text-amber-200">{fp.jobName}</p>
-                                      <Badge variant="yellow" className="text-[8px] w-fit mt-1">Severity: {fp.flakinessScore}/10</Badge>
-                                   </div>
-                                   <div className="flex gap-2">
-                                     <Button 
-                                      variant="ghost" 
-                                      size="sm" 
-                                      className="h-7 w-8 p-0 border border-purple-500/20 text-purple-400 hover:bg-purple-500/10"
-                                      onClick={() => openWorkerSelector(fpid, `FLAKY PATTERN: ${fp.jobName}. Observation: ${fp.reason}`, [])}
-                                     >
-                                      <Bot className="w-4 h-4" />
-                                     </Button>
-                                     <Button 
-                                      variant="ghost" 
-                                      size="sm" 
-                                      className={clsx(
-                                        "h-7 px-2 text-[8px] border transition-colors",
-                                        dispatchStatus[fpid] === 'success' ? "border-green-500/30 text-green-400 bg-green-500/5" : 
-                                        dispatchStatus[fpid] === 'error' ? "border-red-500/50 text-red-400 bg-red-500/10" :
-                                        "border-red-500/30 text-red-400 hover:bg-red-500/10"
-                                      )}
-                                      onClick={() => handleDispatchIssue(fpid, fp.suggestedTitle, fp.suggestedBody, 'flake')}
-                                      isLoading={dispatchStatus[fpid] === 'loading'}
-                                      disabled={dispatchStatus[fpid] === 'success'}
-                                    >
-                                      {dispatchStatus[fpid] === 'success' ? <Check className="w-3 h-3" /> : dispatchStatus[fpid] === 'error' ? 'Error' : <><Plus className="w-3 h-3 mr-1" /> Issue</>}
-                                    </Button>
-                                   </div>
-                                </div>
-                                <p className="text-[11px] text-slate-400 leading-relaxed">{fp.reason}</p>
-                             </div>
-                           )})}
+                           <p className="text-sm text-slate-500 italic">Historical flakiness analysis is now integrated into the technical job audit below.</p>
                         </div>
                      </div>
                   </div>
@@ -791,13 +757,40 @@ const WorkflowHealth: React.FC<WorkflowHealthProps> = ({ repoName, token, julesA
                                   </Button>
                               </div>
                               <div className="flex-1 min-w-0">
-                                 <h5 className="text-slate-200 font-bold text-sm mb-1">{err.jobName} (Run ID: {err.runId})</h5>
-                                 <div className="bg-slate-950 rounded-lg p-4 mt-3 border border-slate-800">
-                                    <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-slate-500 uppercase tracking-tighter">
-                                       <Terminal className="w-3 h-3" /> Technical Fingerprint
-                                    </div>
-                                    <pre className="text-[11px] font-mono text-slate-300 whitespace-pre-wrap overflow-x-auto">{err.errorSnippet}</pre>
+                                 <div className="flex items-center justify-between mb-1">
+                                    <h5 className="text-slate-200 font-bold text-sm">{err.jobName} (Run ID: {err.runId})</h5>
+                                    {getFixCategoryBadge(err.fixCategory)}
                                  </div>
+                                 
+                                 {err.stepName && (
+                                   <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mb-2">
+                                     <span className="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono">Step: {err.stepName}</span>
+                                   </div>
+                                 )}
+                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-3">
+                                    <div className="bg-slate-950 rounded-lg p-4 border border-slate-800">
+                                       <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-rose-500 uppercase tracking-tighter">
+                                          <Terminal className="w-3 h-3" /> Error Snippet
+                                       </div>
+                                       <pre className="text-[11px] font-mono text-slate-300 whitespace-pre-wrap overflow-x-auto max-h-[120px] custom-scrollbar">{err.errorSnippet}</pre>
+                                    </div>
+                                    
+                                    <div className="bg-blue-950/20 rounded-lg p-4 border border-blue-500/20">
+                                       <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-blue-400 uppercase tracking-tighter">
+                                          <Search className="w-3 h-3" /> Root Cause Analysis
+                                       </div>
+                                       <p className="text-[11px] text-slate-300 leading-relaxed">{err.rootCause || 'Analysis pending...'}</p>
+                                    </div>
+                                 </div>
+
+                                 {err.fixInstructions && (
+                                   <div className="mt-3 bg-emerald-950/20 rounded-lg p-4 border border-emerald-500/20">
+                                      <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-emerald-400 uppercase tracking-tighter">
+                                         <Wrench className="w-3 h-3" /> Suggested Fix
+                                      </div>
+                                      <p className="text-[11px] text-slate-300 leading-relaxed italic">"{err.fixInstructions}"</p>
+                                   </div>
+                                 )}
                               </div>
                            </div>
                         )})}

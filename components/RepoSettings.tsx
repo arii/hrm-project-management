@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload } from 'lucide-react';
 import clsx from 'clsx';
 import { storage } from '../services/storageService';
@@ -11,18 +11,32 @@ interface RepoSettingsProps {
   setGithubToken: (token: string) => void;
   julesApiKey: string;
   setJulesApiKey: (key: string) => void;
+  geminiApiKey: string;
+  setGeminiApiKey: (key: string) => void;
 }
 
 const RepoSettings: React.FC<RepoSettingsProps> = ({ 
   repoName, setRepoName, 
   githubToken, setGithubToken,
-  julesApiKey, setJulesApiKey
+  julesApiKey, setJulesApiKey,
+  geminiApiKey, setGeminiApiKey
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [localRepo, setLocalRepo] = useState(repoName);
-  const [localToken, setLocalToken] = useState(githubToken);
-  const [localJulesKey, setLocalJulesKey] = useState(julesApiKey);
+  const [localRepo, setLocalRepo] = useState(repoName || '');
+  const [localToken, setLocalToken] = useState(githubToken || '');
+  const [localJulesKey, setLocalJulesKey] = useState(julesApiKey || '');
+  const [localGeminiKey, setLocalGeminiKey] = useState(geminiApiKey || '');
   
+  // Sync local state with props when the settings modal is opened
+  useEffect(() => {
+    if (isOpen) {
+      setLocalRepo(repoName || '');
+      setLocalToken(githubToken || '');
+      setLocalJulesKey(julesApiKey || '');
+      setLocalGeminiKey(geminiApiKey || '');
+    }
+  }, [isOpen, repoName, githubToken, julesApiKey, geminiApiKey]);
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
   const [cacheCleared, setCacheCleared] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -36,6 +50,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     const cleanRepo = localRepo.trim();
     const cleanToken = localToken.trim();
     const cleanJulesKey = localJulesKey.trim();
+    const cleanGeminiKey = localGeminiKey.trim();
 
     if (!cleanRepo) {
       setErrorMessage("Repository Name cannot be empty.");
@@ -46,6 +61,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     setRepoName(cleanRepo);
     setGithubToken(cleanToken);
     setJulesApiKey(cleanJulesKey);
+    setGeminiApiKey(cleanGeminiKey);
 
     setSaveStatus('success');
     setTimeout(() => {
@@ -86,6 +102,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
           setLocalRepo(settings.repoName);
           setLocalToken(settings.githubToken || '');
           setLocalJulesKey(settings.julesApiKey || '');
+          setLocalGeminiKey(settings.geminiApiKey || '');
           setImportSuccess(true);
           setTimeout(() => setImportSuccess(false), 3000);
         }
@@ -149,6 +166,21 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
                 onChange={(e) => setLocalToken(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-primary"
                 placeholder="ghp_..."
+              />
+            </div>
+
+            <div className="border-t border-slate-700 pt-4">
+              <label className="block text-sm font-medium text-slate-400 mb-1 flex items-center gap-2">
+                Gemini API Key <span className="text-[10px] text-slate-500 font-normal">(Optional if env set)</span>
+              </label>
+              <input 
+                type="password" 
+                name="gemini-key"
+                value={localGeminiKey}
+                autoComplete="new-password"
+                onChange={(e) => setLocalGeminiKey(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                placeholder="AI Key..."
               />
             </div>
 

@@ -55,18 +55,30 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
   let response: Response | undefined;
   let retries = 2;
   const fullUrl = `${BASE_URL}${endpoint}`;
+  const timeout = 15000; // 15 seconds timeout
 
   while (retries >= 0) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    
     try {
-      response = await fetch(fullUrl, fetchOptions);
+      response = await fetch(fullUrl, {
+        ...fetchOptions,
+        signal: controller.signal
+      });
+      clearTimeout(id);
       
       if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
           throw new Error("GitHub API Rate Limit Exceeded.");
       }
       break;
     } catch (e: any) {
+      clearTimeout(id);
       if (retries === 0) {
         console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
+        if (e.name === 'AbortError') {
+          throw new Error(`Request timed out after ${timeout/1000}s. GitHub might be slow or the request is too large. (Target: ${fullUrl})`);
+        }
         if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
           throw new Error(`Network error: Failed to reach GitHub API. This often happens due to CORS issues, network blocks, or invalid headers. (Target: ${fullUrl})`);
         }
@@ -124,9 +136,10 @@ export const fetchPrDiff = async (repo: string, number: number, token: string): 
   }, true);
 };
 
-export const fetchCheckRuns = async (repo: string, ref: string, token: string) => {
+export const fetchCheckRuns = async (repo: string, ref: string, token: string, skipCache = false) => {
   try {
-    const data = await request<any>(`/repos/${repo}/commits/${ref}/check-runs`, token);
+    const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
+    const data = await request<any>(`/repos/${repo}/commits/${ref}/check-runs`, token, options);
     return data.check_runs.map((run: any) => ({
       name: run.name,
       status: run.status,
@@ -138,9 +151,10 @@ export const fetchCheckRuns = async (repo: string, ref: string, token: string) =
   }
 };
 
-export const fetchCombinedStatus = async (repo: string, ref: string, token: string) => {
+export const fetchCombinedStatus = async (repo: string, ref: string, token: string, skipCache = false) => {
   try {
-    const data = await request<any>(`/repos/${repo}/commits/${ref}/status`, token);
+    const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
+    const data = await request<any>(`/repos/${repo}/commits/${ref}/status`, token, options);
     return {
       state: data.state, // 'failure', 'pending', 'success', 'error'
       statuses: data.statuses.map((s: any) => ({
@@ -155,9 +169,10 @@ export const fetchCombinedStatus = async (repo: string, ref: string, token: stri
   }
 };
 
-export const fetchWorkflowRuns = async (repo: string, token: string, skipCache = false, page = 1): Promise<GithubWorkflowRun[]> => {
+export const fetchWorkflowRuns = async (repo: string, token: string, skipCache = false, page = 1, status?: string): Promise<GithubWorkflowRun[]> => {
   const options = skipCache ? { headers: { 'X-Skip-Cache': 'true' } } : {};
-  const data = await request<{ workflow_runs: GithubWorkflowRun[] }>(`/repos/${repo}/actions/runs?per_page=100&page=${page}`, token, options);
+  const statusParam = status ? `&status=${status}` : '';
+  const data = await request<{ workflow_runs: GithubWorkflowRun[] }>(`/repos/${repo}/actions/runs?per_page=100&page=${page}${statusParam}`, token, options);
   return data.workflow_runs || [];
 };
 
@@ -214,6 +229,52 @@ export const addComment = async (repo: string, token: string, number: number, bo
   return request(`/repos/${repo}/issues/${number}/comments`, token, { method: 'POST', body: JSON.stringify({ body }) });
 };
 
+/**
+ * Resolves and fetches the workflow YAML that GitHub actually executed for
+ * a given run by reading the file at the run's triggering commit SHA.
+ */
+export const fetchWorkflowFileAtSha = async (
+  repo: string,
+  run: GithubWorkflowRun,
+  token: string
+): Promise<{ path: string; ref: string; content: string } | null> => {
+  try {
+    const workflowMeta = await request<{ path: string; name: string }>(
+      `/repos/${repo}/actions/workflows/${run.workflow_id}`,
+      token
+    );
+
+    const filePath = workflowMeta.path;
+    let ref = run.head_sha;
+
+    if (run.event === 'pull_request_target') {
+      ref = run.head_branch;
+    }
+
+    const fileData = await request<{ content: string; encoding: string; sha: string }>(
+      `/repos/${repo}/contents/${encodeURIComponent(filePath)}?ref=${ref}`,
+      token
+    );
+
+    if (fileData.encoding === 'base64' && fileData.content) {
+      const decoded = atob(fileData.content.replace(/\n/g, ''));
+      return {
+        path: filePath,
+        ref,
+        content: decoded.substring(0, 8000)
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[githubService] fetchWorkflowFileAtSha failed for run ${run.id}:`, e);
+    return null;
+  }
+};
+
+export const updatePullRequestBranch = async (repo: string, number: number, token: string) => {
+  return request(`/repos/${repo}/pulls/${number}/update-branch`, token, { method: 'PUT' });
+};
+
 export const fetchComments = async (repo: string, number: number, token: string): Promise<any[]> => {
   return request<any[]>(`/repos/${repo}/issues/${number}/comments`, token);
 };
@@ -232,24 +293,172 @@ export const publishPullRequest = async (repo: string, token: string, number: nu
 };
 
 /**
+ * GRAPHQL-BASED PR ENRICHMENT (High Speed)
+ * Replaces 4 REST calls with 1 GraphQL call.
+ */
+const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token: string, includeReviews = false): Promise<EnrichedPullRequest> => {
+  const [owner, name] = repo.split('/');
+  const query = `
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          number
+          title
+          body
+          state
+          mergeable
+          mergeStateStatus
+          changedFiles
+          additions
+          deletions
+          headRefName
+          baseRefName
+          headRefOid
+          author { login }
+          ${includeReviews ? `
+          reviews(last: 50) {
+            nodes {
+              state
+              author { login }
+            }
+          }
+          ` : ''}
+          commits(last: 1) {
+            nodes {
+              commit {
+                statusCheckRollup {
+                  state
+                  contexts(last: 100) {
+                    nodes {
+                      ... on CheckRun {
+                        name
+                        status
+                        conclusion
+                        detailsUrl
+                      }
+                      ... on StatusContext {
+                        context
+                        state
+                        targetUrl
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const response = await request<any>('/graphql', token, {
+    method: 'POST',
+    body: JSON.stringify({ query, variables: { owner, name, number: pr.number } })
+  });
+
+  if (response.errors) {
+    throw new Error(response.errors[0].message);
+  }
+
+  const data = response.data.repository.pullRequest;
+  if (!data) throw new Error("PR not found in GraphQL response");
+
+  // Map GraphQL nodes to our expected format
+  const reviews = (data.reviews?.nodes || []).map((r: any) => ({
+    state: r.state,
+    user: { login: r.author?.login || 'unknown' }
+  }));
+
+  const checkNodes = data.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes || [];
+  const allChecks = checkNodes.map((n: any) => ({
+    name: n.name || n.context,
+    status: n.status || (n.state === 'PENDING' ? 'in_progress' : 'completed'),
+    conclusion: n.conclusion?.toLowerCase() || (n.state === 'SUCCESS' ? 'success' : (n.state === 'PENDING' ? null : 'failure')),
+    url: n.detailsUrl || n.targetUrl
+  }));
+
+  const failedCount = allChecks.filter((r: any) => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required').length;
+  const pendingCount = allChecks.filter((r: any) => r.status !== 'completed' && r.status !== 'success' && r.status !== 'skipped' && r.status !== 'cancelled').length;
+  
+  let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
+  if (failedCount > 0) testStatus = 'failed';
+  else if (pendingCount > 0) testStatus = 'pending';
+  else if (allChecks.length > 0) {
+    const allPassed = allChecks.every((r: any) => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+    testStatus = allPassed ? 'passed' : 'failed';
+  } else {
+    const rollupState = data.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state;
+    if (rollupState === 'SUCCESS') testStatus = 'passed';
+    else if (rollupState === 'FAILURE' || rollupState === 'ERROR') testStatus = 'failed';
+    else if (rollupState === 'PENDING') testStatus = 'pending';
+  }
+
+  const latestReviewsByUser: Record<string, string> = {};
+  reviews.forEach((r: any) => { latestReviewsByUser[r.user.login] = r.state; });
+  const reviewStates = Object.values(latestReviewsByUser);
+  const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
+
+  return {
+    ...pr,
+    mergeable: data.mergeable === 'MERGEABLE',
+    mergeable_state: data.mergeStateStatus?.toLowerCase(),
+    changed_files: data.changedFiles,
+    additions: data.additions,
+    deletions: data.deletions,
+    testStatus,
+    checkResults: allChecks,
+    isApproved,
+    isBig: data.changedFiles > 15,
+    isReadyToMerge: data.mergeable === 'MERGEABLE',
+    isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(data.baseRefName.toLowerCase())
+  } as EnrichedPullRequest;
+};
+
+/**
  * HIGH-FIDELITY SINGLE PR ENRICHMENT
  * Fetches both Checks and Statuses to determine test health.
  */
-export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, skipCache = false): Promise<EnrichedPullRequest> => {
+export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, includeReviews = false): Promise<EnrichedPullRequest> => {
   if (!repo || !repo.includes('/')) {
     throw new Error(`Invalid repository name: "${repo}". Must be in "owner/repo" format.`);
   }
-  const cacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}`;
-  if (!skipCache) {
-    const cached = storage.getCached<EnrichedPullRequest>(cacheKey);
-    if (cached) return cached;
+  
+  // Tier 2: Cache key differentiates between lite and full
+  const cacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}_${includeReviews ? 'full' : 'lite'}`;
+  
+  // Tier 3: SHA-based invalidation
+  const cached = storage.getCachedBySha<EnrichedPullRequest>(cacheKey, pr.head.sha);
+  if (cached) return cached;
+
+  // Try GraphQL first as it's much faster (1 request vs 4)
+  if (token) {
+    try {
+      const enriched = await enrichSinglePrGraphQL(repo, pr, token, includeReviews);
+      storage.setCached(cacheKey, enriched);
+      return enriched;
+    } catch (e) {
+      console.warn("[GithubService] GraphQL enrichment failed, falling back to REST:", e);
+    }
   }
-  const [details, reviews, checkResults, commitStatus] = await Promise.all([
-    fetchPrDetails(repo, pr.number, token, skipCache),
-    token ? fetchPrReviews(repo, pr.number, token) : Promise.resolve([]),
-    token ? fetchCheckRuns(repo, pr.head.sha, token) : Promise.resolve([]),
-    token ? fetchCombinedStatus(repo, pr.head.sha, token) : Promise.resolve({ state: 'unknown', statuses: [] })
+
+  // REST Fallback
+  // Tier 1: Use 'pr' object directly, only fetch details if missing changed_files
+  const detailsPromise = (pr as any).changed_files !== undefined 
+    ? Promise.resolve(pr as any) 
+    : fetchPrDetails(repo, pr.number, token);
+
+  const [details, reviews, checkResults] = await Promise.all([
+    detailsPromise,
+    (token && includeReviews) ? fetchPrReviews(repo, pr.number, token) : Promise.resolve([]),
+    token ? fetchCheckRuns(repo, pr.head.sha, token) : Promise.resolve([])
   ]);
+
+  // Conditional fetching for commit status (only if check runs are empty)
+  let commitStatus = { state: 'unknown', statuses: [] as any[] };
+  if (token && checkResults.length === 0) {
+    commitStatus = await fetchCombinedStatus(repo, pr.head.sha, token);
+  }
 
   // Merge Check Runs and Statuses
   const allChecks = [
@@ -257,13 +466,16 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
     ...commitStatus.statuses
   ];
 
-  const failedCount = allChecks.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out').length;
-  const pendingCount = allChecks.filter(r => r.status !== 'completed' && r.status !== 'success').length;
+  const failedCount = allChecks.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required').length;
+  const pendingCount = allChecks.filter(r => r.status !== 'completed' && r.status !== 'success' && r.status !== 'skipped' && r.status !== 'cancelled').length;
   
   let testStatus: 'passed' | 'failed' | 'pending' | 'unknown' = 'unknown';
   if (failedCount > 0) testStatus = 'failed';
   else if (pendingCount > 0) testStatus = 'pending';
-  else if (allChecks.length > 0) testStatus = 'passed';
+  else if (allChecks.length > 0) {
+    const allPassed = allChecks.every(r => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+    testStatus = allPassed ? 'passed' : 'failed';
+  }
   else if (commitStatus.state === 'success') testStatus = 'passed';
   else if (commitStatus.state === 'failure' || commitStatus.state === 'error') testStatus = 'failed';
   else if (commitStatus.state === 'pending') testStatus = 'pending';
@@ -294,13 +506,22 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string, sk
   const list = await fetchPullRequests(repo, token, 'open', skipCache);
   const subset = list.slice(0, 20);
   
-  const enrichedResults = await Promise.all(subset.map(async (pr) => {
-    try {
-      return await enrichSinglePr(repo, pr, token, skipCache);
-    } catch (e) {
-      return { ...pr, testStatus: 'unknown', isApproved: false, isBig: false, isReadyToMerge: false, isLeaderBranch: false } as EnrichedPullRequest;
-    }
-  }));
+  // Process in smaller chunks to avoid hitting browser/GitHub limits simultaneously
+  const chunkSize = 5;
+  const enrichedResults: EnrichedPullRequest[] = [];
+  
+  for (let i = 0; i < subset.length; i += chunkSize) {
+    const chunk = subset.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(chunk.map(async (pr) => {
+      try {
+        // Tier 2: includeReviews = false for the list view
+        return await enrichSinglePr(repo, pr, token, false);
+      } catch (e) {
+        return { ...pr, testStatus: 'unknown', isApproved: false, isBig: false, isReadyToMerge: false, isLeaderBranch: false } as EnrichedPullRequest;
+      }
+    }));
+    enrichedResults.push(...chunkResults);
+  }
 
   const nonEnriched = list.slice(20).map(pr => ({
     ...pr,

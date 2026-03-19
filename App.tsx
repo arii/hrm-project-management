@@ -9,20 +9,30 @@ import CodeReview from './pages/CodeReview';
 import WorkflowHealth from './pages/WorkflowHealth';
 import JulesManagement from './pages/JulesManagement';
 import { storage, AppSettings } from './services/storageService';
+import { setGeminiApiKey } from './services/geminiService';
 
 const App: React.FC = () => {
-  const [settings, setSettingsState] = useState<AppSettings>(() => storage.getSettings());
+  const [settings, setSettingsState] = useState<AppSettings>(() => {
+    const s = storage.getSettings();
+    if (s.geminiApiKey) setGeminiApiKey(s.geminiApiKey);
+    return s;
+  });
 
   // Synchronize settings across tabs and components
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === storage.getSettingsKey() || e.key?.includes('settings')) {
-        setSettingsState(storage.getSettings());
+        const s = storage.getSettings();
+        setSettingsState(s);
+        if (s.geminiApiKey) setGeminiApiKey(s.geminiApiKey);
       }
     };
 
     const handleCustomChange = (e: any) => {
-      if (e.detail) setSettingsState(e.detail);
+      if (e.detail) {
+        setSettingsState(e.detail);
+        if (e.detail.geminiApiKey) setGeminiApiKey(e.detail.geminiApiKey);
+      }
     };
 
     window.addEventListener('storage', handleStorageChange);
@@ -39,7 +49,12 @@ const App: React.FC = () => {
     // Local state update is handled by the event listener dispatched in saveSettings
   };
 
-  const { repoName, githubToken, julesApiKey } = settings;
+  const { 
+    repoName = '', 
+    githubToken = '', 
+    julesApiKey = '', 
+    geminiApiKey = '' 
+  } = settings;
 
   return (
     <HashRouter>
@@ -52,6 +67,8 @@ const App: React.FC = () => {
             setGithubToken={(token) => updateSettings({ githubToken: token })}
             julesApiKey={julesApiKey}
             setJulesApiKey={(key) => updateSettings({ julesApiKey: key })}
+            geminiApiKey={geminiApiKey}
+            setGeminiApiKey={(key) => updateSettings({ geminiApiKey: key })}
           />
         }>
           <Route index element={<Dashboard repoName={repoName} />} />

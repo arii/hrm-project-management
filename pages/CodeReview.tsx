@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   fetchPullRequests,
+  fetchEnrichedPullRequests,
   fetchPrDiff, 
   addComment, 
   addLabels, 
@@ -43,6 +44,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [isRefreshingPr, setIsRefreshingPr] = useState(false);
   const [selectedPr, setSelectedPr] = useState<EnrichedPullRequest | null>(null);
   
+  const [selectedPrIds, setSelectedPrIds] = useState<Set<number>>(new Set());
+  const [isBulkAuditing, setIsBulkAuditing] = useState(false);
+  
   const currentFetchPrRef = useRef<number | null>(null);
   
   const [reviews, setReviews] = useState<Record<number, CodeReviewResult>>({});
@@ -69,6 +73,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       });
       const stored = localStorage.getItem(`audit_reviewed_shas_${repoName}`);
       if (stored) { try { setReviewedShas(JSON.parse(stored)); } catch (e) {} }
+    } else {
+      setLoading(false);
+      setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
     }
   }, [repoName, token]);
 
@@ -83,8 +90,16 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const loadPrList = async () => {
     setLoading(true);
     try {
-      const list = await fetchPullRequests(repoName, token);
+      const list = await fetchEnrichedPullRequests(repoName, token);
       setPrs(list);
+      
+      // Seed the enriched map with what we got from the list
+      const initialMap: Record<number, EnrichedPullRequest> = {};
+      list.forEach(pr => {
+        if (pr.checkResults) initialMap[pr.number] = pr;
+      });
+      setEnrichedMap(prev => ({ ...prev, ...initialMap }));
+      
       return list;
     } catch (e) { 
       console.error(e); 
@@ -96,8 +111,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const handleSelectPr = async (pr: GithubPullRequest) => {
     currentFetchPrRef.current = pr.number;
     
+    // Check if we already have enriched data
+    const existingEnriched = enrichedMap[pr.number];
+    
     // Immediate selection feedback
-    const fastEnriched: EnrichedPullRequest = {
+    const fastEnriched: EnrichedPullRequest = existingEnriched || {
       ...pr,
       testStatus: 'pending',
       isApproved: false,
@@ -122,9 +140,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       }
     }
 
-    // Heavy enrichment in background
+    // Only refresh if we don't have check results or if it's explicitly requested
+    // For now, we'll always do a background refresh but use cached data if available
     setIsRefreshingPr(true);
     try {
+      // Tier 2: includeReviews = true for the detail view
       const full = await enrichSinglePr(repoName, pr, token, true);
       
       // Prevent race condition: only update if this is still the active PR
@@ -144,17 +164,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     }
   };
 
-  const runFullCodeReview = async (pr: EnrichedPullRequest) => {
+  const runFullCodeReview = async (pr: EnrichedPullRequest, isBulk = false, options: { useFlash?: boolean, lowThinking?: boolean } = {}) => {
     if (!token) return;
     setStatuses(prev => ({ ...prev, [pr.number]: 'analyzing' }));
     setErrors(prev => { const next = { ...prev }; delete next[pr.number]; return next; });
-    setLoadingMessage("AI Performing Audit...");
+    if (!isBulk) setLoadingMessage("AI Performing Audit...");
     
     try {
       const diff = await fetchPrDiff(repoName, pr.number, token);
       if (!diff) throw new Error("Could not retrieve diff.");
       
-      const review = await generateCodeReview(pr, diff);
+      const review = await generateCodeReview(pr, diff, options);
       storage.savePrReview(repoName, pr.number, review);
       setReviews(prev => ({ ...prev, [pr.number]: review }));
       
@@ -163,7 +183,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       }
 
       setStatuses(prev => ({ ...prev, [pr.number]: 'posting' }));
-      setLoadingMessage("Syncing with GitHub...");
+      if (!isBulk) setLoadingMessage("Syncing with GitHub...");
       
       const commentBody = `### 🤖 AI Technical Audit\n\n${review.reviewComment}\n\n*Review automatically published via RepoAuditor.*`;
       await addComment(repoName, token, pr.number, commentBody);
@@ -179,7 +199,68 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     } catch (e: any) {
       setErrors(prev => ({ ...prev, [pr.number]: e.message || 'Process failed' }));
       setStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
-    } finally { setLoadingMessage(""); }
+    } finally { 
+      if (!isBulk) setLoadingMessage(""); 
+    }
+  };
+
+  const handleBulkAudit = async () => {
+    if (selectedPrIds.size === 0) return;
+    setIsBulkAuditing(true);
+    const ids = Array.from(selectedPrIds);
+    
+    // Concurrency control to avoid rate limits
+    const CONCURRENCY_LIMIT = 3;
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += CONCURRENCY_LIMIT) {
+      chunks.push(ids.slice(i, i + CONCURRENCY_LIMIT));
+    }
+
+    for (const chunk of chunks) {
+      await Promise.all(chunk.map(async (id) => {
+        const pr = prs.find(p => p.number === id);
+        if (!pr) return;
+        
+        const enriched = enrichedMap[id] || pr;
+        if (statuses[id] === 'completed' && reviewedShas[id] === enriched.head.sha) return;
+        
+        let fullPr = enrichedMap[id];
+        if (!fullPr || !fullPr.checkResults) {
+          try {
+            fullPr = await enrichSinglePr(repoName, pr, token, true);
+            setEnrichedMap(prev => ({ ...prev, [id]: fullPr }));
+          } catch (e) {
+            setErrors(prev => ({ ...prev, [id]: "Enrichment failed" }));
+            setStatuses(prev => ({ ...prev, [id]: 'error' }));
+            return;
+          }
+        }
+        
+        // Use Flash and Low Thinking for bulk audits to reduce cost and increase speed
+        await runFullCodeReview(fullPr as EnrichedPullRequest, true, { useFlash: true, lowThinking: true });
+      }));
+    }
+    
+    setIsBulkAuditing(false);
+    setSelectedPrIds(new Set());
+  };
+
+  const toggleSelectPr = (e: React.ChangeEvent<HTMLInputElement>, prNumber: number) => {
+    e.stopPropagation();
+    setSelectedPrIds(prev => {
+      const next = new Set(prev);
+      if (next.has(prNumber)) next.delete(prNumber);
+      else next.add(prNumber);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedPrIds.size === prs.length) {
+      setSelectedPrIds(new Set());
+    } else {
+      setSelectedPrIds(new Set(prs.map(p => p.number)));
+    }
   };
 
   const handleScanComments = async () => {
@@ -228,7 +309,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     try {
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("Could not identify Jules source.");
-      const session = await createSession(julesApiKey, `Audit Fix Task:\n\nTitle: ${issue.title}\nDetails:\n${issue.body}`, sourceId, selectedPr.base.ref, `Audit Fix: ${issue.title.substring(0, 30)}`);
+      const session = await createSession(julesApiKey, `Audit Fix Task:\n\nTitle: ${issue.title}\nDetails:\n${issue.body}`, sourceId, selectedPr.head.ref, `Audit Fix: ${issue.title.substring(0, 30)}`);
       setAiSuggestions(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
       setExtractedIssues(prev => prev.map(p => p._id === issue._id ? { ...p, isDispatched: true } : p));
       
@@ -309,44 +390,89 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         {/* SIDEBAR - PR LIST */}
         <div className="w-full lg:w-[400px] bg-surface border border-slate-700 rounded-xl flex flex-col overflow-hidden shrink-0">
           <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex items-center justify-between">
-             <span className="font-semibold text-white">Active Pull Requests</span>
-             <Button variant="ghost" size="sm" onClick={loadPrList} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
+             <div className="flex items-center gap-3">
+               <input 
+                 type="checkbox" 
+                 className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500/20 cursor-pointer"
+                 checked={prs.length > 0 && selectedPrIds.size === prs.length}
+                 onChange={toggleSelectAll}
+               />
+               <span className="font-semibold text-white">Active Pull Requests</span>
+             </div>
+             <div className="flex items-center gap-2">
+               {selectedPrIds.size > 0 && (
+                 <Button 
+                   variant="primary" 
+                   size="xs" 
+                   onClick={handleBulkAudit} 
+                   isLoading={isBulkAuditing}
+                   className="h-7 px-2 text-[10px]"
+                 >
+                   {isBulkAuditing ? 'Auditing...' : `Audit ${selectedPrIds.size}`}
+                 </Button>
+               )}
+               <Button variant="ghost" size="sm" onClick={loadPrList} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
+             </div>
           </div>
+          {isBulkAuditing && (
+            <div className="px-4 py-2 bg-blue-900/20 border-b border-slate-700 text-[10px] text-blue-400 flex items-center gap-2 animate-pulse">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>Bulk audit in progress...</span>
+            </div>
+          )}
           <div className="max-h-64 lg:max-h-none overflow-y-auto flex-1 p-2 space-y-2 custom-scrollbar">
             {prs.map(pr => {
               const enriched = enrichedMap[pr.number];
+              const isSelected = selectedPrIds.has(pr.number);
+              const status = statuses[pr.number] || 'idle';
+              
               return (
-                <button 
-                  key={pr.id} 
-                  onClick={() => handleSelectPr(pr)} 
+                <div 
+                  key={pr.id}
                   className={clsx(
-                    "w-full text-left p-3 rounded-lg border transition-all flex flex-col group", 
+                    "group relative flex items-center gap-2 p-1 rounded-lg transition-all border",
                     selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
                   )}
                 >
-                  <div className="flex justify-between items-start w-full">
-                    <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
-                    <div className="shrink-0 flex items-center gap-1.5">
-                      {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
-                      {statuses[pr.number] === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
+                  <div className="pl-2">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500/20 cursor-pointer"
+                      checked={isSelected}
+                      onChange={(e) => toggleSelectPr(e, pr.number)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <button 
+                    onClick={() => handleSelectPr(pr)} 
+                    className="flex-1 text-left p-2 rounded-lg flex flex-col"
+                  >
+                    <div className="flex justify-between items-start w-full">
+                      <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
+                        {status === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
+                        {(status === 'analyzing' || status === 'posting') && <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />}
+                        {status === 'error' && <AlertTriangle className="w-3 h-3 text-red-400" />}
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-500 font-mono">
-                    #{pr.number}
-                    {enriched ? (
-                      <>
-                        <span className="h-1 w-1 bg-slate-800 rounded-full" />
-                        <span className={clsx(
-                          enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
-                          enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
-                          enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
-                        )}>{enriched.testStatus}</span>
-                      </>
-                    ) : (
-                      <span className="text-[9px] opacity-40">Loading...</span>
-                    )}
-                  </div>
-                </button>
+                    <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500 font-mono">
+                      #{pr.number}
+                      {enriched ? (
+                        <>
+                          <span className="h-1 w-1 bg-slate-800 rounded-full" />
+                          <span className={clsx(
+                            enriched.testStatus === 'failed' ? "text-red-400 font-bold" : 
+                            enriched.testStatus === 'passed' ? "text-green-400 font-bold" :
+                            enriched.testStatus === 'pending' ? "text-yellow-400" : "text-slate-500"
+                          )}>{enriched.testStatus}</span>
+                        </>
+                      ) : (
+                        <span className="text-[9px] opacity-40">Loading...</span>
+                      )}
+                    </div>
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -393,7 +519,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                            <a key={idx} href={check.url} target="_blank" rel="noopener noreferrer" className="p-2 bg-slate-950/50 border border-slate-800 rounded flex items-center justify-between group hover:border-slate-600 transition-all">
                               <span className="text-[10px] text-slate-300 truncate font-medium">{check.name}</span>
                               {check.conclusion === 'success' ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : 
-                               (check.conclusion === 'failure' || check.conclusion === 'timed_out') ? <XCircle className="w-3 h-3 text-red-500" /> :
+                               (check.conclusion === 'failure' || check.conclusion === 'timed_out' || check.conclusion === 'action_required') ? <XCircle className="w-3 h-3 text-red-500" /> :
+                               (check.conclusion === 'skipped' || check.conclusion === 'cancelled' || check.conclusion === 'neutral') ? <XCircle className="w-3 h-3 text-slate-500" /> :
                                <Clock className="w-3 h-3 text-yellow-500 animate-pulse" />}
                            </a>
                          ))}

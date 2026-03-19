@@ -12,12 +12,15 @@ interface LayoutProps {
   setGithubToken: (token: string) => void;
   julesApiKey: string;
   setJulesApiKey: (key: string) => void;
+  geminiApiKey: string;
+  setGeminiApiKey: (key: string) => void;
 }
 
 const Layout: React.FC<LayoutProps> = ({ 
   repoName, setRepoName, 
   githubToken, setGithubToken,
-  julesApiKey, setJulesApiKey
+  julesApiKey, setJulesApiKey,
+  geminiApiKey, setGeminiApiKey
 }) => {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -117,6 +120,8 @@ const Layout: React.FC<LayoutProps> = ({
             setGithubToken={setGithubToken}
             julesApiKey={julesApiKey}
             setJulesApiKey={setJulesApiKey}
+            geminiApiKey={geminiApiKey}
+            setGeminiApiKey={setGeminiApiKey}
           />
         </header>
 

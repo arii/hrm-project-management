@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff } from '../services/githubService';
+import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch } from '../services/githubService';
 import { analyzePullRequests, analyzePrForRestart, analyzePrForSync } from '../services/geminiService';
 import { listSessions, createSession, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
@@ -34,7 +34,11 @@ import {
   Bot,
   Key,
   Layers,
-  ExternalLink as ExternalLinkIcon
+  ExternalLink as ExternalLinkIcon,
+  FileText,
+  PlusSquare,
+  MinusSquare,
+  ArrowUpCircle
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
@@ -59,6 +63,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [repairStatuses, setRepairStatuses] = useState<Record<number, ActionStatus>>({});
   const [restartStatuses, setRestartStatuses] = useState<Record<number, ActionStatus>>({});
   const [syncStatuses, setSyncStatuses] = useState<Record<number, ActionStatus>>({});
+  const [updateStatuses, setUpdateStatuses] = useState<Record<number, ActionStatus>>({});
   const [dispatchStatuses, setDispatchStatuses] = useState<Record<string, ActionStatus>>({});
   const [sessionLinks, setSessionLinks] = useState<Record<string, string>>({}); // Stores session name for deep links
   const [processingMessages, setProcessingMessages] = useState<Record<number, string>>({});
@@ -97,7 +102,13 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   };
 
   useEffect(() => {
-    if (repoName && token) loadPrs();
+    if (repoName && token) {
+      loadPrs();
+    } else {
+      setLoading(false);
+      if (!token) setError("GitHub Token is missing. Please add it in settings.");
+      else if (!repoName) setError("Repository name is missing. Please add it in settings.");
+    }
   }, [repoName, token]);
 
   const updateProcessingMessage = (prNumber: number, msg: string) => {
@@ -124,11 +135,12 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         
         GOAL: Implement all architectural improvements and fixes identified in the directives above.
         
-        ### ANTI-AI-SLOP DIRECTIVES:
-        1. MINIMIZATION: Prioritize code reduction. Remove old features being replaced.
-        2. NO OVER-ENGINEERING: Avoid adding complex abstractions, generic wrappers, or unnecessary Providers.
-        3. NO VERBOSE COMMENTS: Delete any comments that explain the "how" (code should do that) rather than the "why".
-        4. LEVERAGE EXISTING: Do not create new types/hooks if similar ones exist.
+        ### CRITICAL DIRECTIVES:
+        1. PRESERVE INTENT: The changes in the feature branch are INTENTIONAL. Your goal is to REPAIR and POLISH them, not revert them.
+        2. MINIMIZATION: Prioritize code reduction where it doesn't compromise functionality. Remove old features being replaced.
+        3. NO OVER-ENGINEERING: Avoid adding complex abstractions, generic wrappers, or unnecessary Providers.
+        4. NO VERBOSE COMMENTS: Delete any comments that explain the "how" (code should do that) rather than the "why".
+        5. LEVERAGE EXISTING: Do not create new types/hooks if similar ones exist.
       `;
       
       const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Repair Audit: #${pr.number}`);
@@ -214,7 +226,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const prompt = `
         AI SYNCHRONIZATION & CONFLICT RESOLUTION SESSION for PR #${pr.number} on branch '${pr.head.ref}'.
         
-        GOAL: Restore structural alignment between the feature branch and its parent branch ('${pr.base.ref}').
+        GOAL: Restore structural alignment between the feature branch and its parent branch ('${pr.base.ref}') while PROTECTING the feature's intent.
         
         ### IDENTIFIED SYNCHRONIZATION ISSUES:
         ${issuesList}
@@ -222,12 +234,13 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         
         ### SURGICAL REPAIR DIRECTIVES:
         1. TARGETED REMEDIATION: Focus exclusively on resolving the identified merge conflicts, rebase discrepancies, and "stale-state" issues listed above.
-        2. NOISE REDUCTION: Explicitly ignore architectural patterns, business logic improvements, or general code quality feedback. Success is defined ONLY by a clean, synchronized state.
-        3. SYSTEMIC AWARENESS: Identify and resolve "phantom changes"—lines of code that appear as PR changes only because the feature branch is missing commits already merged into the base.
-        4. OPERATIONAL PRECISION: Operate at the git-structure level. Purge environmental or synchronization artifacts.
-        5. CI FIXES: Resolve CI test errors specifically related to synchronization, such as visual regression snapshots that are out of scope or outdated due to base branch changes.
+        2. PROTECT INTENTIONAL CHANGES: You MUST NOT revert or delete the core functional changes, business logic, or UI improvements introduced in the feature branch. Success is a clean sync that KEEPS the new feature.
+        3. PHANTOM CHANGE DETECTION: Identify and resolve "phantom changes"—lines that appear as PR changes only because the feature branch is missing commits already merged into the base. BE CAREFUL: If a change is not already in the base branch, it is NOT a phantom change.
+        4. SNAPSHOT RECONCILIATION: Pay special attention to visual regression or data snapshots. If the base branch updated a snapshot that this PR also modifies, perform a manual reconciliation to ensure the snapshot reflects both the base branch updates AND this PR's intentional changes. Do not simply overwrite with the base version.
+        5. OPERATIONAL PRECISION: Operate at the git-structure level. Purge environmental or synchronization artifacts.
+        6. CI FIXES: Resolve CI test errors specifically related to synchronization, such as visual regression snapshots that are out of scope or outdated due to base branch changes.
         
-        The final delta must represent ONLY the intentional work of the developer.
+        The final delta must represent ONLY the intentional work of the developer, cleaned of all git-related noise.
       `;
       
       const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Sync & Conflict: #${pr.number}`);
@@ -236,6 +249,22 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       updateProcessingMessage(pr.number, "Synchronization session dispatched successfully.");
     } catch (e: any) {
       setSyncStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
+      setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
+    }
+  };
+
+  const handleUpdateBranch = async (pr: EnrichedPullRequest) => {
+    if (!token) return;
+    setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
+    updateProcessingMessage(pr.number, "Updating branch from base...");
+    try {
+      await updatePullRequestBranch(repoName, pr.number, token);
+      setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
+      updateProcessingMessage(pr.number, "Branch updated successfully.");
+      // Reload PRs to get fresh state
+      setTimeout(() => loadPrs(true, true), 2000);
+    } catch (e: any) {
+      setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
       setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
     }
   };
@@ -429,12 +458,26 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                         <span className="h-1 w-1 bg-slate-700 rounded-full" />
                         <span className="flex items-center gap-1.5"><Badge variant="slate" className="font-mono text-[9px] bg-slate-900 border-slate-800">{pr.head.ref}</Badge></span>
                       </div>
+                      <div className="flex items-center gap-4 mt-2">
+                        <div className="flex items-center gap-1 text-[10px] text-slate-400" title="Files Changed">
+                          <FileText className="w-3 h-3 text-slate-500" />
+                          <span>{pr.changed_files || 0} files</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] text-green-500/80" title="Additions">
+                          <PlusSquare className="w-3 h-3" />
+                          <span>+{pr.additions || 0}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] text-red-500/80" title="Deletions">
+                          <MinusSquare className="w-3 h-3" />
+                          <span>-{pr.deletions || 0}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   {(processingMessages[pr.number] || errorMessages[pr.number]) && (
                     <div className={clsx("mt-4 p-3 rounded-lg text-xs flex items-center gap-3 animate-in slide-in-from-top-1", errorMessages[pr.number] ? "bg-red-900/20 text-red-300 border border-red-800/50" : "bg-blue-900/10 text-blue-300 border border-blue-800/30")}>
-                       {(repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading' || syncStatuses[pr.number] === 'loading') && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
-                       {(repairSuccess || restartSuccess || syncSuccess) && <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
+                       {(repairStatuses[pr.number] === 'loading' || restartStatuses[pr.number] === 'loading' || syncStatuses[pr.number] === 'loading' || updateStatuses[pr.number] === 'loading') && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
+                       {(repairSuccess || restartSuccess || syncSuccess || updateStatuses[pr.number] === 'success') && <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
                        {errorMessages[pr.number] ? <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" /> : null}
                        <div className="flex-1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                           <span className="font-medium">{errorMessages[pr.number] || processingMessages[pr.number]}</span>
@@ -498,6 +541,19 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                     className={clsx("w-full bg-slate-800 border-slate-700 hover:bg-slate-700", syncSuccess && "!bg-green-600 !border-green-500")}
                   >
                     {syncSuccess ? 'Sync Dispatched' : 'AI Sync & Conflict'}
+                  </Button>
+
+                  <Button 
+                    size="sm" 
+                    variant={updateStatuses[pr.number] === 'success' ? "success" : "secondary"}
+                    onClick={() => handleUpdateBranch(pr)} 
+                    isLoading={updateStatuses[pr.number] === 'loading'} 
+                    disabled={updateStatuses[pr.number] === 'success' || pr.mergeable_state === 'clean' || pr.mergeable_state === 'dirty' || repairStatuses[pr.number] === 'loading'}
+                    icon={updateStatuses[pr.number] === 'success' ? Check : ArrowUpCircle}
+                    className={clsx("w-full bg-slate-800 border-slate-700 hover:bg-slate-700", updateStatuses[pr.number] === 'success' && "!bg-green-600 !border-green-500")}
+                    title={pr.mergeable_state === 'clean' ? 'Branch is already up to date' : (pr.mergeable_state === 'dirty' ? 'Merge conflicts detected' : 'Update branch from base')}
+                  >
+                    {updateStatuses[pr.number] === 'success' ? 'Branch Updated' : (pr.mergeable_state === 'clean' ? 'Up to Date' : 'Update Branch')}
                   </Button>
 
                   <div className="flex gap-2 mt-1">
