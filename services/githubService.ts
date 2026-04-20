@@ -101,7 +101,18 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     let errorMessage = `Error: ${response.status}`;
     try {
       const errorBody = await response.json();
-      if (errorBody.message) errorMessage = errorBody.message;
+      if (errorBody.message) {
+        errorMessage = errorBody.message;
+        
+        // Enrich common error messages with helpful solutions
+        if (errorMessage.includes('Resource not accessible by personal access token')) {
+          errorMessage = "GitHub Permissions Error: Your Personal Access Token doesn't have enough permissions to perform this action. If using a Fine-grained token, ensure 'Issues' and 'Pull Requests' have Read & Write access. If using a Classic token, ensure 'repo' scope is selected.";
+        } else if (response.status === 403 && errorMessage.includes('rate limit exceeded')) {
+          errorMessage = "GitHub API Rate Limit Exceeded. Please wait a few minutes before trying again.";
+        } else if (response.status === 404) {
+          errorMessage = `Resource not found (404). Check if the repository name "${endpoint.split('/')[2]}/${endpoint.split('/')[3]}" is correct and your token has access to it.`;
+        }
+      }
     } catch (e) {}
     throw new Error(errorMessage);
   }

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchEnrichedPullRequests, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch } from '../services/githubService';
+import { fetchPullRequests, enrichSinglePr, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch } from '../services/githubService';
 import { analyzePullRequests, analyzePrForRestart, analyzePrForSync } from '../services/geminiService';
 import { listSessions, createSession, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
@@ -56,6 +56,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const navigate = useNavigate();
   const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [error, setError] = useState<string | null>(null);
   const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -87,17 +88,53 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const data = await fetchEnrichedPullRequests(repoName, token, skipCache);
-      setPrs(data);
+      // 1. Fetch BASIC PR list immediately
+      const list = await fetchPullRequests(repoName, token, 'open', skipCache);
+      const initialPrs = list.map(pr => ({
+        ...pr,
+        testStatus: 'unknown',
+        isApproved: false,
+        isBig: false,
+        isReadyToMerge: false,
+        isLeaderBranch: false
+      } as EnrichedPullRequest));
+      setPrs(initialPrs);
+      
+      // Stop skeleton loader
+      if (!silent) setLoading(false);
+
+      // 2. Jules sessions in parallel
       if (julesApiKey && julesApiKey.trim()) {
-        const sessions = await listSessions(julesApiKey);
-        setJulesSessions(sessions);
+        listSessions(julesApiKey).then(setJulesSessions).catch(console.error);
+      }
+
+      // 3. Background Enrichment with incremental progress
+      const toEnrich = initialPrs.slice(0, 30); // Enrich more here as it's the main list
+      setListProgress({ total: toEnrich.length, current: 0 });
+      
+      const chunkSize = 5;
+      let completedCount = 0;
+      
+      for (let i = 0; i < toEnrich.length; i += chunkSize) {
+        const chunk = toEnrich.slice(i, i + chunkSize);
+        await Promise.all(chunk.map(async (pr) => {
+          try {
+            const enriched = await enrichSinglePr(repoName, pr, token, false);
+            setPrs(prev => prev.map(p => p.number === pr.number ? enriched : p));
+          } catch (e) {
+            console.warn(`[PullRequests] Failed to enrich PR #${pr.number}`, e);
+          } finally {
+            completedCount++;
+            setListProgress({ total: toEnrich.length, current: completedCount });
+          }
+        }));
       }
     } catch (e: any) {
       console.error(e);
       setError(e.message || "Failed to load pull requests. Please check your connection and settings.");
-    } finally {
       if (!silent) setLoading(false);
+    } finally {
+      setListProgress({ total: 0, current: 0 });
     }
   };
 
@@ -429,6 +466,27 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
 
         {/* RIGHT: Active PR Management */}
         <div className="xl:col-span-3 space-y-4">
+           {listProgress.total > 0 && (
+             <div className="bg-blue-900/10 border border-blue-500/20 rounded-xl p-3 flex items-center justify-between mb-4 animate-in slide-in-from-top-1">
+               <div className="flex items-center gap-3">
+                 <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                 <div className="flex flex-col">
+                   <span className="text-xs font-bold text-white uppercase tracking-wider">Background Sync</span>
+                   <span className="text-[10px] text-blue-400 font-mono italic">Finding metadata & checks for item {listProgress.current}/{listProgress.total}...</span>
+                 </div>
+               </div>
+               <div className="flex flex-col items-end gap-1">
+                 <span className="text-xs font-mono text-white">{listProgress.current}/{listProgress.total}</span>
+                 <div className="w-32 bg-slate-800 rounded-full h-1 overflow-hidden">
+                   <div 
+                     className="bg-blue-500 h-full transition-all duration-300 shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                     style={{ width: `${(listProgress.current / listProgress.total) * 100}%` }}
+                   ></div>
+                 </div>
+               </div>
+             </div>
+           )}
+
            {loading ? (
              <div className="bg-surface border border-slate-700 rounded-xl p-20 flex flex-col items-center justify-center text-slate-500"><Loader2 className="w-10 h-10 animate-spin text-primary mb-4" /><p>Scanning repository pull requests...</p></div>
            ) : filteredPrs.length === 0 ? (

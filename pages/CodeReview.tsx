@@ -57,6 +57,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [statuses, setStatuses] = useState<Record<number, ReviewStatus>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [loadingMessage, setLoadingMessage] = useState<string>("");
+  const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
+  const [bulkProgress, setBulkProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -66,7 +68,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [aiSuggestions, setAiSuggestions] = useState<ExtractedIssueUI[]>([]);
   const [reviewedShas, setReviewedShas] = useState<Record<number, string>>({});
 
-  const { isDispatching, dispatchIssue } = useIssueDispatch(repoName, token);
+  const { isDispatching, dispatchIssue, dispatchErrors } = useIssueDispatch(repoName, token);
   const {
     allSessions,
     suggestedSessions,
@@ -79,21 +81,49 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const loadPrList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await fetchEnrichedPullRequests(repoName, token);
-      setPrs(list);
+      // 1. Fetch BASIC PR list immediately
+      const list = await fetchPullRequests(repoName, token);
+      const initialPrs = list.map(pr => ({
+        ...pr,
+        testStatus: 'unknown',
+        isApproved: false,
+        isBig: false,
+        isReadyToMerge: false,
+        isLeaderBranch: false
+      } as EnrichedPullRequest));
+      setPrs(initialPrs);
       
-      // Seed the enriched map with what we got from the list
-      const initialMap: Record<number, EnrichedPullRequest> = {};
-      list.forEach(pr => {
-        if (pr.checkResults) initialMap[pr.number] = pr;
-      });
-      setEnrichedMap(prev => ({ ...prev, ...initialMap }));
+      // Stop skeleton loader immediately
+      setLoading(false);
+
+      // 2. Background Enrichment
+      const toEnrich = initialPrs.slice(0, 20);
+      setListProgress({ total: toEnrich.length, current: 0 });
+      const chunkSize = 4;
+      let completedCount = 0;
       
-      return list;
-    } catch (e) { 
+      for (let i = 0; i < toEnrich.length; i += chunkSize) {
+        const chunk = toEnrich.slice(i, i + chunkSize);
+        await Promise.all(chunk.map(async (pr) => {
+          try {
+            const enriched = await enrichSinglePr(repoName, pr, token, false);
+            setEnrichedMap(prev => ({ ...prev, [pr.number]: enriched }));
+            setPrs(prev => prev.map(p => p.number === pr.number ? enriched : p));
+          } catch (e) {
+            console.warn(`[CodeReview] Failed to enrich PR #${pr.number}`, e);
+          } finally {
+            completedCount++;
+            setListProgress({ total: toEnrich.length, current: completedCount });
+          }
+        }));
+      }
+      
+      return initialPrs;
+    } catch (e: any) { 
       console.error(e); 
-    } finally { 
       setLoading(false); 
+    } finally {
+      setListProgress({ total: 0, current: 0 });
     }
   }, [repoName, token]);
 
@@ -184,12 +214,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     if (!token) return;
     setStatuses(prev => ({ ...prev, [pr.number]: 'analyzing' }));
     setErrors(prev => { const next = { ...prev }; delete next[pr.number]; return next; });
-    if (!isBulk) setLoadingMessage("AI Performing Audit...");
     
+    const setMsg = (msg: string) => {
+      if (!isBulk) setLoadingMessage(msg);
+    };
+
     try {
+      setMsg("Retrieving code diff...");
       const diff = await fetchPrDiff(repoName, pr.number, token);
       if (!diff) throw new Error("Could not retrieve diff.");
       
+      setMsg("AI Analyzing Architectural patterns...");
       const review = await generateCodeReview(pr, diff, options);
       storage.savePrReview(repoName, pr.number, review);
       setReviews(prev => ({ ...prev, [pr.number]: review }));
@@ -199,12 +234,13 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       }
 
       setStatuses(prev => ({ ...prev, [pr.number]: 'posting' }));
-      if (!isBulk) setLoadingMessage("Syncing with GitHub...");
+      setMsg("Publishing audit to GitHub...");
       
       const commentBody = `### 🤖 AI Technical Audit\n\n${review.reviewComment}\n\n*Review automatically published via RepoAuditor.*`;
       await addComment(repoName, token, pr.number, commentBody);
 
       if (review.labels && review.labels.length > 0) {
+        setMsg("Applying context labels...");
         const labelsToRemove = pr.labels.map(l => l.name).filter(name => MANAGED_LABELS.has(name));
         for (const label of labelsToRemove) { await removeLabel(repoName, token, pr.number, label).catch(() => {}); }
         await addLabels(repoName, token, pr.number, review.labels);
@@ -224,15 +260,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     if (selectedPrIds.size === 0) return;
     setIsBulkAuditing(true);
     const ids = Array.from(selectedPrIds);
+    setBulkProgress({ total: ids.length, current: 0 });
     
     // Concurrency control to avoid rate limits
-    const CONCURRENCY_LIMIT = 2; // Reduced for safety
+    const CONCURRENCY_LIMIT = 3; // Optimized for performance vs rate limits
     const chunks = [];
     for (let i = 0; i < ids.length; i += CONCURRENCY_LIMIT) {
       chunks.push(ids.slice(i, i + CONCURRENCY_LIMIT));
     }
 
     try {
+      let completedCount = 0;
       for (const chunk of chunks) {
         await Promise.all(chunk.map(async (id) => {
           const pr = prs.find(p => p.number === id);
@@ -240,7 +278,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
           
           const enriched = enrichedMap[id] || pr;
           // Skip if already reviewed at this SHA
-          if (reviewedShas[id] === enriched.head.sha && statuses[id] === 'completed') return;
+          if (reviewedShas[id] === enriched.head.sha && statuses[id] === 'completed') {
+            completedCount++;
+            setBulkProgress({ total: ids.length, current: completedCount });
+            return;
+          }
           
           let fullPr = enrichedMap[id];
           if (!fullPr || !fullPr.checkResults) {
@@ -250,12 +292,16 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
             } catch (e) {
               setErrors(prev => ({ ...prev, [id]: "Enrichment failed" }));
               setStatuses(prev => ({ ...prev, [id]: 'error' }));
+              completedCount++;
+              setBulkProgress({ total: ids.length, current: completedCount });
               return;
             }
           }
           
           // Use Flash and Low Thinking for bulk audits to reduce cost and increase speed
           await runFullCodeReview(fullPr as EnrichedPullRequest, true, { useFlash: true, lowThinking: true });
+          completedCount++;
+          setBulkProgress({ total: ids.length, current: completedCount });
         }));
       }
     } catch (e: any) {
@@ -263,6 +309,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     } finally {
       setIsBulkAuditing(false);
       setSelectedPrIds(new Set());
+      setBulkProgress({ total: 0, current: 0 });
     }
   };
 
@@ -386,7 +433,15 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                  checked={prs.length > 0 && selectedPrIds.size === prs.length}
                  onChange={toggleSelectAll}
                />
-               <span className="font-semibold text-white">Active Pull Requests</span>
+               <div className="flex flex-col">
+                 <span className="font-semibold text-white">Active Pull Requests</span>
+                 {listProgress.total > 0 && (
+                   <span className="text-[9px] text-blue-400 animate-pulse font-mono flex items-center gap-1">
+                     <Loader2 className="w-2 h-2 animate-spin" /> 
+                     Finding check statuses ({listProgress.current}/{listProgress.total})...
+                   </span>
+                 )}
+               </div>
              </div>
              <div className="flex items-center gap-2">
                {selectedPrIds.size > 0 && (
@@ -404,9 +459,12 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
              </div>
           </div>
           {isBulkAuditing && (
-            <div className="px-4 py-2 bg-blue-900/20 border-b border-slate-700 text-[10px] text-blue-400 flex items-center gap-2 animate-pulse">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Bulk audit in progress...</span>
+            <div className="px-4 py-2 bg-blue-900/20 border-b border-slate-700 text-[10px] text-blue-400 flex items-center justify-between animate-in slide-in-from-top-1">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Processing Batch ({bulkProgress.current}/{bulkProgress.total})</span>
+              </div>
+              <span className="font-mono">{bulkProgress.total > 0 ? Math.round((bulkProgress.current / bulkProgress.total) * 100) : 0}%</span>
             </div>
           )}
           <div className="max-h-64 lg:max-h-none overflow-y-auto flex-1 p-2 space-y-2 custom-scrollbar">
@@ -483,6 +541,42 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
         {/* WORKSPACE */}
         <div className="flex-1 bg-surface border border-slate-700 rounded-xl flex flex-col overflow-hidden relative min-h-[500px]">
+          {isBulkAuditing && (
+            <div className="absolute inset-0 z-50 bg-[#0B1120]/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+              <div className="max-w-md w-full bg-slate-800 border border-slate-700 rounded-2xl p-8 shadow-2xl space-y-6">
+                <div className="relative h-20 w-20 mx-auto">
+                  <div className="absolute inset-0 rounded-full border-4 border-slate-700"></div>
+                  <div 
+                    className="absolute inset-0 rounded-full border-4 border-blue-500 border-t-transparent animate-spin"
+                    style={{ animationDuration: '2s' }}
+                  ></div>
+                  <div className="absolute inset-0 flex items-center justify-center font-bold text-xl text-white">
+                    {bulkProgress.total > 0 ? Math.round((bulkProgress.current / bulkProgress.total) * 100) : 0}%
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <h3 className="text-xl font-bold text-white">Bulk Audit in Progress</h3>
+                  <p className="text-sm text-slate-400">
+                    Processing <span className="text-blue-400 font-bold">#{bulkProgress.current + 1}</span> of <span className="text-white font-bold">{bulkProgress.total}</span> selected PRs
+                  </p>
+                  <div className="w-full bg-slate-900 rounded-full h-2 mt-4 overflow-hidden shadow-inner">
+                    <div 
+                      className="bg-blue-500 h-full transition-all duration-500 ease-out shadow-[0_0_15px_rgba(59,130,246,0.5)]"
+                      style={{ width: `${bulkProgress.total > 0 ? (bulkProgress.current / bulkProgress.total) * 100 : 0}%` }}
+                    ></div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50">
+                   <p className="text-[10px] font-mono text-blue-400 flex items-center justify-center gap-2">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Batch Processing to optimize API quotas...
+                   </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {!selectedPr ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-500 p-8"><Eye className="w-16 h-16 mb-4 opacity-10" /><p className="font-medium text-center">Choose a Pull Request to deploy the AI auditor.</p></div>
           ) : (
@@ -567,6 +661,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                                        </Button>
                                      )}
                                    </div>
+                                   {dispatchErrors[issue._id] && (
+                                     <div className="mt-2 text-[10px] text-red-400 leading-tight bg-red-400/10 p-2 rounded-lg border border-red-500/20">
+                                       {dispatchErrors[issue._id]}
+                                     </div>
+                                   )}
                                 </div>
                               ))}
                            </div>
@@ -606,6 +705,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                                        </Button>
                                      )}
                                    </div>
+                                   {dispatchErrors[issue._id] && (
+                                     <div className="mt-2 text-[10px] text-red-400 leading-tight bg-red-400/10 p-2 rounded-lg border border-red-500/20">
+                                       {dispatchErrors[issue._id]}
+                                     </div>
+                                   )}
                                 </div>
                               ))}
                            </div>
@@ -632,6 +736,30 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                       </span>
                     </div>
                     <div className="bg-slate-900/80 border border-slate-700/50 p-6 lg:p-10 rounded-2xl shadow-2xl backdrop-blur-sm">
+                       {reviews[selectedPr.number].recommendation && (
+                         <div className={clsx(
+                           "mb-8 p-4 rounded-xl border flex items-center justify-between animate-in slide-in-from-top-2 duration-500",
+                           reviews[selectedPr.number].recommendation === 'Approved' ? "bg-green-500/10 border-green-500/30 text-green-400" :
+                           reviews[selectedPr.number].recommendation === 'Approved with Minor Changes' ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400" :
+                           "bg-red-500/10 border-red-500/30 text-red-400"
+                         )}>
+                           <div className="flex items-center gap-3">
+                             {reviews[selectedPr.number].recommendation === 'Approved' ? <ShieldCheck className="w-6 h-6 shrink-0" /> : 
+                              reviews[selectedPr.number].recommendation === 'Approved with Minor Changes' ? <AlertTriangle className="w-6 h-6 shrink-0" /> : 
+                              <XCircle className="w-6 h-6 shrink-0" />}
+                             <div>
+                               <p className="text-[10px] uppercase font-bold opacity-60 leading-none mb-1">Audit Verdict</p>
+                               <h5 className="font-black text-lg lg:text-xl uppercase tracking-tighter leading-none italic">{reviews[selectedPr.number].recommendation}</h5>
+                             </div>
+                           </div>
+                           <Badge variant={
+                             reviews[selectedPr.number].recommendation === 'Approved' ? 'green' : 
+                             (reviews[selectedPr.number].recommendation === 'Approved with Minor Changes' ? 'yellow' : 'red')
+                           }>
+                             Principal Verified
+                           </Badge>
+                         </div>
+                       )}
                        <div className="prose prose-invert prose-base max-w-none prose-blue 
                          prose-headings:text-white prose-headings:font-bold prose-headings:tracking-tight
                          prose-p:text-slate-300 prose-p:leading-relaxed

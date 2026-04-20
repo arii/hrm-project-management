@@ -138,9 +138,54 @@ export const deleteSession = async (apiKey: string, sessionName: string): Promis
 export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {
   try {
     const sources = await listSources(apiKey);
-    const match = sources.find(s => s.name.endsWith(repoName) || s.name.includes(repoName));
+    
+    // Normalize target repo name (e.g. "owner/my-repo" -> "my-repo")
+    const repoParts = repoName.split('/');
+    const repoOnly = repoParts[repoParts.length - 1].toLowerCase();
+    const fullNormalized = repoName.toLowerCase();
+    
+    // Helper to normalize strings for comparison (lowercase, remove non-alphanumeric)
+    const normalizeForMatch = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedRepoOnly = normalizeForMatch(repoOnly);
+    const normalizedFullRepo = normalizeForMatch(repoName);
+    
+    // 1. Try exact matches on normalized strings
+    let match = sources.find(s => {
+      const sourceName = s.name.toLowerCase();
+      const sourceDisplayName = (s.displayName || '').toLowerCase();
+      
+      // Exact match on source name (usually "sources/my-repo")
+      if (sourceName === fullNormalized || sourceName.endsWith(`/${repoOnly}`)) return true;
+      if (sourceName.endsWith(`/${normalizedRepoOnly}`)) return true;
+      
+      // Exact match on display name
+      if (sourceDisplayName === repoOnly || sourceDisplayName === repoName) return true;
+      
+      return false;
+    });
+
+    // 2. Try fuzzy matches (ignoring - and _)
+    if (!match) {
+      match = sources.find(s => {
+        const nName = normalizeForMatch(s.name);
+        const nDisplayName = normalizeForMatch(s.displayName || '');
+        
+        return nName.endsWith(normalizedRepoOnly) || 
+               nName === normalizedFullRepo ||
+               nDisplayName === normalizedRepoOnly ||
+               nDisplayName === normalizedFullRepo;
+      });
+    }
+
+    if (!match) {
+      console.warn(`[JulesService] No source matched repoName: "${repoName}". Available sources:`, sources.map(s => ({ name: s.name, display: s.displayName })));
+    } else {
+      console.log(`[JulesService] Auto-detected source mapping: "${repoName}" -> "${match.name}"`);
+    }
+
     return match ? match.name : null;
   } catch (e) {
+    console.error(`[JulesService] Error listing sources for repoName "${repoName}":`, e);
     return null;
   }
 };

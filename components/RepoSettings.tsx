@@ -142,98 +142,100 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
             </div>
           )}
           
-          <form onSubmit={handleSave} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">Target Repository</label>
-              <input 
-                type="text" 
-                name="repo-name"
-                value={localRepo}
-                autoComplete="username"
-                onChange={(e) => setLocalRepo(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-primary"
-                placeholder="owner/repo"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">GitHub Token</label>
-              <input 
-                type="password" 
-                name="github-token"
-                value={localToken}
-                autoComplete="current-password"
-                onChange={(e) => setLocalToken(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-primary"
-                placeholder="ghp_..."
-              />
-            </div>
-
-            <div className="border-t border-slate-700 pt-4">
-              <label className="block text-sm font-medium text-slate-400 mb-1 flex items-center gap-2">
-                Gemini API Key <span className="text-[10px] text-slate-500 font-normal">(Optional if env set)</span>
-              </label>
-              <input 
-                type="password" 
-                name="gemini-key"
-                value={localGeminiKey}
-                autoComplete="new-password"
-                onChange={(e) => setLocalGeminiKey(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
-                placeholder="AI Key..."
-              />
-            </div>
-
-            <div className="border-t border-slate-700 pt-4">
-              <label className="block text-sm font-medium text-slate-400 mb-1">Jules API Key</label>
-              <input 
-                type="password" 
-                name="jules-key"
-                value={localJulesKey}
-                autoComplete="new-password"
-                onChange={(e) => setLocalJulesKey(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"
-                placeholder="Key..."
-              />
-            </div>
-
-            <div className="pt-2 flex flex-col gap-2">
-              <button 
-                type="submit"
-                disabled={saveStatus !== 'idle'}
-                className={clsx(
-                  "w-full font-medium py-2 rounded-lg flex items-center justify-center gap-2 transition-all",
-                  saveStatus === 'success' ? "bg-green-600 text-white" : "bg-primary hover:bg-blue-600 text-white"
-                )}
-              >
-                {saveStatus === 'idle' && <><Save className="w-4 h-4" /> Save Settings</>}
-                {saveStatus === 'saving' && <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>}
-                {saveStatus === 'success' && <><Check className="w-4 h-4" /> Saved!</>}
-              </button>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  type="button"
-                  onClick={handleClearCache}
-                  className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2"
-                >
-                  {cacheCleared ? <><Check className="w-3 h-3 text-green-500" /> Done</> : <><Trash2 className="w-3 h-3" /> Clear Cache</>}
-                </button>
-                <button 
-                  type="button"
-                  onClick={handleExport}
-                  className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2"
-                >
-                  <Download className="w-3 h-3" /> Export
-                </button>
+          <div className="max-h-[60vh] overflow-y-auto no-scrollbar pr-1">
+            <form onSubmit={handleSave} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">Target Repository</label>
+                <input 
+                  type="text" 
+                  name="repo-name"
+                  value={localRepo}
+                  autoComplete="username"
+                  onChange={(e) => setLocalRepo(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-primary"
+                  placeholder="owner/repo"
+                />
               </div>
 
-              <label className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors">
-                <Upload className="w-3 h-3" /> Import Config
-                <input type="file" accept=".json" onChange={handleImport} className="hidden" />
-              </label>
-            </div>
-          </form>
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">GitHub Token</label>
+                <input 
+                  type="password" 
+                  name="github-token"
+                  value={localToken}
+                  autoComplete="current-password"
+                  onChange={(e) => setLocalToken(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-primary"
+                  placeholder="ghp_..."
+                />
+              </div>
+
+              <div className="border-t border-slate-700 pt-4">
+                <label className="block text-sm font-medium text-slate-400 mb-1 flex items-center gap-2">
+                  Gemini API Key <span className="text-[10px] text-slate-500 font-normal">(Optional if env set)</span>
+                </label>
+                <input 
+                  type="password" 
+                  name="gemini-key"
+                  value={localGeminiKey}
+                  autoComplete="new-password"
+                  onChange={(e) => setLocalGeminiKey(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  placeholder="AI Key..."
+                />
+              </div>
+
+              <div className="border-t border-slate-700 pt-4">
+                <label className="block text-sm font-medium text-slate-400 mb-1">Jules API Key</label>
+                <input 
+                  type="password" 
+                  name="jules-key"
+                  value={localJulesKey}
+                  autoComplete="new-password"
+                  onChange={(e) => setLocalJulesKey(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"
+                  placeholder="Key..."
+                />
+              </div>
+
+              <div className="pt-2 flex flex-col gap-2">
+                <button 
+                  type="submit"
+                  disabled={saveStatus !== 'idle'}
+                  className={clsx(
+                    "w-full font-medium py-2 rounded-lg flex items-center justify-center gap-2 transition-all",
+                    saveStatus === 'success' ? "bg-green-600 text-white" : "bg-primary hover:bg-blue-600 text-white"
+                  )}
+                >
+                  {saveStatus === 'idle' && <><Save className="w-4 h-4" /> Save Settings</>}
+                  {saveStatus === 'saving' && <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>}
+                  {saveStatus === 'success' && <><Check className="w-4 h-4" /> Saved!</>}
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    type="button"
+                    onClick={handleClearCache}
+                    className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2"
+                  >
+                    {cacheCleared ? <><Check className="w-3 h-3 text-green-500" /> Done</> : <><Trash2 className="w-3 h-3" /> Clear Cache</>}
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={handleExport}
+                    className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-3 h-3" /> Export
+                  </button>
+                </div>
+
+                <label className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg border border-slate-700 text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors">
+                  <Upload className="w-3 h-3" /> Import Config
+                  <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+                </label>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

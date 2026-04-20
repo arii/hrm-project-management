@@ -382,6 +382,13 @@ export const generateCodeReview = async (
     4. CODE RATIO: If the PR adds > 100 lines, you MUST find at least 10 lines that can be removed. Prioritize deletion.
     5. STALE FEATURES: If this PR replaces a feature, verify that the OLD feature is being DELETED in the diff.
     
+    ### FINAL RECOMMENDATION (MANDATORY FINAL SECTION)
+    You MUST conclude your report with a section titled "## FINAL RECOMMENDATION".
+    State clearly if the PR should be:
+    - **Approved** (Ready to merge)
+    - **Approved with Minor Changes** (Mostly good, minor tweaks needed)
+    - **Not Approved** (Significant rethink or major fixes required)
+    
     GUIDELINES:
     1. FILE-BY-FILE ANALYSIS: Group your feedback by file. For every major issue, provide a "Problem" description and an "Implementation Sample" (Actual code snippet).
     2. ARCHITECTURAL IMPACT: How does this change affect the overall system? 
@@ -414,8 +421,9 @@ export const generateCodeReview = async (
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section." },
+            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section and a 'FINAL RECOMMENDATION' section." },
             labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            recommendation: { type: Type.STRING, enum: ['Approved', 'Approved with Minor Changes', 'Not Approved'] },
             suggestedIssues: { 
               type: Type.ARRAY, 
               items: { 
@@ -432,7 +440,7 @@ export const generateCodeReview = async (
               } 
             }
           },
-          required: ['reviewComment', 'labels']
+          required: ['reviewComment', 'labels', 'recommendation']
         }
       }
     });

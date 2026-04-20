@@ -15,11 +15,14 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
       const sessions = await listSessions(julesApiKey);
       setAllSessions(sessions);
       
-      // Simple correlation: sessions that mention the repo name
-      const correlated = sessions.filter(s => 
-        s.name.toLowerCase().includes(repo.toLowerCase()) || 
-        (s.title && s.title.toLowerCase().includes(repo.toLowerCase()))
-      );
+      // Correlate sessions based on repo name in title or name
+      const correlated = sessions.filter(s => {
+        const matchesText = 
+          s.name.toLowerCase().includes(repo.toLowerCase()) || 
+          (s.title && s.title.toLowerCase().includes(repo.toLowerCase()));
+        
+        return !!matchesText;
+      });
       setSuggestedSessions(correlated);
     } catch (error) {
       console.error('Failed to load Jules sessions:', error);

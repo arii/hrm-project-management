@@ -53,7 +53,7 @@ const App: React.FC = () => {
     repoName = '', 
     githubToken = '', 
     julesApiKey = '', 
-    geminiApiKey = '' 
+    geminiApiKey = ''
   } = settings;
 
   return (

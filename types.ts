@@ -248,6 +248,7 @@ export interface PrHealthAnalysisResult {
 export interface CodeReviewResult {
   reviewComment: string;
   labels: string[];
+  recommendation?: 'Approved' | 'Approved with Minor Changes' | 'Not Approved';
   suggestedIssues?: ProposedIssue[];
 }
 
