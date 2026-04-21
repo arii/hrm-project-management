@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload } from 'lucide-react';
+import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload, Cpu, Zap, Brain } from 'lucide-react';
 import clsx from 'clsx';
 import { storage } from '../services/storageService';
+import { ModelTier } from '../types';
 
 interface RepoSettingsProps {
   repoName: string;
@@ -13,19 +14,23 @@ interface RepoSettingsProps {
   setJulesApiKey: (key: string) => void;
   geminiApiKey: string;
   setGeminiApiKey: (key: string) => void;
+  defaultModelTier: ModelTier;
+  setDefaultModelTier: (tier: ModelTier) => void;
 }
 
 const RepoSettings: React.FC<RepoSettingsProps> = ({ 
   repoName, setRepoName, 
   githubToken, setGithubToken,
   julesApiKey, setJulesApiKey,
-  geminiApiKey, setGeminiApiKey
+  geminiApiKey, setGeminiApiKey,
+  defaultModelTier, setDefaultModelTier
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [localRepo, setLocalRepo] = useState(repoName || '');
   const [localToken, setLocalToken] = useState(githubToken || '');
   const [localJulesKey, setLocalJulesKey] = useState(julesApiKey || '');
   const [localGeminiKey, setLocalGeminiKey] = useState(geminiApiKey || '');
+  const [localTier, setLocalTier] = useState<ModelTier>(defaultModelTier || ModelTier.FLASH);
   
   // Sync local state with props when the settings modal is opened
   useEffect(() => {
@@ -34,8 +39,9 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
       setLocalToken(githubToken || '');
       setLocalJulesKey(julesApiKey || '');
       setLocalGeminiKey(geminiApiKey || '');
+      setLocalTier(defaultModelTier || ModelTier.FLASH);
     }
-  }, [isOpen, repoName, githubToken, julesApiKey, geminiApiKey]);
+  }, [isOpen, repoName, githubToken, julesApiKey, geminiApiKey, defaultModelTier]);
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
   const [cacheCleared, setCacheCleared] = useState(false);
@@ -62,6 +68,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     setGithubToken(cleanToken);
     setJulesApiKey(cleanJulesKey);
     setGeminiApiKey(cleanGeminiKey);
+    setDefaultModelTier(localTier);
 
     setSaveStatus('success');
     setTimeout(() => {
@@ -142,8 +149,52 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
             </div>
           )}
           
-          <div className="max-h-[60vh] overflow-y-auto no-scrollbar pr-1">
+          <div className="max-h-[70vh] overflow-y-auto no-scrollbar pr-1">
             <form onSubmit={handleSave} className="space-y-4">
+              <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800 border-dashed mb-2">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Default Model Tier</label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLocalTier(ModelTier.LITE)}
+                    className={clsx(
+                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
+                      localTier === ModelTier.LITE ? "bg-emerald-500/10 border-emerald-500 text-emerald-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
+                    )}
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>LITE</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalTier(ModelTier.FLASH)}
+                    className={clsx(
+                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
+                      localTier === ModelTier.FLASH ? "bg-blue-500/10 border-blue-500 text-blue-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
+                    )}
+                  >
+                    <Cpu className="w-3.5 h-3.5" />
+                    <span>FLASH</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalTier(ModelTier.PRO)}
+                    className={clsx(
+                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
+                      localTier === ModelTier.PRO ? "bg-purple-500/10 border-purple-500 text-purple-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
+                    )}
+                  >
+                    <Brain className="w-3.5 h-3.5" />
+                    <span>PRO</span>
+                  </button>
+                </div>
+                <p className="text-[9px] text-slate-500 mt-2 font-mono italic leading-relaxed text-center">
+                  {localTier === ModelTier.LITE && "Max cost efficiency / Minimum latency"}
+                  {localTier === ModelTier.FLASH && "Balanced speed and technical capability"}
+                  {localTier === ModelTier.PRO && "Complex reasoning / Thinking required"}
+                </p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-1">Target Repository</label>
                 <input 

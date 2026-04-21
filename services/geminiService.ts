@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis } from '../types';
+import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis, ModelTier } from '../types';
+import { storage } from './storageService';
 
 /**
  * Clean a string that might contain Markdown JSON code blocks
@@ -16,7 +17,8 @@ export const setGeminiApiKey = (key: string) => {
 };
 
 const getClient = () => {
-  const apiKey = globalGeminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const settings = storage.getSettings();
+  const apiKey = globalGeminiApiKey || settings.geminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
     throw new Error("Gemini API Key is missing. Please check your settings.");
   }
@@ -42,39 +44,51 @@ const ensureProApiKey = async () => {
 const PRO_MODEL = 'gemini-3.1-pro-preview';
 const FLASH_MODEL = 'gemini-3-flash-preview';
 
+const MODELS = {
+  [ModelTier.LITE]: 'gemini-3.1-flash-lite-preview', // Cost-optimized, no thinking
+  [ModelTier.FLASH]: FLASH_MODEL, // Balanced
+  [ModelTier.PRO]: PRO_MODEL, // Thinking, Complex tasks
+};
+
+const getModelForTier = (tier?: ModelTier): string => {
+  const selectedTier = tier || storage.getModelTier();
+  return MODELS[selectedTier] || MODELS[ModelTier.FLASH];
+};
+
+/**
+ * Helper to determine thinking level for a request.
+ * Lite models do not support thinking level HIGH/LOW (effectively MINIMAL).
+ */
+const getThinkingConfig = (tier: ModelTier, options: { lowThinking?: boolean } = {}) => {
+  if (tier === ModelTier.LITE) return undefined;
+  if (tier === ModelTier.PRO) return undefined; // Pro usually manages its own thinking budget in 3.1
+  
+  return { 
+    thinkingLevel: options.lowThinking ? ThinkingLevel.LOW : ThinkingLevel.HIGH 
+  };
+};
+
 export const analyzeWorkflowBatch = async (
   repo: string,
   runs: any[],
   geminiKey?: string
 ): Promise<WorkflowAnalysis> => {
-  const apiKey = geminiKey || globalGeminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getClient();
+  const tier = ModelTier.LITE;
+  const model = getModelForTier(tier);
   
-  const prompt = `Analyze the following GitHub Workflow execution data for the repository "${repo}".
-  Provide a comprehensive audit including a health score (0-100), a technical summary, specific findings, and a qualitative analysis of efficacy, coverage, and efficiency.
-  
-  Data: ${JSON.stringify(runs)}
-  
-  Return the analysis in JSON format:
-  {
-    "healthScore": number,
-    "summary": "string",
-    "technicalFindings": [
-      { "type": "failure" | "warning" | "info", "title": "string", "description": "string", "location": "string", "remediation": "string" }
-    ],
-    "qualitativeAnalysis": {
-      "efficacy": "string",
-      "coverage": "string",
-      "efficiency": "string",
-      "recommendations": ["string"]
-    }
-  }`;
+  const systemInstruction = `You are a DevOps Architect auditing GitHub Workflows for the repository "${repo}".
+  Provide a comprehensive audit including a health score (0-100), a technical summary, and specific actionable findings.
+  Output MUST be valid JSON.`;
 
   const response = await ai.models.generateContent({
-    model: FLASH_MODEL,
-    contents: prompt,
+    model,
+    contents: `Analyze these workflow runs: ${JSON.stringify(runs)}`,
     config: {
+      systemInstruction,
       responseMimeType: "application/json",
+      // @ts-ignore
+      thinkingConfig: getThinkingConfig(tier, { lowThinking: true }),
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -110,16 +124,19 @@ export const analyzeWorkflowBatch = async (
     }
   });
 
-  return JSON.parse(cleanJsonString(response.text));
+  return JSON.parse(cleanJsonString(response.text || '{}'));
 };
 
 export const analyzeWorkflowHealth = async (
   run: GithubWorkflowRun, 
   jobs: GithubWorkflowJob[], 
   annotations: Record<number, GithubAnnotation[]> = {},
-  workflowFile?: { path: string; ref: string; content: string } | null
+  workflowFile?: { path: string; ref: string; content: string } | null,
+  tier: ModelTier = ModelTier.PRO // Workflow health root-cause needs thinking
 ): Promise<WorkflowAnalysis> => {
+  if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
+  const model = getModelForTier(tier);
   
   const workflowSection = workflowFile
     ? `
@@ -261,9 +278,12 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
 export const analyzeWorkflowQualitative = async (
   workflows: Array<{ name: string, path: string, content: string }>,
   runs: GithubWorkflowRun[],
-  repoContext: { fileList: string, readmeSnippet: string, packageJson: string }
+  repoContext: { fileList: string, readmeSnippet: string, packageJson: string },
+  tier: ModelTier = ModelTier.PRO // Qualitative audit needs reasoning
 ): Promise<WorkflowQualitativeResult> => {
+  if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
+  const model = getModelForTier(tier);
   
   const prompt = `
     Perform a QUALITATIVE AUDIT of CI/CD Workflows.
@@ -286,10 +306,11 @@ export const analyzeWorkflowQualitative = async (
   `;
 
   const response = await client.models.generateContent({
-    model: PRO_MODEL,
+    model,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
+      thinkingConfig: getThinkingConfig(tier),
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -330,6 +351,8 @@ export const analyzeWorkflowQualitative = async (
 export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrHealthAnalysisResult> => {
   const client = getClient();
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
+  const tier = ModelTier.LITE;
+  const model = getModelForTier(tier);
   const response = await client.models.generateContent({
     model: FLASH_MODEL,
     contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
@@ -362,62 +385,50 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
 export const generateCodeReview = async (
   pr: EnrichedPullRequest, 
   diff: string, 
-  options: { useFlash?: boolean, lowThinking?: boolean } = {}
+  options: { modelTier?: ModelTier, lowThinking?: boolean } = {}
 ): Promise<CodeReviewResult> => {
+  const userTier = storage.getModelTier();
+  const tier = options.modelTier || userTier;
+  const modelName = getModelForTier(tier);
+
+  if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
-  const model = options.useFlash ? FLASH_MODEL : PRO_MODEL;
   
   const checksSummary = pr.checkResults?.map(c => `- ${c.name}: ${c.status} (${c.conclusion || 'Pending'})`).join('\n') || "No checks found.";
 
-  const prompt = `
-    You are a Principal Software Engineer and Technical Architect.
+  const systemInstruction = `You are a Principal Software Engineer and Technical Architect performing a DEEP Technical Audit.
     
-    TASK: Provide a DEEP, COMPREHENSIVE Code Review for PR #${pr.number} - "${pr.title}".
+    ### ANTI-AI-SLOP DIRECTIVES
+    Flag: Verbose comments, over-engineering, duplicate patterns, and slop.
+    Audit ratio: If additions > 100 lines, find 10+ lines to remove.
     
-    ### ANTI-AI-SLOP DIRECTIVES (EXPLICIT SECTION REQUIRED IN OUTPUT)
-    You MUST identify and flag the following:
-    1. OVERLY VERBOSE COMMENTS: Flag comments that state the obvious or are generated by LLMs without adding value.
-    2. OVER-ENGINEERING: Identify systems that are more complex than necessary for the requirement.
-    3. DUPLICATE HOOKS/TYPES: Identify where the PR adds a new type or hook that likely exists or is very similar to existing features.
-    4. CODE RATIO: If the PR adds > 100 lines, you MUST find at least 10 lines that can be removed. Prioritize deletion.
-    5. STALE FEATURES: If this PR replaces a feature, verify that the OLD feature is being DELETED in the diff.
+    ### MANDATORY SECTIONS
+    1. ## ANTI-AI-SLOP
+    2. ## FINAL RECOMMENDATION (Approved | Approved with Minor Changes | Not Approved)
     
-    ### FINAL RECOMMENDATION (MANDATORY FINAL SECTION)
-    You MUST conclude your report with a section titled "## FINAL RECOMMENDATION".
-    State clearly if the PR should be:
-    - **Approved** (Ready to merge)
-    - **Approved with Minor Changes** (Mostly good, minor tweaks needed)
-    - **Not Approved** (Significant rethink or major fixes required)
+    Return valid JSON matching the specified schema.`;
+
+  const prompt = `Perform Code Review for PR #${pr.number} - "${pr.title}".
     
-    GUIDELINES:
-    1. FILE-BY-FILE ANALYSIS: Group your feedback by file. For every major issue, provide a "Problem" description and an "Implementation Sample" (Actual code snippet).
-    2. ARCHITECTURAL IMPACT: How does this change affect the overall system? 
-    3. BEST PRACTICES: Check for type safety (TypeScript), performance bottlenecks, and security vulnerabilities.
-    4. GITHUB CHECKS: I will provide the status of the automated tests (checks). Correlate any failures with the code changes in the diff.
-    
-    PR CONTEXT:
-    Title: ${pr.title}
     Description: ${pr.body || "No description provided."}
+    Checks: ${checksSummary}
     
-    GITHUB CHECKS STATUS:
-    ${checksSummary}
-    
-    DIFF DATA:
-    ${diff.substring(0, 50000)}
-  `;
+    Diff: ${diff.substring(0, 45000)}`;
 
   // Wrap in a timeout promise
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error("AI Analysis timed out after 60s. The PR diff might be too complex or the service is busy.")), 60000);
+    setTimeout(() => reject(new Error("AI Analysis timed out after 60s.")), 60000);
   });
 
   const generatePromise = (async () => {
     const response = await client.models.generateContent({
-      model,
+      model: modelName,
       contents: prompt,
       config: {
+        systemInstruction,
         responseMimeType: 'application/json',
-        thinkingConfig: options.lowThinking ? { thinkingLevel: ThinkingLevel.LOW } : undefined,
+        // @ts-ignore
+        thinkingConfig: getThinkingConfig(tier, { lowThinking: options.lowThinking }),
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -445,8 +456,7 @@ export const generateCodeReview = async (
       }
     });
 
-    const text = response.text || "{}";
-    return JSON.parse(cleanJsonString(text));
+    return JSON.parse(cleanJsonString(response.text || '{}'));
   })();
 
   try {
@@ -461,14 +471,17 @@ export const generateCodeReview = async (
 
 export const extractIssuesFromComments = async (comments: Array<{ id: number, user: string, body: string, url: string }>): Promise<ProposedIssue[]> => {
   const client = getClient();
+  const tier = ModelTier.LITE; // Extraction is lightweight
+  const model = getModelForTier(tier);
   const response = await client.models.generateContent({
-    model: FLASH_MODEL,
+    model,
     contents: `
       Extract follow-up issues from these comments: ${JSON.stringify(comments)}.
       Each issue's 'body' MUST be a full implementation plan including any code suggestions mentioned in the comments.
     `,
     config: {
       responseMimeType: 'application/json',
+      thinkingConfig: getThinkingConfig(tier, { lowThinking: true }),
       responseSchema: {
         type: Type.ARRAY,
         items: {
@@ -497,10 +510,12 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
 };
 
 
-export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string): Promise<{ plan: string; title: string }> => {
+export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string, tier: ModelTier = ModelTier.PRO): Promise<{ plan: string; title: string }> => {
+  if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
+  const model = getModelForTier(tier);
   const response = await client.models.generateContent({
-    model: PRO_MODEL,
+    model,
     contents: `
       Analyze intent for fresh restart: ${diff.substring(0, 40000)}.
       The plan MUST focus on MINIMALISM. 
@@ -509,6 +524,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string)
     `,
     config: {
       responseMimeType: 'application/json',
+      thinkingConfig: getThinkingConfig(tier),
       responseSchema: {
         type: Type.OBJECT,
         properties: { plan: { type: Type.STRING }, title: { type: Type.STRING } },
@@ -529,6 +545,8 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string)
 
 export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): Promise<{ syncIssues: string[] }> => {
   const client = getClient();
+  const tier = ModelTier.LITE; // Conflict detection is relatively simple pattern matching
+  const model = getModelForTier(tier);
   const prompt = `
     Analyze PR #${pr.number} for synchronization and conflict resolution issues.
     
@@ -536,7 +554,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
     
     ### TARGET AREAS:
     1. MERGE CONFLICTS: Identify files likely to have conflicts. Pay special attention to large data files, lockfiles, or configuration files.
-    2. PHANTOM CHANGES: Identify lines that appear as changes but are actually already in the base branch (stale feature branch). BE EXTREMELY CAREFUL: Do not misidentify new feature code as phantom changes. Only flag code that is literally a duplicate of what is already in the base branch.
+    2. PHANTOM CHANGES: Identify lines that appear as changes but are already in the base branch (stale feature branch). BE EXTREMELY CAREFUL: Do not misidentify new feature code as phantom changes. Only flag code that is literally a duplicate of what is already in the base branch.
     3. CI SYNC & SNAPSHOT ISSUES: Identify test failures or snapshot mismatches (e.g., Jest snapshots, visual regression images) caused by base branch updates. These often require surgical reconciliation rather than a simple overwrite.
     4. REBASE DISCREPANCIES: Identify where the branch structure is misaligned or where commits have been duplicated.
     
@@ -548,10 +566,11 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
   `;
 
   const response = await client.models.generateContent({
-    model: FLASH_MODEL,
+    model,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
+      thinkingConfig: getThinkingConfig(tier, { lowThinking: true }),
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -574,11 +593,14 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
 
 export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
   const client = getClient();
+  const tier = ModelTier.LITE;
+  const model = getModelForTier(tier);
   const response = await client.models.generateContent({
-    model: FLASH_MODEL,
+    model,
     contents: `Extract tasks from this text: ${text}. Ensure bodies are comprehensive and contain all technical details and code found in the source.`,
     config: {
       responseMimeType: 'application/json',
+      thinkingConfig: getThinkingConfig(tier, { lowThinking: true }),
       responseSchema: {
         type: Type.ARRAY,
         items: {

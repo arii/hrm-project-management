@@ -53,7 +53,8 @@ const App: React.FC = () => {
     repoName = '', 
     githubToken = '', 
     julesApiKey = '', 
-    geminiApiKey = ''
+    geminiApiKey = '',
+    defaultModelTier
   } = settings;
 
   return (
@@ -69,6 +70,8 @@ const App: React.FC = () => {
             setJulesApiKey={(key) => updateSettings({ julesApiKey: key })}
             geminiApiKey={geminiApiKey}
             setGeminiApiKey={(key) => updateSettings({ geminiApiKey: key })}
+            defaultModelTier={defaultModelTier}
+            setDefaultModelTier={(tier) => updateSettings({ defaultModelTier: tier })}
           />
         }>
           <Route index element={<Dashboard repoName={repoName} />} />

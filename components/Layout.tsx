@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
+import { ModelTier } from '../types';
 
 interface LayoutProps {
   repoName: string;
@@ -14,13 +15,16 @@ interface LayoutProps {
   setJulesApiKey: (key: string) => void;
   geminiApiKey: string;
   setGeminiApiKey: (key: string) => void;
+  defaultModelTier: ModelTier;
+  setDefaultModelTier: (tier: ModelTier) => void;
 }
 
 const Layout: React.FC<LayoutProps> = ({ 
   repoName, setRepoName, 
   githubToken, setGithubToken,
   julesApiKey, setJulesApiKey,
-  geminiApiKey, setGeminiApiKey
+  geminiApiKey, setGeminiApiKey,
+  defaultModelTier, setDefaultModelTier
 }) => {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -122,6 +126,8 @@ const Layout: React.FC<LayoutProps> = ({
             setJulesApiKey={setJulesApiKey}
             geminiApiKey={geminiApiKey}
             setGeminiApiKey={setGeminiApiKey}
+            defaultModelTier={defaultModelTier}
+            setDefaultModelTier={setDefaultModelTier}
           />
         </header>
 

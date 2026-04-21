@@ -16,7 +16,7 @@ import {
 import { generateCodeReview, extractIssuesFromComments } from '../services/geminiService';
 import { createSession, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
-import { EnrichedPullRequest, GithubPullRequest, CodeReviewResult, ProposedIssue } from '../types';
+import { EnrichedPullRequest, GithubPullRequest, CodeReviewResult, ProposedIssue, ModelTier } from '../types';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import { Eye, Loader2, RefreshCw, Send, FileSearch, Plus, Check, TerminalSquare, RotateCcw, Bot, AlertTriangle, ExternalLink, FileCode, CheckCircle2, ShieldCheck, XCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
@@ -59,6 +59,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [loadingMessage, setLoadingMessage] = useState<string>("");
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [bulkProgress, setBulkProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
+  const [manualTier, setManualTier] = useState<ModelTier | null>(null);
   
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -210,11 +211,14 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     }
   };
 
-  const runFullCodeReview = async (pr: EnrichedPullRequest, isBulk = false, options: { useFlash?: boolean, lowThinking?: boolean } = {}) => {
+  const runFullCodeReview = async (pr: EnrichedPullRequest, isBulk = false, options: { modelTier?: ModelTier, lowThinking?: boolean } = {}) => {
     if (!token) return;
     setStatuses(prev => ({ ...prev, [pr.number]: 'analyzing' }));
     setErrors(prev => { const next = { ...prev }; delete next[pr.number]; return next; });
     
+    // Explicit model tier logic: User selection > Storage Tier > Flash (if Pro fails)
+    const tier = options.modelTier || manualTier || storage.getModelTier();
+
     const setMsg = (msg: string) => {
       if (!isBulk) setLoadingMessage(msg);
     };
@@ -224,8 +228,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       const diff = await fetchPrDiff(repoName, pr.number, token);
       if (!diff) throw new Error("Could not retrieve diff.");
       
-      setMsg("AI Analyzing Architectural patterns...");
-      const review = await generateCodeReview(pr, diff, options);
+      setMsg(tier === ModelTier.PRO ? "AI Performing Deep Architectural Reasoning..." : "AI Analyzing patterns...");
+      const review = await generateCodeReview(pr, diff, { ...options, modelTier: tier });
       storage.savePrReview(repoName, pr.number, review);
       setReviews(prev => ({ ...prev, [pr.number]: review }));
       
@@ -277,6 +281,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
           if (!pr) return;
           
           const enriched = enrichedMap[id] || pr;
+          
+          // Bulk audits default to LITE if not in debug/pro mode to save costs
+          const bulkTier = storage.getModelTier() === ModelTier.PRO ? ModelTier.FLASH : ModelTier.LITE;
+
           // Skip if already reviewed at this SHA
           if (reviewedShas[id] === enriched.head.sha && statuses[id] === 'completed') {
             completedCount++;
@@ -298,8 +306,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
             }
           }
           
-          // Use Flash and Low Thinking for bulk audits to reduce cost and increase speed
-          await runFullCodeReview(fullPr as EnrichedPullRequest, true, { useFlash: true, lowThinking: true });
+          // Using cost-optimized tier for bulk audits
+          await runFullCodeReview(fullPr as EnrichedPullRequest, true, { modelTier: bulkTier, lowThinking: true });
           completedCount++;
           setBulkProgress({ total: ids.length, current: completedCount });
         }));
@@ -407,9 +415,28 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                  Scan
                </Button>
                {(currentStatus === 'idle' || currentStatus === 'completed' || currentStatus === 'error') && (
-                  <Button variant="primary" size="sm" onClick={() => runFullCodeReview(selectedPr)} icon={Send} className="flex-1 md:flex-none">
-                    {hasExistingReview ? 'Refresh' : 'Run Audit'}
-                  </Button>
+                  <div className="flex bg-slate-900 border border-slate-700 rounded-lg overflow-hidden flex-1 md:flex-none">
+                    <Button 
+                      variant="primary" 
+                      size="sm" 
+                      onClick={() => runFullCodeReview(selectedPr)} 
+                      icon={Send} 
+                      className="rounded-none border-none"
+                    >
+                      {hasExistingReview ? 'Refresh' : 'Run Audit'}
+                    </Button>
+                    <div className="border-l border-slate-700 flex items-center px-1 bg-slate-800">
+                      <select 
+                        value={manualTier || storage.getModelTier()} 
+                        onChange={(e) => setManualTier(e.target.value as ModelTier)}
+                        className="bg-transparent text-[10px] text-slate-300 font-bold focus:outline-none cursor-pointer px-1 uppercase tracking-tighter"
+                      >
+                        <option value={ModelTier.LITE}>Lite</option>
+                        <option value={ModelTier.FLASH}>Flash</option>
+                        <option value={ModelTier.PRO}>Pro (Deep)</option>
+                      </select>
+                    </div>
+                  </div>
                )}
              </div>
              {actionError && (

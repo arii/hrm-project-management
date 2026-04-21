@@ -1,4 +1,6 @@
 
+import { ModelTier } from '../types';
+
 /**
  * Centralized Storage Service for RepoAuditor AI.
  * Handles persistence, standardized caching with TTL, and quota management.
@@ -22,6 +24,7 @@ export interface AppSettings {
   githubToken: string;
   julesApiKey: string;
   geminiApiKey: string;
+  defaultModelTier: ModelTier;
   theme?: 'dark' | 'light';
 }
 
@@ -30,6 +33,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   githubToken: (process.env as any).GITHUB_TOKEN || '',
   julesApiKey: (process.env as any).JULES_API_KEY || '',
   geminiApiKey: (process.env as any).GEMINI_API_KEY || (process.env as any).API_KEY || '',
+  defaultModelTier: ModelTier.FLASH,
 };
 
 interface CacheEntry<T> {
@@ -241,6 +245,10 @@ export const storage = {
 
   getGeminiKey(): string {
     return this.getSettings().geminiApiKey || '';
+  },
+
+  getModelTier(): ModelTier {
+    return this.getSettings().defaultModelTier || ModelTier.FLASH;
   },
 
   getJulesKey(): string {

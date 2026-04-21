@@ -88,6 +88,12 @@ export enum AnalysisStatus {
   RETRYING = 'RETRYING'
 }
 
+export enum ModelTier {
+  LITE = 'LITE', // gemini-3.1-flash-lite-preview (Cost Optimized, Minimal Thinking)
+  FLASH = 'FLASH', // gemini-3-flash-preview (Standard)
+  PRO = 'PRO' // gemini-3.1-pro-preview (Thinking / Complex)
+}
+
 export interface AnalysisResult {
   markdown: string;
   timestamp: string;
