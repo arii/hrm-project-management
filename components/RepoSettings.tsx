@@ -3,7 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload, Cpu, Zap, Brain } from 'lucide-react';
 import clsx from 'clsx';
 import { storage } from '../services/storageService';
-import { ModelTier } from '../types';
+import { ModelTier, JulesSource } from '../types';
+import { listSources } from '../services/julesService';
 
 interface RepoSettingsProps {
   repoName: string;
@@ -12,6 +13,8 @@ interface RepoSettingsProps {
   setGithubToken: (token: string) => void;
   julesApiKey: string;
   setJulesApiKey: (key: string) => void;
+  julesSourceId: string;
+  setJulesSourceId: (id: string) => void;
   geminiApiKey: string;
   setGeminiApiKey: (key: string) => void;
   defaultModelTier: ModelTier;
@@ -22,6 +25,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   repoName, setRepoName, 
   githubToken, setGithubToken,
   julesApiKey, setJulesApiKey,
+  julesSourceId, setJulesSourceId,
   geminiApiKey, setGeminiApiKey,
   defaultModelTier, setDefaultModelTier
 }) => {
@@ -29,19 +33,35 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   const [localRepo, setLocalRepo] = useState(repoName || '');
   const [localToken, setLocalToken] = useState(githubToken || '');
   const [localJulesKey, setLocalJulesKey] = useState(julesApiKey || '');
+  const [localJulesSourceId, setLocalJulesSourceId] = useState(julesSourceId || '');
   const [localGeminiKey, setLocalGeminiKey] = useState(geminiApiKey || '');
-  const [localTier, setLocalTier] = useState<ModelTier>(defaultModelTier || ModelTier.FLASH);
+  const [localTier, setLocalTier] = useState<ModelTier>(defaultModelTier || ModelTier.LITE);
   
+  const [availableSources, setAvailableSources] = useState<JulesSource[]>([]);
+  const [loadingSources, setLoadingSources] = useState(false);
+
+  // Fetch sources when key changes or modal opens
+  useEffect(() => {
+    if (isOpen && localJulesKey) {
+      setLoadingSources(true);
+      listSources(localJulesKey)
+        .then(setAvailableSources)
+        .catch(console.error)
+        .finally(() => setLoadingSources(false));
+    }
+  }, [isOpen, localJulesKey]);
+
   // Sync local state with props when the settings modal is opened
   useEffect(() => {
     if (isOpen) {
       setLocalRepo(repoName || '');
       setLocalToken(githubToken || '');
       setLocalJulesKey(julesApiKey || '');
+      setLocalJulesSourceId(julesSourceId || '');
       setLocalGeminiKey(geminiApiKey || '');
-      setLocalTier(defaultModelTier || ModelTier.FLASH);
+      setLocalTier(defaultModelTier || ModelTier.LITE);
     }
-  }, [isOpen, repoName, githubToken, julesApiKey, geminiApiKey, defaultModelTier]);
+  }, [isOpen, repoName, githubToken, julesApiKey, julesSourceId, geminiApiKey, defaultModelTier]);
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
   const [cacheCleared, setCacheCleared] = useState(false);
@@ -67,6 +87,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
     setRepoName(cleanRepo);
     setGithubToken(cleanToken);
     setJulesApiKey(cleanJulesKey);
+    setJulesSourceId(localJulesSourceId.trim());
     setGeminiApiKey(cleanGeminiKey);
     setDefaultModelTier(localTier);
 
@@ -247,6 +268,56 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"
                   placeholder="Key..."
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1 flex items-center justify-between gap-2">
+                  <span>Jules Source ID</span>
+                  <span className="text-[10px] text-slate-500 font-normal italic">(Manual Override)</span>
+                </label>
+                
+                {localJulesKey ? (
+                  <div className="space-y-2">
+                    <select 
+                      value={localJulesSourceId}
+                      onChange={(e) => setLocalJulesSourceId(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="">-- Let AI Detect Automatically --</option>
+                      {availableSources.map(s => (
+                        <option key={s.name} value={s.name}>
+                          {s.displayName || s.name.split('/').pop()} ({s.name})
+                        </option>
+                      ))}
+                    </select>
+                    
+                    {loadingSources && (
+                      <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                        <Loader2 className="w-3 h-3 animate-spin" /> Loading sources...
+                      </div>
+                    )}
+                    
+                    {!loadingSources && availableSources.length === 0 && (
+                      <p className="text-[9px] text-amber-500/80">No sources found for this API key. Verify repo is indexed in Jules.</p>
+                    )}
+                  </div>
+                ) : (
+                  <input 
+                    type="text" 
+                    value={localJulesSourceId}
+                    onChange={(e) => setLocalJulesSourceId(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"
+                    placeholder="sources/my-custom-id"
+                  />
+                )}
+                
+                <p className="text-[9px] text-slate-500 mt-1 italic">
+                  Crucial for repository-agnostic deployments. Explicitly bind this instance to a Jules source.
+                </p>
+              </div>
+
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-[10px] text-blue-300 leading-relaxed">
+                <p><strong>Agnostic Design:</strong> RepoAuditor is project-independent. All analysis context is derived dynamically from your current repository configuration.</p>
               </div>
 
               <div className="pt-2 flex flex-col gap-2">

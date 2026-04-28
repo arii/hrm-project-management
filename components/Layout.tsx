@@ -13,6 +13,8 @@ interface LayoutProps {
   setGithubToken: (token: string) => void;
   julesApiKey: string;
   setJulesApiKey: (key: string) => void;
+  julesSourceId: string;
+  setJulesSourceId: (id: string) => void;
   geminiApiKey: string;
   setGeminiApiKey: (key: string) => void;
   defaultModelTier: ModelTier;
@@ -23,6 +25,7 @@ const Layout: React.FC<LayoutProps> = ({
   repoName, setRepoName, 
   githubToken, setGithubToken,
   julesApiKey, setJulesApiKey,
+  julesSourceId, setJulesSourceId,
   geminiApiKey, setGeminiApiKey,
   defaultModelTier, setDefaultModelTier
 }) => {
@@ -124,6 +127,8 @@ const Layout: React.FC<LayoutProps> = ({
             setGithubToken={setGithubToken}
             julesApiKey={julesApiKey}
             setJulesApiKey={setJulesApiKey}
+            julesSourceId={julesSourceId}
+            setJulesSourceId={setJulesSourceId}
             geminiApiKey={geminiApiKey}
             setGeminiApiKey={setGeminiApiKey}
             defaultModelTier={defaultModelTier}

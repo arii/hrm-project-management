@@ -26,6 +26,29 @@ const getClient = () => {
 };
 
 /**
+ * Retry helper for transient Google API errors (503 UNAVAILABLE)
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastError = e;
+      // 503 is service unavailable, often transient
+      // 429 is rate limit (quota)
+      const isTransient = e.message?.includes('503') || e.message?.includes('UNAVAILABLE') || e.message?.includes('429');
+      if (!isTransient || i === maxRetries) throw e;
+      
+      const delay = initialDelay * Math.pow(2, i);
+      console.warn(`[GeminiService] Transient error (attempt ${i + 1}/${maxRetries + 1}): ${e.message}. Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Ensures the user has selected a Pro API key if using a Pro model.
  * Non-blocking to avoid hangs in sandboxed environments.
  */
@@ -74,14 +97,14 @@ export const analyzeWorkflowBatch = async (
   geminiKey?: string
 ): Promise<WorkflowAnalysis> => {
   const ai = getClient();
-  const tier = ModelTier.LITE;
+  const tier = storage.getModelTier() || ModelTier.LITE;
   const model = getModelForTier(tier);
   
   const systemInstruction = `You are a DevOps Architect auditing GitHub Workflows for the repository "${repo}".
   Provide a comprehensive audit including a health score (0-100), a technical summary, and specific actionable findings.
   Output MUST be valid JSON.`;
 
-  const response = await ai.models.generateContent({
+  const response = await withRetry(() => ai.models.generateContent({
     model,
     contents: `Analyze these workflow runs: ${JSON.stringify(runs)}`,
     config: {
@@ -122,7 +145,7 @@ export const analyzeWorkflowBatch = async (
         required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
       }
     }
-  });
+  }));
 
   return JSON.parse(cleanJsonString(response.text || '{}'));
 };
@@ -132,7 +155,7 @@ export const analyzeWorkflowHealth = async (
   jobs: GithubWorkflowJob[], 
   annotations: Record<number, GithubAnnotation[]> = {},
   workflowFile?: { path: string; ref: string; content: string } | null,
-  tier: ModelTier = ModelTier.PRO // Workflow health root-cause needs thinking
+  tier: ModelTier = storage.getModelTier()
 ): Promise<WorkflowAnalysis> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
@@ -226,8 +249,8 @@ The body must include: observed behavior, root cause, exact fix steps, and (wher
 OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside the JSON.
 `;
 
-  const response = await client.models.generateContent({
-    model: PRO_MODEL,
+  const response = await withRetry(() => client.models.generateContent({
+    model,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -264,7 +287,7 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
         required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
       }
     }
-  });
+  }));
 
   const text = response.text || "{}";
   try {
@@ -279,7 +302,7 @@ export const analyzeWorkflowQualitative = async (
   workflows: Array<{ name: string, path: string, content: string }>,
   runs: GithubWorkflowRun[],
   repoContext: { fileList: string, readmeSnippet: string, packageJson: string },
-  tier: ModelTier = ModelTier.PRO // Qualitative audit needs reasoning
+  tier: ModelTier = storage.getModelTier()
 ): Promise<WorkflowQualitativeResult> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
@@ -305,7 +328,7 @@ export const analyzeWorkflowQualitative = async (
     Findings should include 'suggestedTitle' and 'suggestedBody' for a GitHub Issue to fix the qualitative gap.
   `;
 
-  const response = await client.models.generateContent({
+  const response = await withRetry(() => client.models.generateContent({
     model,
     contents: prompt,
     config: {
@@ -337,7 +360,7 @@ export const analyzeWorkflowQualitative = async (
         required: ['summary', 'efficacyScore', 'efficiencyScore', 'findings']
       }
     }
-  });
+  }));
 
   const text = response.text || "{}";
   try {
@@ -351,10 +374,10 @@ export const analyzeWorkflowQualitative = async (
 export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrHealthAnalysisResult> => {
   const client = getClient();
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
-  const tier = ModelTier.LITE;
+  const tier = storage.getModelTier() || ModelTier.LITE;
   const model = getModelForTier(tier);
-  const response = await client.models.generateContent({
-    model: FLASH_MODEL,
+  const response = await withRetry(() => client.models.generateContent({
+    model,
     contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
     config: {
       responseMimeType: 'application/json',
@@ -367,7 +390,7 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
         required: ['report', 'actions']
       }
     }
-  });
+  }));
   
   const text = response.text || "{}";
   try {
@@ -416,11 +439,12 @@ export const generateCodeReview = async (
     Diff: ${diff.substring(0, 45000)}`;
 
   // Wrap in a timeout promise
+  const maxTimeout = tier === ModelTier.PRO ? 180000 : 60000;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error("AI Analysis timed out after 60s.")), 60000);
+    setTimeout(() => reject(new Error(`AI Analysis timed out after ${maxTimeout/1000}s. Pro models may take longer to think.`)), maxTimeout);
   });
 
-  const generatePromise = (async () => {
+  const generatePromise = withRetry(async () => {
     const response = await client.models.generateContent({
       model: modelName,
       contents: prompt,
@@ -457,7 +481,7 @@ export const generateCodeReview = async (
     });
 
     return JSON.parse(cleanJsonString(response.text || '{}'));
-  })();
+  });
 
   try {
     return await Promise.race([generatePromise, timeoutPromise]);
@@ -471,9 +495,9 @@ export const generateCodeReview = async (
 
 export const extractIssuesFromComments = async (comments: Array<{ id: number, user: string, body: string, url: string }>): Promise<ProposedIssue[]> => {
   const client = getClient();
-  const tier = ModelTier.LITE; // Extraction is lightweight
+  const tier = storage.getModelTier() || ModelTier.LITE;
   const model = getModelForTier(tier);
-  const response = await client.models.generateContent({
+  const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `
       Extract follow-up issues from these comments: ${JSON.stringify(comments)}.
@@ -498,7 +522,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
         }
       }
     }
-  });
+  }));
   
   const text = response.text || "[]";
   try {
@@ -510,11 +534,11 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
 };
 
 
-export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string, tier: ModelTier = ModelTier.PRO): Promise<{ plan: string; title: string }> => {
+export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string, tier: ModelTier = storage.getModelTier()): Promise<{ plan: string; title: string }> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
   const model = getModelForTier(tier);
-  const response = await client.models.generateContent({
+  const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `
       Analyze intent for fresh restart: ${diff.substring(0, 40000)}.
@@ -531,7 +555,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
         required: ['plan', 'title']
       }
     }
-  });
+  }));
 
   const text = response.text || "{}";
   try {
@@ -545,7 +569,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
 
 export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): Promise<{ syncIssues: string[] }> => {
   const client = getClient();
-  const tier = ModelTier.LITE; // Conflict detection is relatively simple pattern matching
+  const tier = storage.getModelTier() || ModelTier.LITE;
   const model = getModelForTier(tier);
   const prompt = `
     Analyze PR #${pr.number} for synchronization and conflict resolution issues.
@@ -565,7 +589,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
     OUTPUT: A JSON object with a list of specific 'syncIssues' found.
   `;
 
-  const response = await client.models.generateContent({
+  const response = await withRetry(() => client.models.generateContent({
     model,
     contents: prompt,
     config: {
@@ -579,7 +603,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
         required: ['syncIssues']
       }
     }
-  });
+  }));
 
   const text = response.text || "{}";
   try {
@@ -593,9 +617,9 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
 
 export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
   const client = getClient();
-  const tier = ModelTier.LITE;
+  const tier = storage.getModelTier() || ModelTier.LITE;
   const model = getModelForTier(tier);
-  const response = await client.models.generateContent({
+  const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `Extract tasks from this text: ${text}. Ensure bodies are comprehensive and contain all technical details and code found in the source.`,
     config: {
@@ -616,7 +640,7 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
         }
       }
     }
-  });
+  }));
   
   const responseText = response.text || "[]";
   try {

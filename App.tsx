@@ -10,6 +10,8 @@ import WorkflowHealth from './pages/WorkflowHealth';
 import JulesManagement from './pages/JulesManagement';
 import { storage, AppSettings } from './services/storageService';
 import { setGeminiApiKey } from './services/geminiService';
+import { ErrorProvider } from './context/ErrorContext';
+import GlobalErrorPopup from './components/ui/GlobalErrorPopup';
 
 const App: React.FC = () => {
   const [settings, setSettingsState] = useState<AppSettings>(() => {
@@ -53,37 +55,43 @@ const App: React.FC = () => {
     repoName = '', 
     githubToken = '', 
     julesApiKey = '', 
+    julesSourceId = '',
     geminiApiKey = '',
     defaultModelTier
   } = settings;
 
   return (
-    <HashRouter>
-      <Routes>
-        <Route path="/" element={
-          <Layout 
-            repoName={repoName} 
-            setRepoName={(name) => updateSettings({ repoName: name })}
-            githubToken={githubToken}
-            setGithubToken={(token) => updateSettings({ githubToken: token })}
-            julesApiKey={julesApiKey}
-            setJulesApiKey={(key) => updateSettings({ julesApiKey: key })}
-            geminiApiKey={geminiApiKey}
-            setGeminiApiKey={(key) => updateSettings({ geminiApiKey: key })}
-            defaultModelTier={defaultModelTier}
-            setDefaultModelTier={(tier) => updateSettings({ defaultModelTier: tier })}
-          />
-        }>
-          <Route index element={<Dashboard repoName={repoName} />} />
-          <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="workflow-health" element={<WorkflowHealth repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
-          <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
-          <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </HashRouter>
+    <ErrorProvider>
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={
+            <Layout 
+              repoName={repoName} 
+              setRepoName={(name) => updateSettings({ repoName: name })}
+              githubToken={githubToken}
+              setGithubToken={(token) => updateSettings({ githubToken: token })}
+              julesApiKey={julesApiKey}
+              setJulesApiKey={(key) => updateSettings({ julesApiKey: key })}
+              julesSourceId={julesSourceId}
+              setJulesSourceId={(id) => updateSettings({ julesSourceId: id })}
+              geminiApiKey={geminiApiKey}
+              setGeminiApiKey={(key) => updateSettings({ geminiApiKey: key })}
+              defaultModelTier={defaultModelTier}
+              setDefaultModelTier={(tier) => updateSettings({ defaultModelTier: tier })}
+            />
+          }>
+            <Route index element={<Dashboard repoName={repoName} />} />
+            <Route path="pull-requests" element={<PullRequests repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="workflow-health" element={<WorkflowHealth repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
+            <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
+            <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </HashRouter>
+      <GlobalErrorPopup />
+    </ErrorProvider>
   );
 };
 

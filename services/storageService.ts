@@ -14,15 +14,18 @@ export const StorageKeys = {
   REVIEWED_SHAS: `${APP_PREFIX}reviewed_shas`,
   GITHUB_CACHE: `${APP_PREFIX}gh_cache`,
   JULES_CACHE: `${APP_PREFIX}jules_cache`,
+  JULES_SESSIONS: `${APP_PREFIX}jules_sessions`,
   TELEMETRY: `${APP_PREFIX}telemetry`,
-  PR_REVIEWS: `${APP_PREFIX}pr_reviews`,
+  PR_REVIEWS: `${APP_PREFIX}pr_review_`, // Prefix for individual PR reviews
   ANALYSIS_PREFIX: `${APP_PREFIX}analysis_`, // For useGeminiAnalysis persistence
+  CODE_REVIEW_STATE: `${APP_PREFIX}code_review_state`,
 };
 
 export interface AppSettings {
   repoName: string;
   githubToken: string;
   julesApiKey: string;
+  julesSourceId?: string; // Optional manual override
   geminiApiKey: string;
   defaultModelTier: ModelTier;
   theme?: 'dark' | 'light';
@@ -32,8 +35,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   repoName: '',
   githubToken: (process.env as any).GITHUB_TOKEN || '',
   julesApiKey: (process.env as any).JULES_API_KEY || '',
+  julesSourceId: '',
   geminiApiKey: (process.env as any).GEMINI_API_KEY || (process.env as any).API_KEY || '',
-  defaultModelTier: ModelTier.FLASH,
+  defaultModelTier: ModelTier.LITE,
 };
 
 interface CacheEntry<T> {
@@ -55,32 +59,138 @@ export const storage = {
   },
 
   set<T>(key: string, value: T): boolean {
+    const serialized = JSON.stringify(value);
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem(key, serialized);
       return true;
     } catch (e) {
-      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
-        console.warn('[Storage] Quota exceeded. Performing emergency cache eviction...');
-        // First try: Clear temporary caches (GitHub, Jules, Telemetry)
-        this.clearCaches(false);
+      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
+        const usage = this.getSpaceUsage();
+        console.warn(`[Storage] Quota exceeded (Usage: ${Math.round(usage.total / 1024)}KB). Attempting recovery for "${key}" (${Math.round(serialized.length / 1024)}KB)...`, usage.usageByPrefix);
+        
+        // 1. Clear expired cache first
+        this.clearExpired();
+        
+        // 2. Try to scavenge large and old items
+        this.scavenge(serialized.length);
         
         try {
-          localStorage.setItem(key, JSON.stringify(value));
+          localStorage.setItem(key, serialized);
           return true;
         } catch (retryError) {
-          // Second try: Clear everything except Settings and Reviewed SHAs
-          console.warn('[Storage] Quota still exceeded. Evicting PR Reviews and Analysis persistence...');
-          this.clearCaches(true);
+          // Final attempt: clear all non-essential data
+          console.warn('[Storage] Quota still exceeded. Evicting ALL transient and semi-persistent data...');
+          this.clearCaches(true); // Now truly aggressive
+          
           try {
-            localStorage.setItem(key, JSON.stringify(value));
+            localStorage.setItem(key, serialized);
             return true;
           } catch (finalError) {
-            console.error('[Storage] Critical storage failure: LocalStorage is full and could not be cleared sufficiently.');
-            return false;
+            console.error('[Storage] Critical storage failure: LocalStorage is full and could not be cleared sufficiently. Total usage:', this.getSpaceUsage());
+            // Last resort: clear EVERYTHING except settings
+            this.emergencyReset();
+            try {
+              localStorage.setItem(key, serialized);
+              return true;
+            } catch (totalFailure) {
+              return false;
+            }
           }
         }
       }
       return false;
+    }
+  },
+
+  getSpaceUsage() {
+    let total = 0;
+    const usageByPrefix: Record<string, number> = {};
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const val = localStorage.getItem(key) || '';
+        const size = (key.length + val.length) * 2; // UTF-16 characters take 2 bytes
+        total += size;
+        
+        const prefix = key.startsWith(APP_PREFIX) ? key.substring(0, APP_PREFIX.length + 15) : 'other';
+        usageByPrefix[prefix] = (usageByPrefix[prefix] || 0) + size;
+      }
+    } catch (e) {}
+    return { total, usageByPrefix };
+  },
+
+  emergencyReset(): void {
+    console.warn('[Storage] EMERGENCY RESET: Clearing all application data except settings.');
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(APP_PREFIX) && key !== StorageKeys.SETTINGS) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+  },
+
+  /**
+   * Clears only items that have explicitly expired TTL
+   */
+  clearExpired(): void {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(APP_PREFIX)) {
+            try {
+                const item = localStorage.getItem(key);
+                if (item) {
+                    const parsed = JSON.parse(item);
+                    if (parsed && typeof parsed === 'object' && 'timestamp' in parsed && 'ttl' in parsed) {
+                        if (Date.now() - parsed.timestamp > parsed.ttl) {
+                            keysToRemove.push(key);
+                        }
+                    }
+                }
+            } catch (e) {
+                // ignore parsing errors for non-cache objects
+            }
+        }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+  },
+
+  /**
+   * Removes items based on age (LRU) until space is freed or target size attained.
+   * @param targetSpace Estimate of bytes needed
+   */
+  scavenge(targetSpace: number): void {
+    const candidates: { key: string, size: number, timestamp: number }[] = [];
+    
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(APP_PREFIX)) continue;
+      
+      // Never scavenge absolute keep keys
+      if (key === StorageKeys.SETTINGS || key.startsWith(StorageKeys.REVIEWED_SHAS)) continue;
+      
+      const value = localStorage.getItem(key) || '';
+      let timestamp = Date.now();
+      
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed.timestamp) timestamp = parsed.timestamp;
+      } catch (e) {}
+
+      candidates.push({ key, size: value.length, timestamp });
+    }
+
+    // Sort by oldest first
+    candidates.sort((a, b) => a.timestamp - b.timestamp);
+
+    let freed = 0;
+    for (const cand of candidates) {
+      if (freed >= targetSpace) break;
+      localStorage.removeItem(cand.key);
+      freed += cand.size;
     }
   },
 
@@ -144,29 +254,34 @@ export const storage = {
   clearCaches(aggressive = false): void {
     const keysToRemove: string[] = [];
     const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS];
-    const temporaryKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];
+    
+    // Items that are always safe to clear
+    const transientKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];
+    
+    // Items that are cleared only in aggressive mode or manual clear
+    const semiPersistentKeys = [StorageKeys.PR_REVIEWS, StorageKeys.ANALYSIS_PREFIX];
 
-    const isAbsoluteKeep = (key: string) => absoluteKeep.some(k => key === k || key.startsWith(StorageKeys.REVIEWED_SHAS));
-    const isTransient = (key: string) => temporaryKeys.some(tk => key.startsWith(tk)) || key.includes('_cache');
+    const isAbsoluteKeep = (key: string) => 
+      absoluteKeep.some(k => key === k || key.startsWith(StorageKeys.REVIEWED_SHAS));
+    
+    const isTransient = (key: string) => 
+      transientKeys.some(tk => key.startsWith(tk) || key.includes('_cache'));
 
-    // Collect keys first to avoid index shifting bugs during forward iteration
+    const isSemiPersistent = (key: string) =>
+      semiPersistentKeys.some(sk => key.startsWith(sk));
+
+    // Collect keys first
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (!key) continue;
-
-      const isAppKey = key.startsWith(APP_PREFIX) || key.startsWith('repo_auditor_') || key.startsWith('audit_');
+      if (!key || !key.startsWith(APP_PREFIX)) continue;
       
-      if (isAppKey) {
-        if (aggressive) {
-          // In aggressive mode, remove everything except the settings and the SHA list
-          if (!isAbsoluteKeep(key)) {
-            keysToRemove.push(key);
-          }
-        } else {
-          // In normal mode, only remove known transient caches
-          if (isTransient(key)) {
-            keysToRemove.push(key);
-          }
+      if (isAbsoluteKeep(key)) continue;
+
+      if (aggressive) {
+        keysToRemove.push(key);
+      } else {
+        if (isTransient(key) || isSemiPersistent(key)) {
+          keysToRemove.push(key);
         }
       }
     }
@@ -175,29 +290,40 @@ export const storage = {
   },
 
   savePrReview(repo: string, prNumber: number, review: any): void {
-    const reviews = this.getRaw(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
-    reviews[`${repo}_${prNumber}`] = {
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
+    this.set(key, {
       ...review,
       timestamp: Date.now()
-    };
-    this.set(StorageKeys.PR_REVIEWS, reviews);
+    });
   },
 
   getPrReview(repo: string, prNumber: number): any | null {
-    const reviews = this.getRaw(StorageKeys.PR_REVIEWS, {} as Record<string, any>);
-    return reviews[`${repo}_${prNumber}`] || null;
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
+    return this.getRaw(key, null);
   },
 
   saveReviewedShas(repo: string, shas: Record<number, string>): void {
-    this.set(`${StorageKeys.REVIEWED_SHAS}_${repo}`, shas);
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    this.set(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, shas);
   },
 
   getReviewedShas(repo: string): Record<number, string> {
-    return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${repo}`, {});
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, {});
   },
 
   getSettingsKey(): string {
     return StorageKeys.SETTINGS;
+  },
+
+  saveJulesSessions(sessions: any[]): void {
+    this.setCached(StorageKeys.JULES_SESSIONS, sessions, 2 * 60 * 60 * 1000); // 2 hours cache for sessions
+  },
+
+  getJulesSessions(): any[] | null {
+    return this.get(StorageKeys.JULES_SESSIONS);
   },
 
   getSettings(): AppSettings {
@@ -210,6 +336,7 @@ export const storage = {
       // If stored values are empty strings, fallback to environment defaults
       githubToken: stored.githubToken || DEFAULT_SETTINGS.githubToken,
       julesApiKey: stored.julesApiKey || DEFAULT_SETTINGS.julesApiKey,
+      julesSourceId: stored.julesSourceId || DEFAULT_SETTINGS.julesSourceId,
       geminiApiKey: stored.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
     };
     
@@ -253,6 +380,10 @@ export const storage = {
 
   getJulesKey(): string {
     return this.getSettings().julesApiKey || '';
+  },
+
+  getJulesSourceId(): string {
+    return this.getSettings().julesSourceId || '';
   },
 
   saveSettings(settings: Partial<AppSettings>): void {

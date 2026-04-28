@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { listSessions, deleteSession } from '../services/julesService';
+import { listSessions, deleteSession, enrichSessionsWithDetails, getSessionUrl } from '../services/julesService';
 import { JulesSession } from '../types';
-import { Trash2, RefreshCw, AlertCircle, CheckCircle2, Loader2, Search } from 'lucide-react';
+import { Trash2, RefreshCw, AlertCircle, CheckCircle2, Loader2, Search, ExternalLink, GitPullRequest, GitBranch } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
@@ -21,6 +21,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [isEnriching, setIsEnriching] = useState(false);
 
   // Modal State
   const [confirmModal, setConfirmModal] = useState<{
@@ -41,7 +42,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     setTimeout(() => setSuccessMessage(null), 3000);
   };
 
-  const loadSessions = useCallback(async (silent = false) => {
+  const loadSessions = useCallback(async (silent = false, force = false) => {
     if (!julesApiKey) {
       setError("Jules API Key is missing. Please check your settings.");
       setLoading(false);
@@ -51,7 +52,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const data = await listSessions(julesApiKey);
+      const data = await listSessions(julesApiKey, force);
       // Sort by creation time descending (most recent first)
       const sorted = [...data].sort((a, b) => {
         const timeA = a.createTime ? new Date(a.createTime).getTime() : 0;
@@ -60,6 +61,17 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       });
       setSessions(sorted);
       setSelectedIds(new Set()); // Reset selection on reload
+
+      // Background enrichment
+      setIsEnriching(true);
+      try {
+        const enriched = await enrichSessionsWithDetails(julesApiKey, sorted);
+        setSessions(enriched);
+      } catch (e) {
+        console.warn("[JulesManagement] Enrichment failed:", e);
+      } finally {
+        setIsEnriching(false);
+      }
     } catch (e: any) {
       setError(e.message || "Failed to load sessions");
     } finally {
@@ -146,10 +158,18 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     });
   };
 
-  const filteredSessions = sessions.filter(s => 
-    (s.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-     s.name.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredSessions = sessions.filter(s => {
+    const searchLow = searchTerm.toLowerCase();
+    const hasPrMatch = s.outputs?.some(o => 
+      o.pullRequest?.url?.toLowerCase().includes(searchLow) || 
+      o.pullRequest?.title?.toLowerCase().includes(searchLow)
+    );
+    return (
+      s.title?.toLowerCase().includes(searchLow) || 
+      s.name.toLowerCase().includes(searchLow) ||
+      hasPrMatch
+    );
+  });
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -180,7 +200,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
           <Button 
             variant="secondary" 
             size="sm" 
-            onClick={() => loadSessions()} 
+            onClick={() => loadSessions(false, true)} 
             disabled={loading || isDeletingBulk}
             icon={RefreshCw}
             className={loading ? 'animate-spin' : ''}
@@ -218,11 +238,17 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
         <input 
           type="text"
-          placeholder="Search sessions by title or ID..."
+          placeholder="Search sessions by title, ID, or PR URL..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
         />
+        {isEnriching && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[10px] text-purple-400 font-medium">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Enriching PR info...
+          </div>
+        )}
       </div>
 
       <div className="bg-slate-900/50 border border-slate-700 rounded-2xl overflow-hidden">
@@ -273,13 +299,45 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                       />
                     </td>
                     <td className="p-4">
-                      <div className="flex flex-col">
-                        <span className="text-white font-medium truncate max-w-md">
-                          {session.title || 'Untitled Session'}
-                        </span>
-                        <span className="text-[10px] text-slate-500 font-mono">
-                          {session.name.split('/').pop()}
-                        </span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <a 
+                            href={getSessionUrl(session.name)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-white font-medium hover:text-purple-400 transition-colors truncate max-w-xs xl:max-w-md"
+                          >
+                            {session.title || 'Untitled Session'}
+                          </a>
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
+                          <span className="flex items-center gap-1 opacity-70">
+                            ID: {session.name.split('/').pop()}
+                          </span>
+                          {session.sourceContext?.githubRepoContext?.startingBranch && (
+                            <span className="flex items-center gap-1 text-purple-400/70">
+                              <GitBranch className="w-3 h-3" />
+                              {session.sourceContext.githubRepoContext.startingBranch}
+                            </span>
+                          )}
+                        </div>
+                        
+                        {session.outputs?.map((out, idx) => out.pullRequest && (
+                          <div key={idx} className="mt-1.5 flex flex-col gap-1">
+                            <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-400 w-fit max-w-[300px]">
+                              <GitPullRequest className="w-3 h-3 shrink-0" />
+                              <span className="truncate font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
+                              <a 
+                                href={out.pullRequest.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="ml-1 hover:text-white transition-colors"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </td>
                     <td className="p-4 text-sm text-slate-400">

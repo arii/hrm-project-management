@@ -60,11 +60,15 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
   let response: Response | undefined;
   let retries = 2;
   const fullUrl = `${BASE_URL}${endpoint}`;
-  const timeout = 15000; // 15 seconds timeout
+  const timeout = 30000; // 30 seconds timeout (was 15s)
 
   while (retries >= 0) {
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
+    const id = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (e) {}
+    }, timeout);
     
     try {
       response = await fetch(fullUrl, {
@@ -81,17 +85,27 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
       clearTimeout(id);
       if (retries === 0) {
         console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
-        if (e.name === 'AbortError') {
-          throw new Error(`Request timed out after ${timeout/1000}s. GitHub might be slow or the request is too large. (Target: ${fullUrl})`);
+        
+        const isAbort = e.name === 'AbortError' || 
+                        e.name === 'TimeoutError' || 
+                        controller.signal.aborted || 
+                        (e.message && e.message.toLowerCase().includes('aborted'));
+
+        if (isAbort) {
+          throw new Error(`Request timed out or was aborted after ${timeout/1000}s. GitHub might be slow or the request is too large. (Target: ${fullUrl})`);
         }
         if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
-          throw new Error(`Network error: Failed to reach GitHub API. This often happens due to CORS issues, network blocks, or invalid headers. (Target: ${fullUrl})`);
+          throw new Error(`Network error: Failed to reach GitHub API. Check connection or CORS. (Target: ${fullUrl})`);
         }
         throw e;
       }
-      // Retry up to 2 times with 1s/2s backoff for transient network errors
-      retries--;
-      await new Promise(r => setTimeout(r, 1000 * (2 - retries))); 
+      // Retry up to 2 times with 1s/2s backoff for transient network errors (only if not aborted)
+      if (controller.signal.aborted) {
+        retries = 0; // Don't retry timeouts
+      } else {
+        retries--;
+        await new Promise(r => setTimeout(r, 1000 * (2 - retries)));
+      }
     }
   }
 
@@ -170,11 +184,68 @@ export const fetchPrDiff = async (repo: string, number: number, token: string, s
     headers: { 'Accept': 'application/vnd.github.v3.diff' }
   }, true);
 
-  if (diff && sha) {
-    storage.setCached(cacheKey, { head: { sha }, data: diff });
+  const pruned = pruneDiff(diff);
+
+  if (pruned && sha) {
+    storage.setCached(cacheKey, { head: { sha }, data: pruned });
   }
 
-  return diff;
+  return pruned;
+};
+
+const IGNORED_FILES = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lockb',
+  'composer.lock',
+  'Gemfile.lock',
+  'Cargo.lock',
+  'mix.lock',
+  'poetry.lock',
+];
+
+const IGNORED_EXTENSIONS = [
+  '.map',
+  '.min.js',
+  '.min.css',
+];
+
+/**
+ * Removes sections from a git diff that belong to high-noise files (lockfiles, minified files, maps).
+ */
+export const pruneDiff = (diff: string): string => {
+  if (!diff) return "";
+  
+  // Split the diff into file sections
+  // Each section starts with "diff --git"
+  const sections = diff.split(/^diff --git /m);
+  
+  if (sections.length <= 1) return diff;
+
+  const header = sections[0]; // Usually empty
+  const prunedSections = sections.slice(1).filter(section => {
+    const firstLine = section.split('\n')[0];
+    // First line looks like: a/package.json b/package.json
+    // We care about the target file (b/)
+    const pathMatch = firstLine.match(/b\/(.+?)(?:\s|$)/);
+    if (!pathMatch) return true;
+
+    const path = pathMatch[1].trim();
+    const fileName = path.split('/').pop()?.toLowerCase() || "";
+
+    const isIgnoredFile = IGNORED_FILES.some(f => f.toLowerCase() === fileName);
+    const isIgnoredExtension = IGNORED_EXTENSIONS.some(ext => path.toLowerCase().endsWith(ext));
+
+    // Also skip huge binary deletions/additions if present in textual form
+    if (section.includes('GIT binary patch') || section.includes('Binary files differ')) {
+      return false;
+    }
+
+    return !isIgnoredFile && !isIgnoredExtension;
+  });
+
+  return header + prunedSections.map(s => 'diff --git ' + s).join('');
 };
 
 export const fetchCheckRuns = async (repo: string, ref: string, token: string, skipCache = false) => {
@@ -562,7 +633,7 @@ export const fetchEnrichedPullRequests = async (repo: string, token?: string, sk
   const subset = list.slice(0, 20);
   
   // Process in smaller chunks to avoid hitting browser/GitHub limits simultaneously
-  const chunkSize = 5;
+  const chunkSize = 2; // Reduced from 5 for stability
   const enrichedResults: EnrichedPullRequest[] = [];
   
   for (let i = 0; i < subset.length; i += chunkSize) {

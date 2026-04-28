@@ -15,11 +15,11 @@ import {
 } from '../services/githubService';
 import { generateCodeReview, extractIssuesFromComments } from '../services/geminiService';
 import { createSession, findSourceForRepo } from '../services/julesService';
-import { storage } from '../services/storageService';
+import { storage, StorageKeys } from '../services/storageService';
 import { EnrichedPullRequest, GithubPullRequest, CodeReviewResult, ProposedIssue, ModelTier } from '../types';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import { Eye, Loader2, RefreshCw, Send, FileSearch, Plus, Check, TerminalSquare, RotateCcw, Bot, AlertTriangle, ExternalLink, FileCode, CheckCircle2, ShieldCheck, XCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
+import { Eye, Loader2, RefreshCw, Send, FileSearch, Plus, Check, TerminalSquare, RotateCcw, Bot, AlertTriangle, ExternalLink, FileCode, CheckCircle2, ShieldCheck, XCircle, Clock, ChevronDown, ChevronUp, BrainCircuit } from 'lucide-react';
 import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import CredentialsRequired from '../components/ui/CredentialsRequired';
@@ -79,11 +79,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
   const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
 
-  const loadPrList = useCallback(async () => {
+  const loadPrList = useCallback(async (skipCache = false) => {
     setLoading(true);
     try {
       // 1. Fetch BASIC PR list immediately
-      const list = await fetchPullRequests(repoName, token);
+      const list = await fetchPullRequests(repoName, token, 'open', skipCache);
       const initialPrs = list.map(pr => ({
         ...pr,
         testStatus: 'unknown',
@@ -94,13 +94,30 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       } as EnrichedPullRequest));
       setPrs(initialPrs);
       
+      // Auto-detect already reviewed PRs and populate from storage
+      const newStatuses: Record<number, ReviewStatus> = {};
+      const newReviews: Record<number, CodeReviewResult> = {};
+      
+      initialPrs.forEach(pr => {
+        const existing = storage.getPrReview(repoName, pr.number);
+        if (existing) {
+          newStatuses[pr.number] = 'completed';
+          newReviews[pr.number] = existing;
+        }
+      });
+      
+      if (Object.keys(newStatuses).length > 0) {
+        setStatuses(prev => ({ ...prev, ...newStatuses }));
+        setReviews(prev => ({ ...prev, ...newReviews }));
+      }
+      
       // Stop skeleton loader immediately
       setLoading(false);
 
       // 2. Background Enrichment
       const toEnrich = initialPrs.slice(0, 20);
       setListProgress({ total: toEnrich.length, current: 0 });
-      const chunkSize = 4;
+      const chunkSize = 2; // Reduced from 4 for stability
       let completedCount = 0;
       
       for (let i = 0; i < toEnrich.length; i += chunkSize) {
@@ -131,7 +148,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   useEffect(() => {
     if (repoName && token) {
       loadPrList().then((list) => {
-        const prNumber = location.state?.selectedPrNumber;
+        const storedState = storage.get<{selectedPrNumber?: number}>(StorageKeys.CODE_REVIEW_STATE);
+        const prNumber = location.state?.selectedPrNumber || storedState?.selectedPrNumber;
         if (prNumber && list) {
            const match = list.find(p => p.number === prNumber);
            if (match) handleSelectPr(match);
@@ -144,6 +162,27 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
     }
   }, [repoName, token, loadPrList]);
+
+  // Persist selected PR to storage
+  useEffect(() => {
+    if (selectedPr) {
+      storage.setCached(StorageKeys.CODE_REVIEW_STATE, { selectedPrNumber: selectedPr.number });
+    }
+  }, [selectedPr]);
+
+  useEffect(() => {
+    if (selectedPr && reviews[selectedPr.number]) {
+      const review = reviews[selectedPr.number];
+      // Only populate if aiSuggestions are empty to avoid overwriting user interactions
+      if (review.suggestedIssues && aiSuggestions.length === 0) {
+        setAiSuggestions(review.suggestedIssues.map(i => ({ 
+          ...i, 
+          // Preserve existing IDs or generate new ones if missing
+          _id: (i as any)._id || Math.random().toString(36).substr(2, 9) 
+        })));
+      }
+    }
+  }, [selectedPr, reviews]);
 
   const updateReviewedSha = (prNumber: number, sha: string) => {
     setReviewedShas(prev => {
@@ -176,7 +215,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setExtractedIssues([]);
     setAiSuggestions([]);
     setActionError(null);
-    setReviews({}); // Clear reviews when selecting a new PR
 
     // Check storage for existing reviews
     let review = storage.getPrReview(repoName, pr.number);
@@ -482,7 +520,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                    {isBulkAuditing ? 'Auditing...' : `Audit ${selectedPrIds.size}`}
                  </Button>
                )}
-               <Button variant="ghost" size="sm" onClick={loadPrList} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
+               <Button variant="ghost" size="sm" onClick={() => loadPrList(true)} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
              </div>
           </div>
           {isBulkAuditing && (
@@ -746,9 +784,51 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                 )}
 
                 {(currentStatus === 'analyzing' || currentStatus === 'posting') && (
-                   <div className="flex flex-col items-center justify-center py-20 text-slate-400 animate-pulse">
-                      <Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-4" />
-                      <p className="text-sm font-bold text-white">{loadingMessage}</p>
+                   <div className="flex flex-col items-center justify-center py-24 text-slate-400 relative">
+                      <div className="absolute inset-0 bg-blue-500/5 [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_70%)] animate-pulse" />
+                      <div className="mb-8 relative">
+                        <div className="absolute inset-0 rounded-full bg-blue-500/20 blur-xl animate-pulse" />
+                        <div className="w-20 h-20 rounded-full border-2 border-slate-700/50 flex items-center justify-center relative bg-slate-900 overflow-hidden">
+                           <BrainCircuit className="w-10 h-10 text-blue-400 relative z-10 animate-pulse" />
+                           <div className="absolute inset-x-0 bottom-0 bg-blue-500/10 transition-all duration-[5000ms] ease-linear" 
+                                style={{ 
+                                   height: loadingMessage.includes('diff') ? '25%' : 
+                                           loadingMessage.includes('Analyze') ? '50%' :
+                                           loadingMessage.includes('Reasoning') ? '75%' :
+                                           loadingMessage.includes('GitHub') ? '95%' : '10%'
+                                }} 
+                           />
+                        </div>
+                      </div>
+                      <div className="text-center space-y-4 max-w-sm relative z-10">
+                        <h4 className="text-xl font-bold text-white tracking-tight">
+                           {currentStatus === 'analyzing' ? 'Audit in Progress' : 'Publishing Audit'}
+                        </h4>
+                        <div className="flex items-center justify-center gap-3">
+                           <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                           <p className="text-sm font-medium text-slate-300">{loadingMessage}</p>
+                        </div>
+                        
+                        <div className="pt-4 flex justify-center gap-2">
+                           {[0, 1, 2, 3].map(i => (
+                              <div 
+                                 key={i} 
+                                 className={clsx(
+                                    "h-1 w-8 rounded-full transition-all duration-500",
+                                    (loadingMessage.includes('diff') && i === 0) ||
+                                    (loadingMessage.includes('Analyze') && i <= 1) ||
+                                    (loadingMessage.includes('Reasoning') && i <= 2) ||
+                                    (loadingMessage.includes('GitHub') && i <= 3) 
+                                       ? "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" 
+                                       : "bg-slate-800"
+                                 )}
+                              />
+                           ))}
+                        </div>
+                        <p className="text-[10px] text-slate-500 italic mt-6">
+                           Analyzing complex architectural patterns. This typically takes 30-90 seconds.
+                        </p>
+                      </div>
                    </div>
                 )}
 
@@ -816,6 +896,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         description={workerModal.finding?.body || ''}
         julesReportStatus={julesReportStatus}
         onReportToJules={onReportToJules}
+        matchingPrNumber={selectedPr?.number}
       />
     </div>
   );

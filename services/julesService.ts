@@ -2,7 +2,7 @@
 import { JulesSession, JulesSource } from '../types';
 import { storage, StorageKeys } from './storageService';
 
-const JULES_API_BASE = 'https://jules.googleapis.com/v1alpha';
+const JULES_API_BASE = '/api/jules';
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
 const clearJulesCache = () => {
@@ -14,7 +14,7 @@ const clearJulesCache = () => {
   }
 };
 
-const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}): Promise<T> => {
+const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}, forceRefresh = false): Promise<T> => {
   if (!apiKey || !apiKey.trim()) {
     throw new Error("Jules API Key is missing. Please check your settings.");
   }
@@ -22,7 +22,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   const isGet = !options.method || options.method === 'GET';
   const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
 
-  if (isGet) {
+  if (isGet && !forceRefresh) {
     const cached = storage.get<T>(cacheKey);
     if (cached) return cached;
   }
@@ -55,8 +55,17 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   if (!response.ok) {
     let errorMessage = `Jules API Error: ${response.status}`;
     try {
-      const errorBody = await response.json();
-      if (errorBody.error?.message) errorMessage = errorBody.error.message;
+      const text = await response.text();
+      try {
+        const errorBody = JSON.parse(text);
+        if (errorBody.error?.message) errorMessage = errorBody.error.message;
+      } catch (e) {
+        if (text.includes('<!DOCTYPE html>')) {
+          errorMessage = `Jules API returned HTML (Status: ${response.status}). Potential endpoint mismatch or network error.`;
+        } else if (text.trim().length > 0) {
+          errorMessage = `Jules API [${response.status}]: ${text.trim().substring(0, 150)}`;
+        }
+      }
     } catch (e) {}
     throw new Error(errorMessage);
   }
@@ -66,7 +75,14 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
     return {} as T;
   }
 
-  const data = await response.json();
+  const rawText = await response.text();
+  let data: T;
+  try {
+    data = JSON.parse(rawText);
+  } catch (e) {
+    console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
+    throw new Error(`Jules API returned invalid JSON (Status: ${response.status})`);
+  }
 
   if (isGet) {
     storage.setCached(cacheKey, data, CACHE_DURATION);
@@ -79,21 +95,54 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   return data;
 };
 
-export const listSources = async (apiKey: string, filter?: string): Promise<JulesSource[]> => {
-  const query = filter ? `?filter=${encodeURIComponent(filter)}` : '';
-  const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey);
-  return data.sources || [];
+/**
+ * Returns a valid URL for the Jules UI for a given session.
+ */
+export const getSessionUrl = (sessionNameOrId: string): string => {
+  if (!sessionNameOrId) return 'https://jules.google.com/';
+  // Session name is usually "sessions/123" or just "123"
+  const id = sessionNameOrId.includes('/') ? sessionNameOrId.split('/').pop() : sessionNameOrId;
+  if (!id) return 'https://jules.google.com/';
+  // Format requested by user: https://jules.google.com/session/{id}/
+  return `https://jules.google.com/session/${id}/`;
 };
 
-export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
+export const listSources = async (apiKey: string, filter?: string): Promise<JulesSource[]> => {
+  const query = filter ? `?filter=${encodeURIComponent(filter)}` : '';
+  
+  try {
+    const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey);
+    if (data.sources && data.sources.length > 0) return data.sources;
+  } catch (e) {
+    console.warn("[JulesService] Failed to list sources with standard path, trying fallback...");
+  }
+
+  try {
+    // Try wildcard path which is common for multi-project API keys
+    const data = await request<{ sources: JulesSource[] }>(`projects/-/locations/-/sources${query}`, apiKey);
+    return data.sources || [];
+  } catch (e) {
+    console.error("[JulesService] Both standard and fallback source listing failed:", e);
+    return [];
+  }
+};
+
+export const getSession = async (apiKey: string, sessionName: string, forceRefresh = false): Promise<JulesSession> => {
+  const endpoint = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
+  return request<JulesSession>(endpoint, apiKey, {}, forceRefresh);
+};
+
+export const listSessions = async (apiKey: string, forceRefresh = false): Promise<JulesSession[]> => {
   let allSessions: JulesSession[] = [];
   let nextToken: string | undefined = undefined;
   let pages = 0;
   
   do {
     const query = nextToken ? `?pageToken=${nextToken}` : '';
-    const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(`sessions${query}`, apiKey);
-    if (data.sessions) allSessions = [...allSessions, ...data.sessions];
+    const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(`sessions${query}`, apiKey, {}, forceRefresh);
+    if (data.sessions) {
+      allSessions = [...allSessions, ...data.sessions];
+    }
     nextToken = data.nextPageToken;
     pages++;
   } while (nextToken && pages < 5);
@@ -101,13 +150,42 @@ export const listSessions = async (apiKey: string): Promise<JulesSession[]> => {
   return allSessions;
 };
 
+/**
+ * Enriches a list of sessions with full details by fetching each individually.
+ * Opt-in for performance.
+ */
+export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesSession[]): Promise<JulesSession[]> => {
+  // Fetch details for the top N most recent sessions to avoid hitting limits or being too slow
+  const limit = 15;
+  const recent = sessions.slice(0, limit);
+  
+  const enriched = await Promise.all(
+    recent.map(async (s) => {
+      try {
+        return await getSession(apiKey, s.name);
+      } catch (e) {
+        console.warn(`[JulesService] Failed to enrich session ${s.name}:`, e);
+        return s;
+      }
+    })
+  );
+
+  // Return enriched sessions joined with the rest of the list
+  return [...enriched, ...sessions.slice(limit)];
+};
+
 export const createSession = async (
   apiKey: string, 
   prompt: string, 
   sourceId: string, 
-  branch: string = 'leader', 
+  branch: string, // Removed default to avoid assuming 'leader'
   title?: string
 ): Promise<JulesSession> => {
+  if (!branch) {
+    console.error("[JulesService] Attempted to create session without branch context.");
+    throw new Error("Branch context is required to create a Jules session.");
+  }
+
   const payload: any = {
     prompt,
     sourceContext: {
@@ -115,11 +193,31 @@ export const createSession = async (
       githubRepoContext: { startingBranch: branch }
     }
   };
+
   if (title) payload.title = title;
-  return request<JulesSession>('sessions', apiKey, {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
+
+  console.log(`[JulesService] Creating session for source "${sourceId}" on branch "${branch}"...`);
+
+  try {
+    return await request<JulesSession>('sessions', apiKey, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  } catch (error: any) {
+    const errorString = error instanceof Error ? error.message : JSON.stringify(error);
+    console.error(`[JulesService] Session creation failed. Source: ${sourceId}, Branch: ${branch}, Error: ${errorString}`, error);
+    
+    // Standardize error message for "Source context not found" which is common if branch is wrong
+    if (errorString.includes("Source context not found")) {
+      throw new Error(`Jules could not find branch "${branch}" in source "${sourceId}". Please verify the branch exists and is pushed to GitHub.`);
+    }
+    
+    if (errorString.includes("Requested entity was not found")) {
+      throw new Error(`Jules could not find the source entity "${sourceId}". This usually means the repository hasn't been indexed by Jules or the mapping is incorrect. Please check the 'Jules Source ID' in settings.`);
+    }
+
+    throw error;
+  }
 };
 
 export const sendMessage = async (apiKey: string, sessionName: string, text: string): Promise<any> => {
@@ -132,60 +230,84 @@ export const sendMessage = async (apiKey: string, sessionName: string, text: str
 
 export const deleteSession = async (apiKey: string, sessionName: string): Promise<void> => {
   const endpoint = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
-  return request<void>(endpoint, apiKey, { method: 'DELETE' });
+  await request<void>(endpoint, apiKey, { method: 'DELETE' });
+  // Invalidate sessions list cache to ensure refresh on next load
+  storage.remove(`${StorageKeys.JULES_CACHE}_sessions`);
 };
 
 export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {
+  if (!repoName) return null;
+  
   try {
+    // 0. Check for manual override first
+    const manualSourceId = storage.getJulesSourceId();
+    if (manualSourceId) {
+      console.log(`[JulesService] Using manual source ID override: "${manualSourceId}"`);
+      return manualSourceId;
+    }
+
     const sources = await listSources(apiKey);
-    
-    // Normalize target repo name (e.g. "owner/my-repo" -> "my-repo")
+    if (sources.length === 0) {
+      console.warn("[JulesService] No sources found in Jules account.");
+      return null;
+    }
+
+    // Normalize target repo name
     const repoParts = repoName.split('/');
+    const owner = repoParts.length > 1 ? repoParts[0].toLowerCase() : "";
     const repoOnly = repoParts[repoParts.length - 1].toLowerCase();
-    const fullNormalized = repoName.toLowerCase();
     
-    // Helper to normalize strings for comparison (lowercase, remove non-alphanumeric)
-    const normalizeForMatch = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalizedRepoOnly = normalizeForMatch(repoOnly);
-    const normalizedFullRepo = normalizeForMatch(repoName);
+    // Helper to normalize strings for comparison
+    // We try two versions: one with separators and one without (super clean)
+    const normalizeWithSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9\-_]/g, '');
+    const normalizeNoSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const nRepoOnly = normalizeWithSep(repoOnly);
+    const nRepoOnlyClean = normalizeNoSep(repoOnly);
+    const nFullRepo = normalizeWithSep(repoName);
+    const nFullRepoClean = normalizeNoSep(repoName);
     
-    // 1. Try exact matches on normalized strings
+    console.log(`[JulesService] Matching repo "${repoName}" against ${sources.length} sources.`);
+
+    // 1. HIGH-CONFIDENCE MATCHES
     let match = sources.find(s => {
       const sourceName = s.name.toLowerCase();
       const sourceDisplayName = (s.displayName || '').toLowerCase();
+      const nSourceName = normalizeWithSep(sourceName);
+      const nSourceNameClean = normalizeNoSep(sourceName);
+      const nDisplayName = normalizeWithSep(sourceDisplayName);
+      const nDisplayNameClean = normalizeNoSep(sourceDisplayName);
       
-      // Exact match on source name (usually "sources/my-repo")
-      if (sourceName === fullNormalized || sourceName.endsWith(`/${repoOnly}`)) return true;
-      if (sourceName.endsWith(`/${normalizedRepoOnly}`)) return true;
-      
-      // Exact match on display name
-      if (sourceDisplayName === repoOnly || sourceDisplayName === repoName) return true;
-      
+      // Suffix matches
+      if (sourceName.endsWith(`/${repoName.toLowerCase()}`) || sourceName.endsWith(`/${repoOnly}`)) return true;
+      if (sourceDisplayName === repoName.toLowerCase() || sourceDisplayName === repoOnly) return true;
+
+      // Normalized matches (with hyphens/underscores)
+      if (nSourceName.endsWith(nRepoOnly) || nDisplayName === nRepoOnly) return true;
+      if (nSourceName.includes(nFullRepo) || nDisplayName.includes(nFullRepo)) return true;
+
+      // Super clean matches (no separators - handles "tech-dancer" vs "techdancer")
+      if (nSourceNameClean.endsWith(nRepoOnlyClean) || nDisplayNameClean === nRepoOnlyClean) return true;
+      if (nSourceNameClean.includes(nFullRepoClean) || nDisplayNameClean.includes(nFullRepoClean)) return true;
+
       return false;
     });
 
-    // 2. Try fuzzy matches (ignoring - and _)
-    if (!match) {
-      match = sources.find(s => {
-        const nName = normalizeForMatch(s.name);
-        const nDisplayName = normalizeForMatch(s.displayName || '');
-        
-        return nName.endsWith(normalizedRepoOnly) || 
-               nName === normalizedFullRepo ||
-               nDisplayName === normalizedRepoOnly ||
-               nDisplayName === normalizedFullRepo;
-      });
-    }
+    if (match) {
+      console.log(`[JulesService] Auto-detected source: "${repoName}" -> "${match.name}"`);
+      return match.name;
+    } 
 
-    if (!match) {
-      console.warn(`[JulesService] No source matched repoName: "${repoName}". Available sources:`, sources.map(s => ({ name: s.name, display: s.displayName })));
-    } else {
-      console.log(`[JulesService] Auto-detected source mapping: "${repoName}" -> "${match.name}"`);
-    }
-
-    return match ? match.name : null;
+    // 2. BEST GUESS FALLBACK
+    // If no match found in the list (or list empty), try common patterns.
+    // We prioritize the short name (repoOnly) as it's more common in Jules IDs than owner/repo.
+    const guessId = `sources/${repoOnly}`;
+    console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
+    return guessId;
   } catch (e) {
-    console.error(`[JulesService] Error listing sources for repoName "${repoName}":`, e);
-    return null;
+    console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e);
+    // Even on error, try the best-guess as a last resort
+    const fallback = repoName.includes('/') ? `sources/${repoName.toLowerCase()}` : `sources/${repoName.toLowerCase()}`;
+    return fallback;
   }
 };

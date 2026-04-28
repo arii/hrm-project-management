@@ -289,11 +289,19 @@ export interface JulesSession {
   outputs?: Array<{
     pullRequest?: {
       url: string;
+      title?: string;
+      description?: string;
     };
   }>;
   sourceContext?: {
-    source: string;
+    source?: string;
+    githubRepo?: {
+      owner?: string;
+      repo?: string;
+    };
     githubRepoContext?: {
+      owner?: string;
+      repo?: string;
       startingBranch?: string;
     };
   };

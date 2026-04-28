@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchPullRequests, enrichSinglePr, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch } from '../services/githubService';
+import { fetchPullRequests, enrichSinglePr, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch, fetchComments, fetchReviewComments } from '../services/githubService';
 import { analyzePullRequests, analyzePrForRestart, analyzePrForSync } from '../services/geminiService';
-import { listSessions, createSession, findSourceForRepo } from '../services/julesService';
+import { listSessions, createSession, findSourceForRepo, getSessionUrl } from '../services/julesService';
 import { storage } from '../services/storageService';
 import { EnrichedPullRequest, JulesSession, PrHealthAction, CodeReviewResult } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
@@ -105,14 +105,14 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
 
       // 2. Jules sessions in parallel
       if (julesApiKey && julesApiKey.trim()) {
-        listSessions(julesApiKey).then(setJulesSessions).catch(console.error);
+        listSessions(julesApiKey, skipCache).then(setJulesSessions).catch(console.error);
       }
 
       // 3. Background Enrichment with incremental progress
       const toEnrich = initialPrs.slice(0, 30); // Enrich more here as it's the main list
       setListProgress({ total: toEnrich.length, current: 0 });
       
-      const chunkSize = 5;
+      const chunkSize = 3; // Reduced from 5 for stability
       let completedCount = 0;
       
       for (let i = 0; i < toEnrich.length; i += chunkSize) {
@@ -153,34 +153,61 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   };
 
   const handleDispatchToJules = async (pr: EnrichedPullRequest) => {
-    if (!julesApiKey) return;
+    if (!julesApiKey || !token) return;
     setRepairStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
-    updateProcessingMessage(pr.number, "Gathering technical context...");
+    updateProcessingMessage(pr.number, "Gathering technical context & reviewer feedback...");
     
     try {
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("Source context not found.");
+      if (!sourceId) throw new Error("A Jules Source ID is required.");
       
+      // Fetch diff and comments in parallel
+      const [diff, issueComments, reviewComments] = await Promise.all([
+        fetchPrDiff(repoName, pr.number, token).catch(() => ""),
+        fetchComments(repoName, pr.number, token).catch(() => []),
+        fetchReviewComments(repoName, pr.number, token).catch(() => [])
+      ]);
+
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
+      
       const auditPart = existingReview 
-        ? `\n\nPRINCIPAL ENGINEER DIRECTIVES (FROM PREVIOUS AUDIT):\n${existingReview.reviewComment}` 
+        ? `\n\n### AI AUDIT FEEDBACK (Principal Engineer Directives):\n${existingReview.reviewComment}` 
         : "";
+
+      const prBody = pr.body ? `\n\n### ORIGINAL DEVELOPER INTENT (PR Description):\n${pr.body}` : "";
+      
+      // Combine human comments
+      const allComments = [...issueComments, ...reviewComments]
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        .map(c => `- [${c.user?.login || 'unknown'}]: ${c.body}`)
+        .join('\n');
+      
+      const commentPart = allComments ? `\n\n### HUMAN REVIEWER FEEDBACK:\n${allComments}` : "";
+      
+      const diffPart = diff ? `\n\n### CURRENT CHANGES (Diff):\n${diff.substring(0, 15000)}` : "";
 
       const prompt = `
         REPAIR PR #${pr.number} on branch '${pr.head.ref}'.
+        
+        GOAL: Implement all architectural improvements and fixes identified in the feedback and directives below.
         ${auditPart}
+        ${prBody}
+        ${commentPart}
+        ${diffPart}
         
-        GOAL: Implement all architectural improvements and fixes identified in the directives above.
-        
-        ### CRITICAL DIRECTIVES:
+        ### CRITICAL REPAIR DIRECTIVES:
         1. PRESERVE INTENT: The changes in the feature branch are INTENTIONAL. Your goal is to REPAIR and POLISH them, not revert them.
         2. MINIMIZATION: Prioritize code reduction where it doesn't compromise functionality. Remove old features being replaced.
         3. NO OVER-ENGINEERING: Avoid adding complex abstractions, generic wrappers, or unnecessary Providers.
         4. NO VERBOSE COMMENTS: Delete any comments that explain the "how" (code should do that) rather than the "why".
         5. LEVERAGE EXISTING: Do not create new types/hooks if similar ones exist.
+        6. SURGICAL FIXES: Address the specific feedback from reviewers and the principal engineer audit.
       `;
       
-      const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Repair Audit: #${pr.number}`);
+      const branch = pr.head.ref;
+      if (!branch) throw new Error("Could not determine head branch for this PR.");
+      
+      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Repair Audit: #${pr.number}`);
       setSessionLinks(prev => ({ ...prev, [`repair-${pr.number}`]: session.name }));
       setRepairStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
       updateProcessingMessage(pr.number, "Repair session dispatched successfully.");
@@ -205,7 +232,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       
       updateProcessingMessage(pr.number, "Plan generated. Creating Jules session...");
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("Source context not found.");
+      if (!sourceId) throw new Error("A Jules Source ID is required.");
       
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
       const auditPart = existingReview 
@@ -228,7 +255,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         3. CODE MINIMIZATION: Prioritize a solution that uses the fewest lines of code possible.
       `;
       
-      const session = await createSession(julesApiKey, prompt, sourceId, pr.base.ref, `Restart: ${title}`);
+      const branch = pr.base.ref;
+      if (!branch) throw new Error("Could not determine base branch for this PR.");
+      
+      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Restart: ${title}`);
       
       setSessionLinks(prev => ({ ...prev, [`restart-${pr.number}`]: session.name }));
       setRestartStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
@@ -251,7 +281,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       
       updateProcessingMessage(pr.number, "Issues identified. Creating Jules session...");
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("Source context not found.");
+      if (!sourceId) throw new Error("A Jules Source ID is required.");
 
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
       const auditPart = existingReview 
@@ -280,7 +310,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         The final delta must represent ONLY the intentional work of the developer, cleaned of all git-related noise.
       `;
       
-      const session = await createSession(julesApiKey, prompt, sourceId, pr.head.ref, `Sync & Conflict: #${pr.number}`);
+      const branch = pr.head.ref;
+      if (!branch) throw new Error("Could not determine head branch for this PR.");
+      
+      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Sync & Conflict: #${pr.number}`);
       setSessionLinks(prev => ({ ...prev, [`sync-${pr.number}`]: session.name }));
       setSyncStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
       updateProcessingMessage(pr.number, "Synchronization session dispatched successfully.");
@@ -313,7 +346,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("Source not found.");
       const pr = prs.find(p => p.number === action.prNumber);
-      const branch = pr?.head.ref || 'leader';
+      const branch = pr?.head.ref || pr?.base.ref || 'main'; // Use main as a last resort if PR info is partially missing
+      if (!pr) {
+        console.warn(`[PullRequests] PR #${action.prNumber} not found in state, falling back to branch "${branch}"`);
+      }
+      
       const prompt = `
         AI Recommendation Task for PR #${action.prNumber}: ${action.reason}. 
         Suggested Action: ${action.action.toUpperCase()}.
@@ -437,8 +474,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                             {dispatchStatuses[action._id] === 'success' && sessionLinks[action._id] && (
                                <button 
                                  onClick={() => {
-                                   const sessionUrl = `https://jules.google.com/session/${sessionLinks[action._id].split('/').pop()}`;
-                                   window.open(sessionUrl, '_blank', 'noopener,noreferrer');
+                                   window.open(getSessionUrl(sessionLinks[action._id]), '_blank', 'noopener,noreferrer');
                                  }}
                                  className="text-[9px] font-bold text-blue-400 hover:underline flex items-center gap-1 uppercase"
                                >
@@ -549,8 +585,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                                 
                                 const sessionName = sessionLinks[sessionKey];
                                 if (sessionName) {
-                                  const sessionUrl = `https://jules.google.com/session/${sessionName.split('/').pop()}`;
-                                  window.open(sessionUrl, '_blank', 'noopener,noreferrer');
+                                  window.open(getSessionUrl(sessionName), '_blank', 'noopener,noreferrer');
                                 }
                               }}
                               className="text-[10px] font-bold text-blue-400 hover:underline uppercase flex items-center gap-1"
