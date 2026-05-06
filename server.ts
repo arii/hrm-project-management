@@ -64,6 +64,7 @@ async function startServer() {
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       try {
+        console.log(`[Proxy] FETCHING from Jules: ${julesUrl}`);
         const response = await fetch(julesUrl, {
           ...fetchOptions,
           signal: controller.signal
@@ -71,7 +72,11 @@ async function startServer() {
         clearTimeout(timeoutId);
 
         const rawText = await response.text();
-        console.log(`[Proxy] RECEIVED: ${response.status} from Jules in ${Date.now() - startTime}ms. Body size: ${rawText.length}`);
+        console.log(`[Proxy] RESPONSE from Jules: ${response.status} ${response.statusText}. Length: ${rawText.length}`);
+
+        if (response.status >= 400) {
+           console.error(`[Proxy] Jules API Error: ${response.status} ${rawText.substring(0, 500)}`);
+        }
 
         if (response.status === 204 || (!rawText && response.status === 200)) {
           return res.status(response.status).send(response.status === 204 ? undefined : '{}');

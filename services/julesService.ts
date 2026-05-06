@@ -123,16 +123,24 @@ export const listSources = async (apiKey: string, filter?: string): Promise<Jule
   try {
     const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey);
     if (data.sources && data.sources.length > 0) return data.sources;
+  } catch (e: any) {
+    console.warn(`[JulesService] Failed to list sources with standard path: ${e.message || e}`);
+  }
+
+  try {
+    // Try global locations specifically
+    const data = await request<{ sources: JulesSource[] }>(`projects/-/locations/global/sources${query}`, apiKey);
+    if (data.sources) return data.sources;
   } catch (e) {
-    console.warn("[JulesService] Failed to list sources with standard path, trying fallback...");
+    // Silently continue to next fallback
   }
 
   try {
     // Try wildcard path which is common for multi-project API keys
     const data = await request<{ sources: JulesSource[] }>(`projects/-/locations/-/sources${query}`, apiKey);
     return data.sources || [];
-  } catch (e) {
-    console.error("[JulesService] Both standard and fallback source listing failed:", e);
+  } catch (e: any) {
+    console.error(`[JulesService] All source listing paths failed. Last error: ${e.message || e}`);
     return [];
   }
 };

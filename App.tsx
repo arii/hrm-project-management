@@ -78,6 +78,7 @@ const App: React.FC = () => {
               setGeminiApiKey={(key) => updateSettings({ geminiApiKey: key })}
               defaultModelTier={defaultModelTier}
               setDefaultModelTier={(tier) => updateSettings({ defaultModelTier: tier })}
+              updateSettings={updateSettings}
             />
           }>
             <Route index element={<Dashboard repoName={repoName} />} />

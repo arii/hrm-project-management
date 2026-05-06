@@ -5,6 +5,7 @@ import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activi
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 import { ModelTier } from '../types';
+import { AppSettings } from '../services/storageService';
 
 interface LayoutProps {
   repoName: string;
@@ -19,6 +20,7 @@ interface LayoutProps {
   setGeminiApiKey: (key: string) => void;
   defaultModelTier: ModelTier;
   setDefaultModelTier: (tier: ModelTier) => void;
+  updateSettings: (updates: Partial<AppSettings>) => void;
 }
 
 const Layout: React.FC<LayoutProps> = ({ 
@@ -27,7 +29,8 @@ const Layout: React.FC<LayoutProps> = ({
   julesApiKey, setJulesApiKey,
   julesSourceId, setJulesSourceId,
   geminiApiKey, setGeminiApiKey,
-  defaultModelTier, setDefaultModelTier
+  defaultModelTier, setDefaultModelTier,
+  updateSettings
 }) => {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -133,6 +136,7 @@ const Layout: React.FC<LayoutProps> = ({
             setGeminiApiKey={setGeminiApiKey}
             defaultModelTier={defaultModelTier}
             setDefaultModelTier={setDefaultModelTier}
+            updateSettings={updateSettings}
           />
         </header>
 

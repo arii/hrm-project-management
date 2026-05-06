@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload, Cpu, Zap, Brain } from 'lucide-react';
 import clsx from 'clsx';
-import { storage } from '../services/storageService';
+import { storage, AppSettings } from '../services/storageService';
 import { ModelTier, JulesSource } from '../types';
 import { listSources } from '../services/julesService';
 
@@ -19,6 +19,7 @@ interface RepoSettingsProps {
   setGeminiApiKey: (key: string) => void;
   defaultModelTier: ModelTier;
   setDefaultModelTier: (tier: ModelTier) => void;
+  updateSettings: (updates: Partial<AppSettings>) => void;
 }
 
 const RepoSettings: React.FC<RepoSettingsProps> = ({ 
@@ -27,7 +28,8 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   julesApiKey, setJulesApiKey,
   julesSourceId, setJulesSourceId,
   geminiApiKey, setGeminiApiKey,
-  defaultModelTier, setDefaultModelTier
+  defaultModelTier, setDefaultModelTier,
+  updateSettings
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [localRepo, setLocalRepo] = useState(repoName || '');
@@ -84,12 +86,14 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
       return;
     }
 
-    setRepoName(cleanRepo);
-    setGithubToken(cleanToken);
-    setJulesApiKey(cleanJulesKey);
-    setJulesSourceId(localJulesSourceId.trim());
-    setGeminiApiKey(cleanGeminiKey);
-    setDefaultModelTier(localTier);
+    updateSettings({
+      repoName: cleanRepo,
+      githubToken: cleanToken,
+      julesApiKey: cleanJulesKey,
+      julesSourceId: localJulesSourceId.trim(),
+      geminiApiKey: cleanGeminiKey,
+      defaultModelTier: localTier
+    });
 
     setSaveStatus('success');
     setTimeout(() => {

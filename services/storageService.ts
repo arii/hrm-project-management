@@ -33,11 +33,18 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
   repoName: '',
-  githubToken: (process.env as any).GITHUB_TOKEN || '',
-  julesApiKey: (process.env as any).JULES_API_KEY || '',
+  githubToken: '',
+  julesApiKey: '',
   julesSourceId: '',
-  geminiApiKey: (process.env as any).GEMINI_API_KEY || (process.env as any).API_KEY || '',
+  geminiApiKey: '',
   defaultModelTier: ModelTier.LITE,
+};
+
+// Fallback values from environment, using safe access patterns
+const ENV_DEFAULTS = {
+  githubToken: (typeof process !== 'undefined' && process.env?.GITHUB_TOKEN) || (import.meta as any).env?.VITE_GITHUB_TOKEN || '',
+  julesApiKey: (typeof process !== 'undefined' && process.env?.JULES_API_KEY) || (import.meta as any).env?.VITE_JULES_API_KEY || '',
+  geminiApiKey: (typeof process !== 'undefined' && (process.env?.GEMINI_API_KEY || process.env?.API_KEY)) || (import.meta as any).env?.VITE_GEMINI_API_KEY || '',
 };
 
 interface CacheEntry<T> {
@@ -360,17 +367,17 @@ export const storage = {
   },
 
   getSettings(): AppSettings {
-    const stored = this.getRaw(StorageKeys.SETTINGS, DEFAULT_SETTINGS);
+    const stored = this.getRaw(StorageKeys.SETTINGS, {} as Partial<AppSettings>);
     
-    // Merge with defaults but prioritize environment variables if stored values are empty strings
+    // Merge: DEFAULT_SETTINGS < ENV_DEFAULTS < stored
     const settings: AppSettings = {
       ...DEFAULT_SETTINGS,
+      // If we have stored values, they take precedence over everything
       ...stored,
-      // If stored values are empty strings, fallback to environment defaults
-      githubToken: stored.githubToken || DEFAULT_SETTINGS.githubToken,
-      julesApiKey: stored.julesApiKey || DEFAULT_SETTINGS.julesApiKey,
-      julesSourceId: stored.julesSourceId || DEFAULT_SETTINGS.julesSourceId,
-      geminiApiKey: stored.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
+      // Only use ENV_DEFAULTS if the field is empty in BOTH stored and DEFAULT_SETTINGS
+      githubToken: stored.githubToken || ENV_DEFAULTS.githubToken || DEFAULT_SETTINGS.githubToken,
+      julesApiKey: stored.julesApiKey || ENV_DEFAULTS.julesApiKey || DEFAULT_SETTINGS.julesApiKey,
+      geminiApiKey: stored.geminiApiKey || ENV_DEFAULTS.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
     };
     
     // Migration helper for older individual keys if they exist
@@ -419,10 +426,16 @@ export const storage = {
     return this.getSettings().julesSourceId || '';
   },
 
-  saveSettings(settings: Partial<AppSettings>): void {
-    const current = this.getSettings();
-    const updated = { ...current, ...settings };
+  saveSettings(updates: Partial<AppSettings>): void {
+    // We only want to persist what the user has explicitly set
+    // BUT we need to read the current stored object first (not the effective settings with env fallbacks)
+    const currentStored = this.getRaw(StorageKeys.SETTINGS, {} as Partial<AppSettings>);
+    const updated = { ...currentStored, ...updates };
+    
     this.set(StorageKeys.SETTINGS, updated);
-    window.dispatchEvent(new CustomEvent('settings_updated', { detail: updated }));
+    
+    // Notify app with the full effective settings
+    const fullEffective = this.getSettings();
+    window.dispatchEvent(new CustomEvent('settings_updated', { detail: fullEffective }));
   }
 };
