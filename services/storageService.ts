@@ -46,57 +46,90 @@ interface CacheEntry<T> {
   ttl: number;
 }
 
+// Memory fallback for environments where LocalStorage is failing or full
+const memoryCache: Record<string, string> = {};
+
+const MAX_LOCALSTORAGE_ITEM_SIZE = 2 * 1024 * 1024; // 2MB limit for LocalStorage items
+
 export const storage = {
   getRaw<T>(key: string, defaultValue: T): T {
+    let item: string | null = null;
     try {
-      const item = localStorage.getItem(key);
-      if (!item) return defaultValue;
+      item = localStorage.getItem(key);
+    } catch (e) {
+      console.warn(`[Storage] Failed to read "${key}" from localStorage:`, e);
+    }
+
+    if (!item) {
+      item = memoryCache[key] || null;
+    }
+
+    if (!item) return defaultValue;
+
+    try {
       return JSON.parse(item);
     } catch (e) {
-      console.warn(`[Storage] Error reading key "${key}":`, e);
+      console.warn(`[Storage] Error parsing key "${key}":`, e);
       return defaultValue;
     }
   },
 
   set<T>(key: string, value: T): boolean {
     const serialized = JSON.stringify(value);
+    const itemSize = serialized.length * 2; // Rough estimate in bytes (UTF-16)
+    const itemSizeKb = Math.round(itemSize / 1024);
+
+    // Save to memory cache regardless of LocalStorage status
+    memoryCache[key] = serialized;
+
+    // Guard against oversized items that will definitely fail or lag LocalStorage
+    if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
+      console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Using memory-only storage.`);
+      return true; // We consider it success because it's in memoryCache
+    }
+
     try {
       localStorage.setItem(key, serialized);
       return true;
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
         const usage = this.getSpaceUsage();
-        console.warn(`[Storage] Quota exceeded (Usage: ${Math.round(usage.total / 1024)}KB). Attempting recovery for "${key}" (${Math.round(serialized.length / 1024)}KB)...`, usage.usageByPrefix);
+        console.warn(`[Storage] Quota exceeded (Used: ${Math.round(usage.total / 1024)}KB). Item: "${key}" (${itemSizeKb}KB). Attempting recovery...`, usage.usageByPrefix);
         
         // 1. Clear expired cache first
         this.clearExpired();
         
         // 2. Try to scavenge large and old items
-        this.scavenge(serialized.length);
+        this.scavenge(itemSize);
         
         try {
           localStorage.setItem(key, serialized);
           return true;
         } catch (retryError) {
           // Final attempt: clear all non-essential data
-          console.warn('[Storage] Quota still exceeded. Evicting ALL transient and semi-persistent data...');
-          this.clearCaches(true); // Now truly aggressive
+          console.warn('[Storage] Quota still exceeded after scavenging. Evicting ALL transient data...');
+          this.clearCaches(true);
           
           try {
             localStorage.setItem(key, serialized);
             return true;
           } catch (finalError) {
-            console.error('[Storage] Critical storage failure: LocalStorage is full and could not be cleared sufficiently. Total usage:', this.getSpaceUsage());
-            // Last resort: clear EVERYTHING except settings
+            const finalUsage = this.getSpaceUsage();
+            // Downgrade to warn as we have memory fallback
+            console.warn(`[Storage] LocalStorage is full. Item size: ${itemSizeKb}KB. Total usage after clear: ${Math.round(finalUsage.total / 1024)}KB. Falling back to memory-only.`);
+            
+            // Last resort: clear EVERYTHING except settings to make room for future smaller saves
             this.emergencyReset();
             try {
               localStorage.setItem(key, serialized);
               return true;
             } catch (totalFailure) {
-              return false;
+              return false; // Already in memoryCache
             }
           }
         }
+      } else {
+        console.warn(`[Storage] Failed to write to localStorage for key "${key}" (not a quota error). Falling back to memory.`, e);
       }
       return false;
     }

@@ -651,5 +651,4 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
   }
 };
 
-
 // End of file

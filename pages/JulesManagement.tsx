@@ -22,6 +22,9 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isEnriching, setIsEnriching] = useState(false);
+  const [sortField, setSortField] = useState<'date' | 'status' | 'name'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'ARCHIVED'>('ALL');
 
   // Modal State
   const [confirmModal, setConfirmModal] = useState<{
@@ -164,14 +167,51 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       o.pullRequest?.url?.toLowerCase().includes(searchLow) || 
       o.pullRequest?.title?.toLowerCase().includes(searchLow)
     );
-    return (
+    const matchesSearch = (
       s.title?.toLowerCase().includes(searchLow) || 
       s.name.toLowerCase().includes(searchLow) ||
       hasPrMatch
     );
+
+    if (!matchesSearch) return false;
+
+    const isActive = s.state === 'RUNNING' || s.state === 'IN_PROGRESS' || s.state === 'PENDING' || s.state === 'AWAITING_USER_FEEDBACK' || s.state === 'AWAITING_PLAN_APPROVAL';
+    if (statusFilter === 'ACTIVE') return isActive;
+    if (statusFilter === 'ARCHIVED') return !isActive;
+    
+    return true;
+  }).sort((a, b) => {
+    let comparison = 0;
+    if (sortField === 'date') {
+      const timeA = a.createTime ? new Date(a.createTime).getTime() : 0;
+      const timeB = b.createTime ? new Date(b.createTime).getTime() : 0;
+      comparison = timeA - timeB;
+    } else if (sortField === 'status') {
+      comparison = (a.state || '').localeCompare(b.state || '');
+    } else {
+      comparison = (a.title || a.name).localeCompare(b.title || b.name);
+    }
+    return sortOrder === 'desc' ? -comparison : comparison;
   });
 
-  const toggleSelect = (id: string) => {
+  const isStale = (session: JulesSession) => {
+    if (!session.createTime) return false;
+    const created = new Date(session.createTime).getTime();
+    const now = Date.now();
+    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+    const isActive = session.state === 'RUNNING' || session.state === 'IN_PROGRESS' || session.state === 'PENDING' || session.state === 'AWAITING_USER_FEEDBACK' || session.state === 'AWAITING_PLAN_APPROVAL';
+    return !isActive && (now - created > threeDaysMs);
+  };
+
+  const toggleSelect = (id: string, event?: React.MouseEvent) => {
+    // Prevent selection if clicking a link or button
+    if (event) {
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'A' || target.tagName === 'BUTTON' || target.closest('a') || target.closest('button')) {
+        return;
+      }
+    }
+
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -234,21 +274,51 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
         </div>
       )}
 
-      <div className="mb-6 relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-        <input 
-          type="text"
-          placeholder="Search sessions by title, ID, or PR URL..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
-        />
-        {isEnriching && (
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[10px] text-purple-400 font-medium">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            Enriching PR info...
-          </div>
-        )}
+      <div className="flex flex-col md:flex-row gap-4 mb-6">
+        <div className="flex-1 relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+          <input 
+            type="text"
+            placeholder="Search sessions by title, ID, or PR URL..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+          />
+          {isEnriching && (
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[10px] text-purple-400 font-medium">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Enriching PR info...
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <select 
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+          >
+            <option value="ALL">All Statuses</option>
+            <option value="ACTIVE">Active Only</option>
+            <option value="ARCHIVED">Archived/Stale</option>
+          </select>
+
+          <select 
+            value={`${sortField}-${sortOrder}`}
+            onChange={(e) => {
+              const [field, order] = e.target.value.split('-');
+              setSortField(field as any);
+              setSortOrder(order as any);
+            }}
+            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+          >
+            <option value="date-desc">Newest First</option>
+            <option value="date-asc">Oldest First</option>
+            <option value="status-asc">Status (A-Z)</option>
+            <option value="status-desc">Status (Z-A)</option>
+            <option value="name-asc">Name (A-Z)</option>
+          </select>
+        </div>
       </div>
 
       <div className="bg-slate-900/50 border border-slate-700 rounded-2xl overflow-hidden">
@@ -285,17 +355,19 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                 {filteredSessions.map((session) => (
                   <tr 
                     key={session.name} 
+                    onClick={(e) => toggleSelect(session.name, e)}
                     className={clsx(
-                      "hover:bg-slate-800/30 transition-colors group",
-                      selectedIds.has(session.name) && "bg-purple-500/5"
+                      "hover:bg-slate-800/30 transition-colors group cursor-pointer",
+                      selectedIds.has(session.name) && "bg-purple-500/5",
+                      isStale(session) && "opacity-60 grayscale-[0.5]"
                     )}
                   >
                     <td className="p-4">
                       <input 
                         type="checkbox" 
-                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer"
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all"
                         checked={selectedIds.has(session.name)}
-                        onChange={() => toggleSelect(session.name)}
+                        readOnly
                       />
                     </td>
                     <td className="p-4">
@@ -344,9 +416,16 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                       {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown'}
                     </td>
                     <td className="p-4">
-                      <Badge variant={(session.state === 'IN_PROGRESS' || session.state === 'RUNNING') ? 'green' : 'gray'}>
-                        {session.state || 'UNKNOWN'}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={(session.state === 'IN_PROGRESS' || session.state === 'RUNNING') ? 'green' : 'gray'}>
+                          {session.state || 'UNKNOWN'}
+                        </Badge>
+                        {isStale(session) && (
+                          <span className="px-1.5 py-0.5 bg-slate-800 text-slate-500 rounded text-[8px] font-black uppercase tracking-widest border border-slate-700">
+                            Stale
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end gap-2">

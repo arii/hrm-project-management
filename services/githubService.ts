@@ -400,6 +400,44 @@ export const fetchReviewComments = async (repo: string, number: number, token: s
   return request<any[]>(`/repos/${repo}/pulls/${number}/comments`, token);
 };
 
+export const findPrPreviewUrl = async (repo: string, number: number, token: string): Promise<string | null> => {
+  try {
+    const comments = await fetchComments(repo, number, token);
+    const reviewComments = await fetchReviewComments(repo, number, token);
+    const allComments = [...comments, ...reviewComments].sort((a, b) => 
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    // Common patterns for deploy bot comments
+    const patterns = [
+      /https?:\/\/[^\s]+?\.vercel\.app/,
+      /https?:\/\/[^\s]+?\.netlify\.app/,
+      /https?:\/\/[^\s]+?\.cloudflare\.com/,
+      /https?:\/\/[^\s]+?\.github\.io/,
+      /https?:\/\/[^\s]+?\.amplifyapp\.com/,
+      /https?:\/\/[^\s]+?\.render\.com/,
+      /Deploy preview URL:\s*(https?:\/\/[^\s]+)/,
+      /Preview:\s*(https?:\/\/[^\s]+)/,
+      /Visit preview:\s*(https?:\/\/[^\s]+)/
+    ];
+
+    for (const comment of allComments) {
+      if (!comment.body) continue;
+      for (const pattern of patterns) {
+        const match = comment.body.match(pattern);
+        if (match) {
+          // If it's a regex with capture group, return that, otherwise return the whole match
+          return match[1] || match[0];
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    console.error("[GithubService] Failed to find preview URL:", e);
+    return null;
+  }
+};
+
 export const publishPullRequest = async (repo: string, token: string, number: number, nodeId?: string) => {
   if (!nodeId) {
      const pr = await fetchPrDetails(repo, number, token);

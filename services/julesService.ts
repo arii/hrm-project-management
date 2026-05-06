@@ -80,8 +80,18 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   try {
     data = JSON.parse(rawText);
   } catch (e) {
+    const preview = rawText.trim().substring(0, 200);
     console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
-    throw new Error(`Jules API returned invalid JSON (Status: ${response.status})`);
+    
+    if (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html')) {
+       throw new Error(`Jules API returned HTML instead of JSON (Status: ${response.status}). This often means a proxy or authentication error.`);
+    }
+    
+    if (rawText.trim().length === 0) {
+       throw new Error(`Jules API returned an empty response (Status: ${response.status})`);
+    }
+
+    throw new Error(`Jules API returned invalid JSON (Status: ${response.status}). Preview: ${preview}...`);
   }
 
   if (isGet) {
@@ -145,7 +155,7 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
     }
     nextToken = data.nextPageToken;
     pages++;
-  } while (nextToken && pages < 5);
+  } while (nextToken && pages < 10);
 
   return allSessions;
 };

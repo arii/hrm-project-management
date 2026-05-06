@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, Sparkles } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 import { ModelTier } from '../types';

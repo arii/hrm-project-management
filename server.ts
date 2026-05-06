@@ -70,14 +70,27 @@ async function startServer() {
         });
         clearTimeout(timeoutId);
 
-        console.log(`[Proxy] RECEIVED: ${response.status} from Jules in ${Date.now() - startTime}ms`);
+        const rawText = await response.text();
+        console.log(`[Proxy] RECEIVED: ${response.status} from Jules in ${Date.now() - startTime}ms. Body size: ${rawText.length}`);
 
-        if (response.status === 204) {
-          return res.status(204).send();
+        if (response.status === 204 || (!rawText && response.status === 200)) {
+          return res.status(response.status).send(response.status === 204 ? undefined : '{}');
         }
 
-        const data = await response.json().catch(() => ({}));
-        res.status(response.status).json(data);
+        try {
+          // Verify it's valid JSON before sending as application/json
+          if (rawText.trim()) {
+            JSON.parse(rawText);
+          }
+          res.status(response.status).set('Content-Type', 'application/json').send(rawText || '{}');
+        } catch (parseErr) {
+          console.warn(`[Proxy] Non-JSON response received from Jules (Status: ${response.status})`);
+          // Wrap non-JSON in a JSON object to avoid client-side parse errors
+          res.status(response.status).json({ 
+            rawResponse: rawText.substring(0, 1000), 
+            isNonJson: true 
+          });
+        }
       } catch (fetchErr: any) {
         clearTimeout(timeoutId);
         if (fetchErr.name === 'AbortError') {
