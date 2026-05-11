@@ -19,6 +19,7 @@ export const StorageKeys = {
   PR_REVIEWS: `${APP_PREFIX}pr_review_`, // Prefix for individual PR reviews
   ANALYSIS_PREFIX: `${APP_PREFIX}analysis_`, // For useGeminiAnalysis persistence
   CODE_REVIEW_STATE: `${APP_PREFIX}code_review_state`,
+  EXTRACTED_ISSUES: `${APP_PREFIX}extracted_issues_`, // Prefix for extracted issues per PR
 };
 
 export interface AppSettings {
@@ -29,6 +30,7 @@ export interface AppSettings {
   geminiApiKey: string;
   defaultModelTier: ModelTier;
   theme?: 'dark' | 'light';
+  autoSendToJules?: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -38,6 +40,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   julesSourceId: '',
   geminiApiKey: '',
   defaultModelTier: ModelTier.LITE,
+  autoSendToJules: false,
 };
 
 // Fallback values from environment, using safe access patterns
@@ -349,9 +352,40 @@ export const storage = {
     this.set(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, shas);
   },
 
+  saveExtractedIssues(repo: string, prNumber: number, issues: any[]): void {
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizedRepo}_${prNumber}`;
+    this.set(key, {
+      issues,
+      timestamp: Date.now()
+    });
+  },
+
+  getExtractedIssues(repo: string, prNumber: number): any[] {
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizedRepo}_${prNumber}`;
+    const data = this.getRaw(key, null as any);
+    return data?.issues || [];
+  },
+
   getReviewedShas(repo: string): Record<number, string> {
     const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
     return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, {});
+  },
+
+  saveWorkflowAudit(repo: string, audit: any): void {
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizedRepo}`;
+    this.set(key, {
+      ...audit,
+      timestamp: Date.now()
+    });
+  },
+
+  getWorkflowAudit(repo: string): any | null {
+    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizedRepo}`;
+    return this.getRaw(key, null);
   },
 
   getSettingsKey(): string {

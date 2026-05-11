@@ -84,6 +84,16 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     'pr_health_check_v4'
   );
 
+  useEffect(() => {
+    if (analysis.result && proposedActions.length === 0) {
+      setProposedActions(analysis.result.actions.map((a: any) => ({ 
+        ...a, 
+        _id: Math.random().toString(36).substr(2, 9), 
+        status: 'idle' 
+      })));
+    }
+  }, [analysis.result]);
+
   const loadPrs = async (silent = false, skipCache = false) => {
     if (!silent) setLoading(true);
     setError(null);

@@ -102,6 +102,14 @@ export const analyzeWorkflowBatch = async (
   
   const systemInstruction = `You are a DevOps Architect auditing GitHub Workflows for the repository "${repo}".
   Provide a comprehensive audit including a health score (0-100), a technical summary, and specific actionable findings.
+  
+  ### REPAIR DIRECTIVES (for remediation)
+  - DO NOT include diffs.
+  - Provide ONLY specific, actionable instructions to fix the issue.
+  - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+  - Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
+  - Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.
+
   Output MUST be valid JSON.`;
 
   const response = await withRetry(() => ai.models.generateContent({
@@ -239,7 +247,11 @@ Identify the EXACT cause of failure. Be surgical:
 ### 3. FIX RECOMMENDATIONS (actionable, specific)
 Provide concrete remediation steps. For each issue:
 - State the EXACT change needed in the workflow YAML or the application code.
-- Include a code snippet where applicable.
+- DO NOT include diffs.
+- Provide ONLY specific, actionable instructions to fix the issue.
+- Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+- Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
+- Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.
 - Categorize as: YAML_FIX | DEPENDENCY_FIX | CODE_FIX | ENVIRONMENT_FIX | INFRASTRUCTURE_FLAKE
 
 ### 4. ISSUE QUALITY
@@ -424,6 +436,13 @@ export const generateCodeReview = async (
     ### ANTI-AI-SLOP DIRECTIVES
     Flag: Verbose comments, over-engineering, duplicate patterns, and slop.
     Audit ratio: If additions > 100 lines, find 10+ lines to remove.
+
+    ### REPAIR DIRECTIVES (for suggestedIssues)
+    - DO NOT include diffs.
+    - Provide ONLY specific, actionable instructions to fix the issue.
+    - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+    - Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
+    - Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.
     
     ### MANDATORY SECTIONS
     1. ## ANTI-AI-SLOP
@@ -501,7 +520,14 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
     model,
     contents: `
       Extract follow-up issues from these comments: ${JSON.stringify(comments)}.
-      Each issue's 'body' MUST be a full implementation plan including any code suggestions mentioned in the comments.
+      
+      ### FOLLOW-UP ISSUE DIRECTIVES:
+      - Each issue's 'body' MUST be a full implementation specification including any code suggestions mentioned in the comments.
+      - DO NOT include diffs.
+      - Provide ONLY specific, actionable instructions to fix the issue.
+      - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+      - Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
+      - Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.
     `,
     config: {
       responseMimeType: 'application/json',
@@ -621,7 +647,15 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
   const model = getModelForTier(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
-    contents: `Extract tasks from this text: ${text}. Ensure bodies are comprehensive and contain all technical details and code found in the source.`,
+    contents: `Extract tasks from this text: ${text}. 
+    
+    ### TASK EXTRACTION DIRECTIVES:
+    - Ensure bodies are comprehensive and contain all technical details and code found in the source.
+    - DO NOT include diffs.
+    - Provide ONLY specific, actionable instructions to fix the issue.
+    - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+    - Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
+    - Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.`,
     config: {
       responseMimeType: 'application/json',
       thinkingConfig: getThinkingConfig(tier, { lowThinking: true }),

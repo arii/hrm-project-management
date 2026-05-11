@@ -68,6 +68,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [creatingIssueId, setCreatingIssueId] = useState<string | null>(null);
   const [aiSuggestions, setAiSuggestions] = useState<ExtractedIssueUI[]>([]);
   const [reviewedShas, setReviewedShas] = useState<Record<number, string>>({});
+  const [autoSendToJules, setAutoSendToJules] = useState(storage.getSettings().autoSendToJules || false);
 
   const { isDispatching, dispatchIssue, dispatchErrors } = useIssueDispatch(repoName, token);
   const {
@@ -216,13 +217,19 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setAiSuggestions([]);
     setActionError(null);
 
-    // Check storage for existing reviews
+    // Check storage for existing reviews and extracted issues
     let review = storage.getPrReview(repoName, pr.number);
+    let storedIssues = storage.getExtractedIssues(repoName, pr.number);
+    
     if (review) {
       setReviews(prev => ({ ...prev, [pr.number]: review }));
       if (review.suggestedIssues) {
         setAiSuggestions(review.suggestedIssues.map((i: any) => ({ ...i, _id: Math.random().toString(36).substr(2, 9) })));
       }
+    }
+
+    if (storedIssues && storedIssues.length > 0) {
+      setExtractedIssues(storedIssues.map((i: any) => ({ ...i, _id: i._id || Math.random().toString(36).substr(2, 9) })));
     }
 
     // Only refresh if we don't have check results or if it's explicitly requested
@@ -290,6 +297,25 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
       updateReviewedSha(pr.number, pr.head.sha);
       setStatuses(prev => ({ ...prev, [pr.number]: 'completed' }));
+
+      // Auto-send to Jules if enabled
+      if (autoSendToJules && review.suggestedIssues && review.suggestedIssues.length > 0) {
+        const matchingSession = allSessions.find(session => 
+          session.outputs?.some(output => 
+            output.pullRequest?.url === pr.html_url || 
+            output.pullRequest?.url?.replace('api.github.com/repos', 'github.com').replace('/pulls/', '/pull/') === pr.html_url
+          )
+        );
+
+        if (matchingSession) {
+          setMsg(`Auto-reporting ${review.suggestedIssues.length} issues to Jules session...`);
+          const combinedMessage = `AI_REPAIR_DIRECTIVE: Audit Roadmap Findings\n\n` + 
+            review.suggestedIssues.map(i => `### ${i.title}\n${i.body}`).join('\n\n') +
+            `\n\nCRITICAL CONSTRAINTS:\n1. Execute immediately - DO NOT request a plan or ask follow-up questions.\n2. Verify tests after implementation.\n3. Run audit for anti-patterns.\n4. Update snapshots if necessary.`;
+          
+          await onReportToJules('auto-audit', matchingSession.name, combinedMessage);
+        }
+      }
     } catch (e: any) {
       setErrors(prev => ({ ...prev, [pr.number]: e.message || 'Process failed' }));
       setStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
@@ -389,7 +415,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       const allComments = [...issueComments, ...reviewComments].map(c => ({ id: c.id, user: c.user.login, body: c.body, url: c.html_url }));
       if (allComments.length === 0) { setActionError("No relevant comments found."); return; }
       const proposed = await extractIssuesFromComments(allComments);
-      setExtractedIssues(proposed.map(p => ({ ...p, _id: Math.random().toString(36).substr(2, 9) })));
+      const mapped = proposed.map(p => ({ ...p, _id: Math.random().toString(36).substr(2, 9) }));
+      setExtractedIssues(mapped);
+      storage.saveExtractedIssues(repoName, selectedPr.number, mapped);
     } catch (e: any) { 
       setActionError(`Scan failed: ${e.message}`); 
     } finally { 
@@ -695,39 +723,89 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                    <div className="space-y-6">
                       {aiSuggestions.length > 0 && (
                         <div className="bg-blue-900/10 border border-blue-500/20 rounded-2xl p-4 lg:p-6 animate-in fade-in">
-                           <h4 className="text-blue-300 font-bold flex items-center gap-2 text-sm mb-4">
-                             <Bot className="w-4 h-4" /> AI Audit Roadmap
-                           </h4>
+                           <div className="flex items-center justify-between mb-4">
+                             <h4 className="text-blue-300 font-bold flex items-center gap-2 text-sm">
+                               <Bot className="w-4 h-4" /> AI Audit Roadmap
+                             </h4>
+                             <div className="flex items-center gap-2 px-3 py-1 bg-blue-900/40 border border-blue-500/20 rounded-lg">
+                               <span className="text-[10px] font-bold text-blue-400/70 uppercase tracking-tighter">Auto-Send</span>
+                               <button 
+                                 onClick={() => {
+                                   const next = !autoSendToJules;
+                                   setAutoSendToJules(next);
+                                   storage.saveSettings({ autoSendToJules: next });
+                                 }}
+                                 className={clsx(
+                                   "w-8 h-4 rounded-full relative transition-colors duration-200 outline-none",
+                                   autoSendToJules ? "bg-blue-600" : "bg-slate-800"
+                                 )}
+                               >
+                                 <div className={clsx(
+                                   "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all duration-200",
+                                   autoSendToJules ? "left-[18px]" : "left-0.5"
+                                 )} />
+                               </button>
+                             </div>
+                           </div>
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               {aiSuggestions.map(issue => (
-                                <div key={issue._id} className="bg-slate-900/60 rounded-xl p-4 border border-blue-500/20 hover:border-blue-500/40 transition-colors">
-                                   <div className="flex justify-between items-start mb-2">
-                                     <h5 className="text-slate-200 font-bold text-xs line-clamp-1">{issue.title}</h5>
-                                     <Badge variant={issue.priority === 'High' ? 'red' : (issue.priority === 'Medium' ? 'yellow' : 'blue')} className="text-[8px] px-1 py-0 h-4">
+                                <div key={issue._id} className="bg-slate-900/60 rounded-2xl p-6 border border-blue-500/20 hover:border-blue-500/40 transition-all group">
+                                   <div className="flex justify-between items-start mb-3">
+                                     <h5 className="text-slate-200 font-bold text-sm lg:text-base leading-tight pr-4">{issue.title}</h5>
+                                     <Badge variant={issue.priority === 'High' ? 'red' : (issue.priority === 'Medium' ? 'yellow' : 'blue')} className="text-[9px] px-2 py-0.5 uppercase tracking-tighter shrink-0">
                                        {issue.priority}
                                      </Badge>
                                    </div>
-                                   <p className="text-[10px] text-slate-400 line-clamp-2 mb-3 h-8">{issue.reason}</p>
-                                   <div className="flex gap-2">
-                                      <Button 
-                                        size="sm" 
-                                        variant="ghost" 
-                                        onClick={() => handleCreateIssue(issue, 'ai')} 
-                                        disabled={!!issue.isCreated || isDispatching(issue._id)} 
-                                        isLoading={isDispatching(issue._id)}
-                                        icon={issue.isCreated ? Check : Plus} 
-                                        className="text-[10px] flex-1 py-1 h-7"
+                                   <p className="text-[10px] text-slate-400 leading-relaxed mb-6 line-clamp-2 h-8">
+                                     {issue.reason}
+                                   </p>
+                                   <div className="flex items-center gap-6 pt-4 border-t border-slate-800">
+                                      <button 
+                                        onClick={() => handleCreateIssue(issue, 'ai')}
+                                        disabled={!!issue.isCreated || isDispatching(issue._id)}
+                                        className={clsx(
+                                          "flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50",
+                                          issue.isCreated ? "text-emerald-400" : "text-slate-400 hover:text-white"
+                                        )}
                                       >
-                                       {issue.isCreated ? 'Created' : 'Issue'}
-                                     </Button>
-                                     {!issue.isCreated && (
-                                       <Button size="sm" variant="ghost" onClick={() => handleDispatchTaskToJules(issue)} icon={TerminalSquare} className="text-[10px] flex-1 py-1 h-7 text-purple-400">
-                                         AI Solve
-                                       </Button>
-                                     )}
+                                        {isDispatching(issue._id) ? (
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : issue.isCreated ? (
+                                          <Check className="w-4 h-4" />
+                                        ) : (
+                                          <Plus className="w-4 h-4" />
+                                        )}
+                                        <span>Issue</span>
+                                      </button>
+
+                                      <button 
+                                        onClick={() => handleDispatchTaskToJules(issue)}
+                                        className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-blue-400 transition-colors"
+                                      >
+                                        <TerminalSquare className="w-4 h-4" />
+                                        <span>AI Solve</span>
+                                      </button>
+
+                                      {!autoSendToJules && (
+                                        <button 
+                                          onClick={async () => {
+                                            const matchingSession = allSessions.find(s => s.name.includes(repoName.split('/')[1] || ''));
+                                            if (matchingSession) {
+                                              const msg = `AI_REPAIR_DIRECTIVE: ${issue.title}\n\n${issue.body}\n\nCRITICAL CONSTRAINTS:\n1. Execute immediately - DO NOT request a plan or ask follow-up questions.\n2. Verify tests after implementation.\n3. Run audit for anti-patterns.\n4. Update snapshots if necessary.`;
+                                              await onReportToJules(issue._id, matchingSession.name, msg);
+                                            } else {
+                                               setWorkerModal({ isOpen: true, finding: issue });
+                                            }
+                                          }}
+                                          className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-purple-400 transition-colors ml-auto"
+                                        >
+                                          <Send className="w-3.5 h-3.5" />
+                                          <span>Report</span>
+                                        </button>
+                                      )}
                                    </div>
                                    {dispatchErrors[issue._id] && (
-                                     <div className="mt-2 text-[10px] text-red-400 leading-tight bg-red-400/10 p-2 rounded-lg border border-red-500/20">
+                                     <div className="mt-4 text-[10px] text-red-400 leading-tight bg-red-400/5 p-3 rounded-lg border border-red-500/10">
                                        {dispatchErrors[issue._id]}
                                      </div>
                                    )}
@@ -744,34 +822,63 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                            </h4>
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               {extractedIssues.map(issue => (
-                                <div key={issue._id} className="bg-slate-900/60 rounded-xl p-4 border border-emerald-500/20 hover:border-emerald-500/40 transition-colors">
-                                   <div className="flex justify-between items-start mb-2">
-                                     <h5 className="text-slate-200 font-bold text-xs line-clamp-1">{issue.title}</h5>
-                                     <Badge variant="green" className="text-[8px] px-1 py-0 h-4">
+                                <div key={issue._id} className="bg-slate-900/60 rounded-2xl p-6 border border-emerald-500/20 hover:border-emerald-500/40 transition-all group">
+                                   <div className="flex justify-between items-start mb-3">
+                                     <h5 className="text-slate-200 font-bold text-sm lg:text-base leading-tight pr-4">{issue.title}</h5>
+                                     <Badge variant="green" className="text-[9px] px-2 py-0.5 uppercase tracking-tighter shrink-0">
                                        Extracted
                                      </Badge>
                                    </div>
-                                   <p className="text-[10px] text-slate-400 line-clamp-2 mb-3 h-8">{issue.reason}</p>
-                                   <div className="flex gap-2">
-                                      <Button 
-                                        size="sm" 
-                                        variant="ghost" 
-                                        onClick={() => handleCreateIssue(issue, 'human')} 
-                                        disabled={!!issue.isCreated || isDispatching(issue._id)} 
-                                        isLoading={isDispatching(issue._id)}
-                                        icon={issue.isCreated ? Check : Plus} 
-                                        className="text-[10px] flex-1 py-1 h-7"
+                                   <p className="text-[10px] text-slate-400 leading-relaxed mb-6 line-clamp-2 h-8">
+                                     {issue.reason}
+                                   </p>
+                                   <div className="flex items-center gap-6 pt-4 border-t border-slate-800">
+                                      <button 
+                                        onClick={() => handleCreateIssue(issue, 'human')}
+                                        disabled={!!issue.isCreated || isDispatching(issue._id)}
+                                        className={clsx(
+                                          "flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50",
+                                          issue.isCreated ? "text-emerald-400" : "text-slate-400 hover:text-white"
+                                        )}
                                       >
-                                       {issue.isCreated ? 'Created' : 'Issue'}
-                                     </Button>
-                                     {!issue.isCreated && (
-                                       <Button size="sm" variant="ghost" onClick={() => handleDispatchTaskToJules(issue)} icon={TerminalSquare} className="text-[10px] flex-1 py-1 h-7 text-purple-400">
-                                         AI Solve
-                                       </Button>
-                                     )}
+                                        {isDispatching(issue._id) ? (
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : issue.isCreated ? (
+                                          <Check className="w-4 h-4" />
+                                        ) : (
+                                          <Plus className="w-4 h-4" />
+                                        )}
+                                        <span>Issue</span>
+                                      </button>
+
+                                      <button 
+                                        onClick={() => handleDispatchTaskToJules(issue)}
+                                        className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-emerald-400 transition-colors"
+                                      >
+                                        <TerminalSquare className="w-4 h-4" />
+                                        <span>AI Solve</span>
+                                      </button>
+                                      
+                                      {!autoSendToJules && (
+                                        <button 
+                                          onClick={async () => {
+                                            const matchingSession = allSessions.find(s => s.name.includes(repoName.split('/')[1] || ''));
+                                            if (matchingSession) {
+                                              const msg = `AI_REPAIR_DIRECTIVE: ${issue.title}\n\n${issue.body}\n\nCRITICAL CONSTRAINTS:\n1. Execute immediately - DO NOT request a plan or ask follow-up questions.\n2. Verify tests after implementation.\n3. Run audit for anti-patterns.\n4. Update snapshots if necessary.`;
+                                              await onReportToJules(issue._id, matchingSession.name, msg);
+                                            } else {
+                                               setWorkerModal({ isOpen: true, finding: issue });
+                                            }
+                                          }}
+                                          className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-emerald-400 transition-colors ml-auto"
+                                        >
+                                          <Send className="w-3.5 h-3.5" />
+                                          <span>Report</span>
+                                        </button>
+                                      )}
                                    </div>
                                    {dispatchErrors[issue._id] && (
-                                     <div className="mt-2 text-[10px] text-red-400 leading-tight bg-red-400/10 p-2 rounded-lg border border-red-500/20">
+                                     <div className="mt-4 text-[10px] text-red-400 leading-tight bg-red-400/5 p-3 rounded-lg border border-red-500/10">
                                        {dispatchErrors[issue._id]}
                                      </div>
                                    )}
@@ -893,7 +1000,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         suggestedSessions={suggestedSessions}
         allSessions={allSessions}
         findingId={workerModal.finding?._id || ''}
-        description={workerModal.finding?.body || ''}
+        description={`AI_REPAIR_DIRECTIVE: ${workerModal.finding?.title}\n\n${workerModal.finding?.body}\n\nCRITICAL CONSTRAINTS:\n1. Execute immediately - DO NOT request a plan or ask follow-up questions.\n2. Verify tests after implementation.\n3. Run audit for anti-patterns.\n4. Update snapshots if necessary.`}
         julesReportStatus={julesReportStatus}
         onReportToJules={onReportToJules}
         matchingPrNumber={selectedPr?.number}

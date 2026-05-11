@@ -1,9 +1,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { listSessions, deleteSession, enrichSessionsWithDetails, getSessionUrl } from '../services/julesService';
-import { JulesSession } from '../types';
-import { Trash2, RefreshCw, AlertCircle, CheckCircle2, Loader2, Search, ExternalLink, GitPullRequest, GitBranch } from 'lucide-react';
+import { listSessions, deleteSession, enrichSessionsWithDetails, getSessionUrl, sendMessage } from '../services/julesService';
+import { JulesSession, EnrichedPullRequest } from '../types';
+import { Trash2, RefreshCw, AlertCircle, CheckCircle2, Loader2, Search, ExternalLink, GitPullRequest, GitBranch, Shield, ShieldCheck, ShieldAlert, ShieldQuestion, Send, Check, Activity, Rocket, Zap } from 'lucide-react';
 import Button from '../components/ui/Button';
+import { storage } from '../services/storageService';
+import { enrichSinglePr } from '../services/githubService';
 import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -11,6 +13,25 @@ import ConfirmModal from '../components/ui/ConfirmModal';
 interface JulesManagementProps {
   julesApiKey: string;
 }
+
+const CiStatusBadge: React.FC<{ status?: string }> = ({ status }) => {
+  if (!status) return null;
+
+  const config = {
+    passed: { color: 'text-emerald-400', icon: ShieldCheck, label: 'Checks Passed' },
+    failed: { color: 'text-red-400', icon: ShieldAlert, label: 'Checks Failed' },
+    pending: { color: 'text-yellow-400', icon: Loader2, label: 'Checks Pending' },
+  }[status] || { color: 'text-slate-400', icon: ShieldQuestion, label: 'Checks Unknown' };
+
+  const Icon = config.icon;
+
+  return (
+    <div className={clsx("flex items-center gap-1.5 font-bold uppercase tracking-tighter text-[9px]", config.color)} title={config.label}>
+      <Icon className={clsx("w-3 h-3", status === 'pending' && "animate-spin")} />
+      <span>{config.label}</span>
+    </div>
+  );
+};
 
 const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const [sessions, setSessions] = useState<JulesSession[]>([]);
@@ -25,6 +46,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const [sortField, setSortField] = useState<'date' | 'status' | 'name'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'ARCHIVED'>('ALL');
+  const [ciStatuses, setCiStatuses] = useState<Record<string, { status: string, prNumber: number, url: string }>>({});
 
   // Modal State
   const [confirmModal, setConfirmModal] = useState<{
@@ -70,6 +92,9 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       try {
         const enriched = await enrichSessionsWithDetails(julesApiKey, sorted);
         setSessions(enriched);
+        
+        // After sessions are enriched with PR details, fetch CI status for found PRs
+        fetchCiStatusesForSessions(enriched);
       } catch (e) {
         console.warn("[JulesManagement] Enrichment failed:", e);
       } finally {
@@ -82,9 +107,77 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     }
   }, [julesApiKey]);
 
+  const fetchCiStatusesForSessions = async (sessionsList: JulesSession[]) => {
+    const ghToken = storage.getGithubToken();
+    if (!ghToken) return;
+
+    const prsToFetch: Array<{ sessionName: string, repo: string, number: number, url: string }> = [];
+
+    sessionsList.forEach(session => {
+      if (!session.outputs) return;
+      
+      const prs = session.outputs
+        .filter(o => o.pullRequest?.url)
+        .map(o => {
+          const url = o.pullRequest!.url;
+          const match = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+          return match ? { repo: match[1], number: parseInt(match[2], 10), url } : null;
+        })
+        .filter(p => p !== null) as Array<{ repo: string, number: number, url: string }>;
+
+      if (prs.length > 0) {
+        // Find highest numbered PR (suggested by user if multiple)
+        const highestPr = prs.reduce((prev, curr) => (curr.number > prev.number ? curr : prev), prs[0]);
+        prsToFetch.push({ sessionName: session.name, ...highestPr });
+      }
+    });
+
+    // Fetch CI statuses in parallel (limit to 3 at a time to be safe with rate limits)
+    const chunkSize = 3;
+    for (let i = 0; i < prsToFetch.length; i += chunkSize) {
+      const chunk = prsToFetch.slice(i, i + chunkSize);
+      await Promise.all(chunk.map(async (item) => {
+        try {
+          // We use enrichSinglePr but we need a minimal GithubPullRequest object
+          const prObj = {
+            number: item.number,
+            head: { sha: '' } // enrichSinglePr handles empty SHA by fetching details
+          } as any;
+          
+          const enriched = await enrichSinglePr(item.repo, prObj, ghToken);
+          setCiStatuses(prev => ({
+            ...prev,
+            [item.sessionName]: { 
+              status: enriched.testStatus, 
+              prNumber: item.number,
+              url: item.url
+            }
+          }));
+        } catch (e) {
+          console.warn(`[JulesManagement] Failed to fetch CI status for PR #${item.number} in repo ${item.repo}:`, e);
+        }
+      }));
+    }
+  };
+
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
+
+  const handleSendMessage = async (sessionName: string, text: string, successLabel: string) => {
+    setActionLoading(prev => ({ ...prev, [sessionName]: true }));
+    try {
+      await sendMessage(julesApiKey, sessionName, text);
+      showSuccess(`Successfully sent "${successLabel}" command to session.`);
+      loadSessions(true); // Background refresh
+    } catch (e: any) {
+      setError(`Failed to send message: ${e.message}`);
+    } finally {
+      setActionLoading(prev => ({ ...prev, [sessionName]: false }));
+    }
+  };
 
   const handleDeleteSession = (sessionName: string) => {
     setConfirmModal({
@@ -352,16 +445,18 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {filteredSessions.map((session) => (
-                  <tr 
-                    key={session.name} 
-                    onClick={(e) => toggleSelect(session.name, e)}
-                    className={clsx(
-                      "hover:bg-slate-800/30 transition-colors group cursor-pointer",
-                      selectedIds.has(session.name) && "bg-purple-500/5",
-                      isStale(session) && "opacity-60 grayscale-[0.5]"
-                    )}
-                  >
+                {filteredSessions.map((session) => {
+                  const sessionCi = ciStatuses[session.name];
+                  return (
+                    <tr 
+                      key={session.name} 
+                      onClick={(e) => toggleSelect(session.name, e)}
+                      className={clsx(
+                        "hover:bg-slate-800/30 transition-colors group cursor-pointer",
+                        selectedIds.has(session.name) && "bg-purple-500/5",
+                        isStale(session) && "opacity-60 grayscale-[0.5]"
+                      )}
+                    >
                     <td className="p-4">
                       <input 
                         type="checkbox" 
@@ -394,22 +489,28 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                           )}
                         </div>
                         
-                        {session.outputs?.map((out, idx) => out.pullRequest && (
-                          <div key={idx} className="mt-1.5 flex flex-col gap-1">
-                            <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-400 w-fit max-w-[300px]">
-                              <GitPullRequest className="w-3 h-3 shrink-0" />
-                              <span className="truncate font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
-                              <a 
-                                href={out.pullRequest.url} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="ml-1 hover:text-white transition-colors"
-                              >
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
+                        {session.outputs?.map((out, idx) => {
+                          const isDisplayPr = sessionCi && out.pullRequest?.url === sessionCi.url;
+                          return out.pullRequest && (
+                            <div key={idx} className="mt-1.5 flex flex-col gap-1">
+                              <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-400 w-fit max-w-[300px]">
+                                  <GitPullRequest className="w-3 h-3 shrink-0" />
+                                  <span className="truncate font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
+                                  <a 
+                                    href={out.pullRequest.url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="ml-1 hover:text-white transition-colors"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                </div>
+                                {isDisplayPr && <CiStatusBadge status={sessionCi.status} />}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </td>
                     <td className="p-4 text-sm text-slate-400">
@@ -430,6 +531,32 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button 
+                          onClick={() => handleSendMessage(session.name, "Please publish your changes.", "Publish")}
+                          disabled={actionLoading[session.name] || deletingIds.has(session.name)}
+                          className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all disabled:opacity-50"
+                          title="Publish Changes"
+                        >
+                          {actionLoading[session.name] ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Rocket className="w-4 h-4" />
+                          )}
+                        </button>
+                        {sessionCi?.status === 'failed' && (
+                          <button 
+                            onClick={() => handleSendMessage(session.name, "Please fix the CI errors in this pull request.", "Fix CI")}
+                            disabled={actionLoading[session.name] || deletingIds.has(session.name)}
+                            className="p-2 text-yellow-400 hover:bg-yellow-400/10 rounded-lg transition-all disabled:opacity-50"
+                            title="Fix CI Errors"
+                          >
+                            {actionLoading[session.name] ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Zap className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+                        <button 
                           onClick={() => handleDeleteSession(session.name)}
                           disabled={deletingIds.has(session.name) || isDeletingBulk}
                           className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all disabled:opacity-50"
@@ -444,7 +571,8 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>
