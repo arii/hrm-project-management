@@ -14,29 +14,27 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
-  // Jules API Proxy - handle base and sub-paths
-  app.all("/api/jules*", async (req, res) => {
+  // Jules API Proxy - mount at /api/jules
+  app.use("/api/jules", async (req, res) => {
     const startTime = Date.now();
     try {
-      // Get the relative path after /api/jules
-      // e.g. /api/jules/sessions/123 -> /sessions/123
-      // e.g. /api/jules -> /
-      let endpoint = req.path.replace(/^\/api\/jules/, '');
-      if (!endpoint || endpoint === '/') {
-        // If just /api/jules is hit, we don't have a target endpoint
+      // With app.use("/api/jules", ...), req.url contains the relative path after the mount point
+      // e.g. /api/jules/sessions/123?key=abc -> req.url is /sessions/123?key=abc
+      // e.g. /api/jules -> req.url is /
+      
+      let relativePath = req.url;
+      if (relativePath === '/' || !relativePath) {
         if (req.method === 'GET') {
           return res.json({ status: "Jules Proxy Active", available: true });
         }
         throw new Error("No Jules endpoint specified.");
       }
-      
-      // Remove leading slash for v1alpha concatenation
-      if (endpoint.startsWith('/')) {
-        endpoint = endpoint.substring(1);
-      }
 
-      const queryString = req.url.includes('?') ? '?' + req.url.split('?')[1] : '';
-      const julesUrl = `https://jules.googleapis.com/v1alpha/${endpoint}${queryString}`;
+      // Remove leading slash for v1alpha1 concatenation
+      const pathPart = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
+      
+      // We use v1alpha1 as it's the most common for these developer tool APIs
+      const julesUrl = `https://jules.googleapis.com/v1alpha1/${pathPart}`;
       
       const apiKey = req.headers['x-goog-api-key'] || req.query.key;
       
@@ -48,7 +46,7 @@ async function startServer() {
         headers['X-Goog-Api-Key'] = apiKey;
       }
 
-      console.log(`[Proxy] PREPARING: ${req.method} ${julesUrl}`);
+      console.log(`[Proxy] PREPARING [v1alpha1]: ${req.method} ${julesUrl}`);
 
       const fetchOptions: any = {
         method: req.method,

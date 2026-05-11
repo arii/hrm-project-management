@@ -38,6 +38,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
   }
 
   const fullUrl = `${JULES_API_BASE}/${endpoint}`;
+  console.log(`[JulesService] FETCHING: ${options.method || 'GET'} ${fullUrl}`);
   let response: Response;
   try {
     response = await fetch(fullUrl, {
