@@ -29,8 +29,9 @@ if (typeof window !== 'undefined') {
     host.includes('github.io') || 
     host.includes('pages.dev')
   ) {
-    console.log(`[JulesService] Detected static hosting platform (${host}). Bypassing local proxy, using direct Jules API.`);
-    useDirectJules = true;
+    // Let the edge network rewrite rule do the work; do not switch to direct fetching
+    console.log(`[JulesService] Detected static hosting platform (${host}). Utilizing native routing configurations.`);
+    useDirectJules = false; 
   }
 }
 

@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/jules/:path*",
+      "destination": "https://jules.googleapis.com/v1alpha/:path*"
+    },
+    {
+      "source": "/api/github/:path*",
+      "destination": "https://api.github.com/:path*"
+    }
+  ]
+}
