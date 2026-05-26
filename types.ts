@@ -89,8 +89,8 @@ export enum AnalysisStatus {
 }
 
 export enum ModelTier {
-  LITE = 'LITE', // gemini-3.1-flash-lite-preview (Cost Optimized, Minimal Thinking)
-  FLASH = 'FLASH', // gemini-3-flash-preview (Standard)
+  LITE = 'LITE', // gemini-3.1-flash-lite (Cheapest, Minimal Thinking)
+  FLASH = 'FLASH', // gemini-3.1-flash-lite (Cost Optimized Standard)
   PRO = 'PRO' // gemini-3.1-pro-preview (Thinking / Complex)
 }
 

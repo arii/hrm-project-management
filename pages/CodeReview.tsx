@@ -581,10 +581,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                 
                 return (
                   <div 
-                    key={pr.id}
+                    key={`pr-${pr.number}`}
                     className={clsx(
                       "group relative flex items-center gap-2 p-1 rounded-lg transition-all border",
-                      selectedPr?.id === pr.id ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
+                      selectedPr?.number === pr.number ? "bg-slate-800 border-blue-500/50" : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
                     )}
                   >
                     <div className="pl-2">
@@ -706,7 +706,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                       <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">Checks & Statuses</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                          {selectedPr.checkResults.map((check, idx) => (
-                           <a key={idx} href={check.url} target="_blank" rel="noopener noreferrer" className="p-2 bg-slate-950/50 border border-slate-800 rounded flex items-center justify-between group hover:border-slate-600 transition-all">
+                           <a key={`check-${check.name}-${idx}`} href={check.url} target="_blank" rel="noopener noreferrer" className="p-2 bg-slate-950/50 border border-slate-800 rounded flex items-center justify-between group hover:border-slate-600 transition-all">
                               <span className="text-[10px] text-slate-300 truncate font-medium">{check.name}</span>
                               {check.conclusion === 'success' ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : 
                                (check.conclusion === 'failure' || check.conclusion === 'timed_out' || check.conclusion === 'action_required') ? <XCircle className="w-3 h-3 text-red-500" /> :
@@ -748,8 +748,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                              </div>
                            </div>
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {aiSuggestions.map(issue => (
-                                <div key={issue._id} className="bg-slate-900/60 rounded-2xl p-6 border border-blue-500/20 hover:border-blue-500/40 transition-all group">
+                              {aiSuggestions.map((issue, idx) => (
+                                <div key={`ai-issue-${issue._id || idx}`} className="bg-slate-900/60 rounded-2xl p-6 border border-blue-500/20 hover:border-blue-500/40 transition-all group">
                                    <div className="flex justify-between items-start mb-3">
                                      <h5 className="text-slate-200 font-bold text-sm lg:text-base leading-tight pr-4">{issue.title}</h5>
                                      <Badge variant={issue.priority === 'High' ? 'red' : (issue.priority === 'Medium' ? 'yellow' : 'blue')} className="text-[9px] px-2 py-0.5 uppercase tracking-tighter shrink-0">
@@ -821,8 +821,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                              <FileSearch className="w-4 h-4" /> Issues Extracted from Comments
                            </h4>
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {extractedIssues.map(issue => (
-                                <div key={issue._id} className="bg-slate-900/60 rounded-2xl p-6 border border-emerald-500/20 hover:border-emerald-500/40 transition-all group">
+                              {extractedIssues.map((issue, idx) => (
+                                <div key={`ext-issue-${issue._id || idx}`} className="bg-slate-900/60 rounded-2xl p-6 border border-emerald-500/20 hover:border-emerald-500/40 transition-all group">
                                    <div className="flex justify-between items-start mb-3">
                                      <h5 className="text-slate-200 font-bold text-sm lg:text-base leading-tight pr-4">{issue.title}</h5>
                                      <Badge variant="green" className="text-[9px] px-2 py-0.5 uppercase tracking-tighter shrink-0">

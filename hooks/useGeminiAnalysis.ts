@@ -19,10 +19,12 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
     return null;
   });
 
-  // If we have an initial result, ensure status is COMPLETE
-  if (result && status === AnalysisStatus.IDLE) {
-    setStatus(AnalysisStatus.COMPLETE);
-  }
+  // Ensure status is COMPLETE if we have a result
+  useEffect(() => {
+    if (result && status === AnalysisStatus.IDLE) {
+      setStatus(AnalysisStatus.COMPLETE);
+    }
+  }, [result, status]);
 
   const run = useCallback(async (...args: any[]) => {
     setStatus(AnalysisStatus.LOADING);

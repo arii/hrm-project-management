@@ -34,7 +34,6 @@ import {
   Bot,
   Key,
   Layers,
-  ExternalLink as ExternalLinkIcon,
   FileText,
   PlusSquare,
   MinusSquare,
@@ -54,6 +53,22 @@ type PrActionUI = PrHealthAction & { _id: string; status: 'idle' | 'processing' 
 
 const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKey }) => {
   const navigate = useNavigate();
+  
+  // States used by analysis hook must be defined first
+  const [proposedActions, setProposedActions] = useState<PrActionUI[]>([]);
+
+  // Core Analysis Hook - Move to the top to ensure availability
+  const analysis = useGeminiAnalysis(
+    useCallback(async (inputPrs: EnrichedPullRequest[]) => {
+      const result = await analyzePullRequests(inputPrs);
+      if (result && Array.isArray(result.actions)) {
+        setProposedActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
+      }
+      return result;
+    }, []), 
+    'pr_health_check_v4'
+  );
+
   const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
@@ -70,29 +85,19 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [processingMessages, setProcessingMessages] = useState<Record<number, string>>({});
   const [errorMessages, setErrorMessages] = useState<Record<number, string>>({});
 
-  // Bulk State for GitHub Actions
-  const [proposedActions, setProposedActions] = useState<PrActionUI[]>([]);
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
 
-  const analysis = useGeminiAnalysis(
-    useCallback(async (inputPrs: EnrichedPullRequest[]) => {
-      const result = await analyzePullRequests(inputPrs);
-      setProposedActions(result.actions.map(a => ({ ...a, _id: Math.random().toString(36).substr(2, 9), status: 'idle' })));
-      return result;
-    }, []), 
-    'pr_health_check_v4'
-  );
-
+  // Initialize proposedActions from cached results if available
   useEffect(() => {
-    if (analysis.result && proposedActions.length === 0) {
-      setProposedActions(analysis.result.actions.map((a: any) => ({ 
+    if (analysis.result && Array.isArray(analysis.result.actions) && proposedActions.length === 0) {
+      setProposedActions(analysis.result.actions.map(a => ({ 
         ...a, 
         _id: Math.random().toString(36).substr(2, 9), 
         status: 'idle' 
       })));
     }
-  }, [analysis.result]);
+  }, [analysis.result, proposedActions.length, repoName]);
 
   const loadPrs = async (silent = false, skipCache = false) => {
     if (!silent) setLoading(true);
@@ -402,9 +407,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     setIsBulkProcessing(false);
   };
 
-  const filteredPrs = prs.filter(pr => 
-    pr.title.toLowerCase().includes(searchQuery.toLowerCase()) || pr.number.toString().includes(searchQuery)
-  );
+  const filteredPrs = prs.filter(pr => {
+    const titleMatch = pr.title?.toLowerCase().includes(searchQuery.toLowerCase()) || false;
+    const numberMatch = pr.number?.toString().includes(searchQuery) || false;
+    return titleMatch || numberMatch;
+  });
 
   if (!repoName || !token) {
     return (
@@ -458,7 +465,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-8 items-start">
         {/* LEFT: Audit Results & Recommendations */}
         <div className="xl:col-span-1 space-y-6">
-          <AnalysisCard title="Health Audit" description="AI risks & staleness check." status={analysis.status} result={analysis.result?.report || null} onAnalyze={() => analysis.run(prs)} repoName={repoName} disabled={loading || prs.length === 0} />
+          <AnalysisCard title="Health Audit" description="AI risks & staleness check." status={analysis.status} result={analysis.result?.report ? String(analysis.result.report) : null} onAnalyze={() => analysis.run(prs)} repoName={repoName} disabled={loading || prs.length === 0} />
           
           {proposedActions.length > 0 && (
             <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-xl animate-in fade-in slide-in-from-left-4">
@@ -478,7 +485,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                        <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
                              <span className="text-[10px] font-mono text-slate-500">#{action.prNumber}</span>
-                             <Badge variant="blue" className="text-[9px]">{action.action.toUpperCase()}</Badge>
+                             <Badge variant="blue" className="text-[9px]">{(action.action || 'recommendation').toUpperCase()}</Badge>
                           </div>
                           <div className="flex items-center gap-2">
                             {dispatchStatuses[action._id] === 'success' && sessionLinks[action._id] && (
@@ -600,7 +607,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                               }}
                               className="text-[10px] font-bold text-blue-400 hover:underline uppercase flex items-center gap-1"
                             >
-                              <ExternalLinkIcon className="w-3 h-3" /> Go to Session
+                              <ExternalLink className="w-3 h-3" /> Go to Session
                             </button>
                           )}
                        </div>

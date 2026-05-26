@@ -12,6 +12,7 @@ import { storage, AppSettings } from './services/storageService';
 import { setGeminiApiKey } from './services/geminiService';
 import { ErrorProvider } from './context/ErrorContext';
 import GlobalErrorPopup from './components/ui/GlobalErrorPopup';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const App: React.FC = () => {
   const [settings, setSettingsState] = useState<AppSettings>(() => {
@@ -62,8 +63,9 @@ const App: React.FC = () => {
 
   return (
     <ErrorProvider>
-      <HashRouter>
-        <Routes>
+      <ErrorBoundary>
+        <HashRouter>
+          <Routes>
           <Route path="/" element={
             <Layout 
               repoName={repoName} 
@@ -91,6 +93,7 @@ const App: React.FC = () => {
           </Route>
         </Routes>
       </HashRouter>
+      </ErrorBoundary>
       <GlobalErrorPopup />
     </ErrorProvider>
   );

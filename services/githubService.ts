@@ -1,8 +1,9 @@
 
 import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubWorkflowRun, GithubWorkflowJob, GithubAnnotation } from '../types';
 import { storage, StorageKeys } from './storageService';
+import { pruneDiff } from './aiUtils';
 
-const BASE_URL = 'https://api.github.com';
+const BASE_URL = '/api/github';
 const CACHE_DURATION = 15 * 60 * 1000;
 
 const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}, isText = false): Promise<T> => {
@@ -191,61 +192,6 @@ export const fetchPrDiff = async (repo: string, number: number, token: string, s
   }
 
   return pruned;
-};
-
-const IGNORED_FILES = [
-  'pnpm-lock.yaml',
-  'package-lock.json',
-  'yarn.lock',
-  'bun.lockb',
-  'composer.lock',
-  'Gemfile.lock',
-  'Cargo.lock',
-  'mix.lock',
-  'poetry.lock',
-];
-
-const IGNORED_EXTENSIONS = [
-  '.map',
-  '.min.js',
-  '.min.css',
-];
-
-/**
- * Removes sections from a git diff that belong to high-noise files (lockfiles, minified files, maps).
- */
-export const pruneDiff = (diff: string): string => {
-  if (!diff) return "";
-  
-  // Split the diff into file sections
-  // Each section starts with "diff --git"
-  const sections = diff.split(/^diff --git /m);
-  
-  if (sections.length <= 1) return diff;
-
-  const header = sections[0]; // Usually empty
-  const prunedSections = sections.slice(1).filter(section => {
-    const firstLine = section.split('\n')[0];
-    // First line looks like: a/package.json b/package.json
-    // We care about the target file (b/)
-    const pathMatch = firstLine.match(/b\/(.+?)(?:\s|$)/);
-    if (!pathMatch) return true;
-
-    const path = pathMatch[1].trim();
-    const fileName = path.split('/').pop()?.toLowerCase() || "";
-
-    const isIgnoredFile = IGNORED_FILES.some(f => f.toLowerCase() === fileName);
-    const isIgnoredExtension = IGNORED_EXTENSIONS.some(ext => path.toLowerCase().endsWith(ext));
-
-    // Also skip huge binary deletions/additions if present in textual form
-    if (section.includes('GIT binary patch') || section.includes('Binary files differ')) {
-      return false;
-    }
-
-    return !isIgnoredFile && !isIgnoredExtension;
-  });
-
-  return header + prunedSections.map(s => 'diff --git ' + s).join('');
 };
 
 export const fetchCheckRuns = async (repo: string, ref: string, token: string, skipCache = false) => {

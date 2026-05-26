@@ -14,39 +14,22 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
-  // Jules API Proxy - mount at /api/jules
-  app.use("/api/jules", async (req, res) => {
-    const startTime = Date.now();
+  // GitHub API Proxy
+  app.all("/api/github*", async (req, res) => {
     try {
-      // With app.use("/api/jules", ...), req.url contains the relative path after the mount point
-      // e.g. /api/jules/sessions/123?key=abc -> req.url is /sessions/123?key=abc
-      // e.g. /api/jules -> req.url is /
+      const endpoint = req.path.replace(/^\/api\/github/, '');
+      const githubUrl = `https://api.github.com${endpoint}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
       
-      let relativePath = req.url;
-      if (relativePath === '/' || !relativePath) {
-        if (req.method === 'GET') {
-          return res.json({ status: "Jules Proxy Active", available: true });
-        }
-        throw new Error("No Jules endpoint specified.");
-      }
-
-      // Remove leading slash for v1alpha1 concatenation
-      const pathPart = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-      
-      // We use v1alpha1 as it's the most common for these developer tool APIs
-      const julesUrl = `https://jules.googleapis.com/v1alpha1/${pathPart}`;
-      
-      const apiKey = req.headers['x-goog-api-key'] || req.query.key;
-      
+      const authHeader = req.headers['authorization'];
       const headers: any = {
-        'Content-Type': 'application/json',
+        'Accept': req.headers['accept'] || 'application/vnd.github.v3+json',
+        'User-Agent': 'RepoAuditor-AI-Proxy'
       };
       
-      if (apiKey) {
-        headers['X-Goog-Api-Key'] = apiKey;
-      }
+      if (authHeader) headers['Authorization'] = authHeader;
+      if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
 
-      console.log(`[Proxy] PREPARING [v1alpha1]: ${req.method} ${julesUrl}`);
+      console.log(`[GithubProxy] ${req.method} ${githubUrl}`);
 
       const fetchOptions: any = {
         method: req.method,
@@ -57,12 +40,82 @@ async function startServer() {
         fetchOptions.body = JSON.stringify(req.body);
       }
 
+      const response = await fetch(githubUrl, fetchOptions);
+      const data = await response.text();
+
+      res.status(response.status).set('Content-Type', response.headers.get('content-type') || 'application/json').send(data);
+    } catch (error: any) {
+      console.error(`[GithubProxy] Error:`, error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Jules API Proxy - handle base and sub-paths
+  app.all("/api/jules*", async (req, res) => {
+    const startTime = Date.now();
+    try {
+      // Get the relative path after /api/jules
+      // e.g. /api/jules/sessions/123 -> /sessions/123
+      // e.g. /api/jules -> /
+      let endpoint = req.path.replace(/^\/api\/jules/, '');
+      if (!endpoint || endpoint === '/') {
+        // If just /api/jules is hit, we don't have a target endpoint
+        if (req.method === 'GET') {
+          return res.json({ status: "Jules Proxy Active", available: true });
+        }
+        throw new Error("No Jules endpoint specified.");
+      }
+      
+      // Remove leading slash for v1alpha concatenation
+      endpoint = endpoint.startsWith('/') ? endpoint.substring(1) : endpoint;
+
+      const queryString = req.url.includes('?') ? '?' + req.url.split('?')[1] : '';
+      const julesUrl = `https://jules.googleapis.com/v1alpha/${endpoint}${queryString}`;
+      
+      const apiKey = req.headers['x-goog-api-key'] || req.headers['X-Goog-Api-Key'] || req.query.key;
+      
+      const headers: any = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+      
+      if (apiKey) {
+        headers['X-Goog-Api-Key'] = apiKey;
+      }
+
+      console.log(`[Proxy] Request: ${req.method} ${req.path} -> Targeting Jules: ${julesUrl}`);
+      console.log(`[Proxy] Headers:`, JSON.stringify({ ...headers, 'X-Goog-Api-Key': 'REDACTED' }));
+
+      try {
+        const fs = await import('fs/promises');
+        const logData = {
+          time: new Date().toISOString(),
+          method: req.method,
+          url: julesUrl,
+          body: req.body,
+        };
+        await fs.mkdir('logs', { recursive: true });
+        await fs.appendFile('logs/jules.log', JSON.stringify(logData) + '\n');
+      } catch (e) {}
+
+      const fetchOptions: any = {
+        method: req.method,
+        headers,
+      };
+
+      if (!['GET', 'HEAD'].includes(req.method)) {
+        const bodyValue = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+        fetchOptions.body = bodyValue;
+      }
+
       // Add a 60s timeout for the internal fetch to Jules
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       try {
-        console.log(`[Proxy] FETCHING from Jules: ${julesUrl}`);
+        console.log(`[Proxy] Target URL: ${julesUrl}`);
+        console.log(`[Proxy] Method: ${req.method}`);
+        
         const response = await fetch(julesUrl, {
           ...fetchOptions,
           signal: controller.signal
@@ -70,42 +123,50 @@ async function startServer() {
         clearTimeout(timeoutId);
 
         const rawText = await response.text();
-        console.log(`[Proxy] RESPONSE from Jules: ${response.status} ${response.statusText}. Length: ${rawText.length}`);
+        const ignoreError = req.headers['x-ignore-error'] === 'true' || req.headers['X-Ignore-Error'] === 'true';
 
-        if (response.status >= 400) {
-           console.error(`[Proxy] Jules API Error: ${response.status} ${rawText.substring(0, 500)}`);
+        if (!ignoreError) {
+          console.log(`[Proxy] Jules response [${response.status}]: Characters: ${rawText.length}`);
+
+          if (response.status >= 400) {
+            console.warn(`[Proxy] Jules error body: ${rawText || '(empty)'}`);
+            console.warn(`[Proxy] Original request body: ${JSON.stringify(req.body)}`);
+          }
         }
 
-        if (response.status === 204 || (!rawText && response.status === 200)) {
-          return res.status(response.status).send(response.status === 204 ? undefined : '{}');
+        // Forward status and headers
+        res.status(response.status);
+        
+        // Handle empty/no-content responses
+        if (response.status === 204 || (!rawText.trim() && response.status === 200)) {
+          return res.send(response.status === 204 ? undefined : '{}');
         }
 
         try {
-          // Verify it's valid JSON before sending as application/json
+          // If it's valid JSON, send it with the right content-type
           if (rawText.trim()) {
             JSON.parse(rawText);
+            res.set('Content-Type', 'application/json');
           }
-          res.status(response.status).set('Content-Type', 'application/json').send(rawText || '{}');
+          res.send(rawText);
         } catch (parseErr) {
-          console.warn(`[Proxy] Non-JSON response received from Jules (Status: ${response.status})`);
-          // Wrap non-JSON in a JSON object to avoid client-side parse errors
-          res.status(response.status).json({ 
-            rawResponse: rawText.substring(0, 1000), 
-            isNonJson: true 
-          });
+          console.warn(`[Proxy] Non-JSON or malformed JSON from Jules: ${rawText.substring(0, 100)}...`);
+          res.set('Content-Type', 'text/plain');
+          res.send(rawText);
         }
       } catch (fetchErr: any) {
         clearTimeout(timeoutId);
+        console.error(`[Proxy] Internal fetch error:`, fetchErr);
         if (fetchErr.name === 'AbortError') {
           throw new Error("Target API request timed out after 60s.");
         }
         throw fetchErr;
       }
     } catch (error: any) {
-      console.error(`[Proxy] FAIL in ${Date.now() - startTime}ms:`, error.message);
+      console.error(`[Proxy] Final catch block error:`, error.message);
       res.status(500).json({ 
         error: { 
-          message: error.message,
+          message: error.message || 'Unknown Proxy Error',
           code: 'PROXY_ERROR',
           duration: Date.now() - startTime
         } 
@@ -134,9 +195,13 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Jules Proxy active at http://localhost:${PORT}/api/jules`);
+    console.log(`[Server] Success: Application listening on port ${PORT}`);
+    console.log(`[Server] Jules Proxy active at /api/jules/`);
+    console.log(`[Server] Health check at /api/health`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("[Server] Critical failure during startup:", err);
+  process.exit(1);
+});

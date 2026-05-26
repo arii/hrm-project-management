@@ -1,9 +1,13 @@
 
 import { JulesSession, JulesSource } from '../types';
 import { storage, StorageKeys } from './storageService';
+import { withRetry } from './aiUtils';
 
 const JULES_API_BASE = '/api/jules';
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+
+// Common locations to try for Jules API
+const JULES_LOCATIONS = ['global', 'us-central1', 'us-east1', 'europe-west1'];
 
 const clearJulesCache = () => {
   for (let i = 0; i < localStorage.length; i++) {
@@ -15,95 +19,96 @@ const clearJulesCache = () => {
 };
 
 const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}, forceRefresh = false): Promise<T> => {
-  if (!apiKey || !apiKey.trim()) {
-    throw new Error("Jules API Key is missing. Please check your settings.");
-  }
-
-  const isGet = !options.method || options.method === 'GET';
-  const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
-
-  if (isGet && !forceRefresh) {
-    const cached = storage.get<T>(cacheKey);
-    if (cached) return cached;
-  }
-
-  const headers: HeadersInit = {
-    'X-Goog-Api-Key': apiKey.trim(),
-    ...options.headers,
-  };
-
-  if (!isGet && !headers['Content-Type']) {
-    // @ts-ignore
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const fullUrl = `${JULES_API_BASE}/${endpoint}`;
-  console.log(`[JulesService] FETCHING: ${options.method || 'GET'} ${fullUrl}`);
-  let response: Response;
-  try {
-    response = await fetch(fullUrl, {
-      ...options,
-      headers,
-    });
-  } catch (e: any) {
-    console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
-    if (e.message === 'Failed to fetch') {
-      throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
+  return await withRetry(async () => {
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error("Jules API Key is missing. Please check your settings.");
     }
-    throw e;
-  }
 
-  if (!response.ok) {
-    let errorMessage = `Jules API Error: ${response.status}`;
+    const isGet = !options.method || options.method === 'GET';
+    const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
+
+    if (isGet && !forceRefresh) {
+      const cached = storage.get<T>(cacheKey);
+      if (cached) return cached;
+    }
+
+    const headers: HeadersInit = {
+      'X-Goog-Api-Key': apiKey.trim(),
+      ...options.headers,
+    };
+
+    if (!isGet && !headers['Content-Type']) {
+      // @ts-ignore
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const fullUrl = `${JULES_API_BASE}/${endpoint}`;
+    let response: Response;
     try {
-      const text = await response.text();
-      try {
-        const errorBody = JSON.parse(text);
-        if (errorBody.error?.message) errorMessage = errorBody.error.message;
-      } catch (e) {
-        if (text.includes('<!DOCTYPE html>')) {
-          errorMessage = `Jules API returned HTML (Status: ${response.status}). Potential endpoint mismatch or network error.`;
-        } else if (text.trim().length > 0) {
-          errorMessage = `Jules API [${response.status}]: ${text.trim().substring(0, 150)}`;
-        }
+      response = await fetch(fullUrl, {
+        ...options,
+        headers,
+      });
+    } catch (e: any) {
+      console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      if (e.message === 'Failed to fetch') {
+        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
       }
-    } catch (e) {}
-    throw new Error(errorMessage);
-  }
-
-  if (response.status === 204) {
-    if (!isGet) clearJulesCache();
-    return {} as T;
-  }
-
-  const rawText = await response.text();
-  let data: T;
-  try {
-    data = JSON.parse(rawText);
-  } catch (e) {
-    const preview = rawText.trim().substring(0, 200);
-    console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
-    
-    if (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html')) {
-       throw new Error(`Jules API returned HTML instead of JSON (Status: ${response.status}). This often means a proxy or authentication error.`);
-    }
-    
-    if (rawText.trim().length === 0) {
-       throw new Error(`Jules API returned an empty response (Status: ${response.status})`);
+      throw e;
     }
 
-    throw new Error(`Jules API returned invalid JSON (Status: ${response.status}). Preview: ${preview}...`);
-  }
+    if (!response.ok) {
+      let errorMessage = `Jules API Error: ${response.status}`;
+      try {
+        const text = await response.text();
+        try {
+          const errorBody = JSON.parse(text);
+          if (errorBody.error?.message) errorMessage = errorBody.error.message;
+        } catch (e) {
+          if (text.includes('<!DOCTYPE html>')) {
+            errorMessage = `Jules API returned HTML (Status: ${response.status}). Potential endpoint mismatch or network error.`;
+          } else if (text.trim().length > 0) {
+            errorMessage = `Jules API [${response.status}]: ${text.trim().substring(0, 150)}`;
+          }
+        }
+      } catch (e) {}
+      throw new Error(errorMessage);
+    }
 
-  if (isGet) {
-    storage.setCached(cacheKey, data, CACHE_DURATION);
-  } else {
-    clearJulesCache();
-    // Also clear GitHub cache if we likely caused a PR update
-    storage.clearCaches(); 
-  }
+    if (response.status === 204) {
+      if (!isGet) clearJulesCache();
+      return {} as T;
+    }
 
-  return data;
+    const rawText = await response.text();
+    let data: T;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      const preview = rawText.trim().substring(0, 200);
+      console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
+      
+      if (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html')) {
+         throw new Error(`Jules API returned HTML instead of JSON (Status: ${response.status}). This often means a proxy or authentication error.`);
+      }
+      
+      if (rawText.trim().length === 0) {
+         throw new Error(`Jules API returned an empty response (Status: ${response.status})`);
+      }
+
+      throw new Error(`Jules API returned invalid JSON (Status: ${response.status}). Preview: ${preview}...`);
+    }
+
+    if (isGet) {
+      storage.setCached(cacheKey, data, CACHE_DURATION);
+    } else {
+      clearJulesCache();
+      // Also clear GitHub cache if we likely caused a PR update
+      storage.clearCaches(); 
+    }
+
+    return data;
+  }, 3, 1000, 'JulesService');
 };
 
 /**
@@ -121,33 +126,38 @@ export const getSessionUrl = (sessionNameOrId: string): string => {
 export const listSources = async (apiKey: string, filter?: string): Promise<JulesSource[]> => {
   const query = filter ? `?filter=${encodeURIComponent(filter)}` : '';
   
+  // Try root path first
   try {
-    const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey);
+    const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey, { headers: { 'X-Ignore-Error': 'true' } });
     if (data.sources && data.sources.length > 0) return data.sources;
-  } catch (e: any) {
-    console.warn(`[JulesService] Failed to list sources with standard path: ${e.message || e}`);
+  } catch (e: any) {}
+
+  // Systematically try parents
+  for (const location of JULES_LOCATIONS) {
+    const parents = [
+      `projects/-/locations/${location}`,
+      `locations/${location}`
+    ];
+
+    for (const parent of parents) {
+      try {
+        const data = await request<{ sources: JulesSource[] }>(`${parent}/sources${query}`, apiKey, { headers: { 'X-Ignore-Error': 'true' } });
+        if (data.sources && data.sources.length > 0) return data.sources;
+      } catch (e) {}
+    }
   }
 
-  try {
-    // Try global locations specifically
-    const data = await request<{ sources: JulesSource[] }>(`projects/-/locations/global/sources${query}`, apiKey);
-    if (data.sources) return data.sources;
-  } catch (e) {
-    // Silently continue to next fallback
-  }
-
-  try {
-    // Try wildcard path which is common for multi-project API keys
-    const data = await request<{ sources: JulesSource[] }>(`projects/-/locations/-/sources${query}`, apiKey);
-    return data.sources || [];
-  } catch (e: any) {
-    console.error(`[JulesService] All source listing paths failed. Last error: ${e.message || e}`);
-    return [];
-  }
+  console.error(`[JulesService] All source listing paths failed.`);
+  return [];
 };
 
 export const getSession = async (apiKey: string, sessionName: string, forceRefresh = false): Promise<JulesSession> => {
-  const endpoint = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
+  let endpoint = sessionName;
+  if (!sessionName.startsWith('projects/') && 
+      !sessionName.startsWith('sessions/') && 
+      !sessionName.startsWith('locations/')) {
+    endpoint = `sessions/${sessionName}`;
+  }
   return request<JulesSession>(endpoint, apiKey, {}, forceRefresh);
 };
 
@@ -156,15 +166,44 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
   let nextToken: string | undefined = undefined;
   let pages = 0;
   
-  do {
-    const query = nextToken ? `?pageToken=${nextToken}` : '';
-    const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(`sessions${query}`, apiKey, {}, forceRefresh);
-    if (data.sessions) {
-      allSessions = [...allSessions, ...data.sessions];
+  const parents: string[] = ['']; // root first
+  
+  for (const location of JULES_LOCATIONS) {
+    parents.push(`projects/-/locations/${location}`);
+    parents.push(`locations/${location}`);
+  }
+
+  for (const parent of parents) {
+    try {
+      nextToken = undefined;
+      pages = 0;
+      allSessions = [];
+      
+      const sessionPath = parent ? `${parent}/sessions` : 'sessions';
+      
+      do {
+        const query = (nextToken ? `?pageToken=${nextToken}` : '');
+        const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(
+          `${sessionPath}${query}`, 
+          apiKey, 
+          { headers: { 'X-Ignore-Error': 'true' } }, 
+          forceRefresh
+        );
+        
+        if (data.sessions) {
+          allSessions = [...allSessions, ...data.sessions];
+        }
+        nextToken = data.nextPageToken;
+        pages++;
+      } while (nextToken && pages < 10);
+
+      if (allSessions.length > 0) return allSessions;
+    } catch (e: any) {
+      if (!e.message.includes('404')) {
+        console.warn(`[JulesService] Failed to list sessions with parent "${parent}": ${e.message}`);
+      }
     }
-    nextToken = data.nextPageToken;
-    pages++;
-  } while (nextToken && pages < 10);
+  }
 
   return allSessions;
 };
@@ -197,7 +236,7 @@ export const createSession = async (
   apiKey: string, 
   prompt: string, 
   sourceId: string, 
-  branch: string, // Removed default to avoid assuming 'leader'
+  branch: string,
   title?: string
 ): Promise<JulesSession> => {
   if (!branch) {
@@ -205,50 +244,204 @@ export const createSession = async (
     throw new Error("Branch context is required to create a Jules session.");
   }
 
-  const payload: any = {
-    prompt,
-    sourceContext: {
-      source: sourceId,
-      githubRepoContext: { startingBranch: branch }
+  // Parse location and relative source ID
+  let location = 'global';
+  let relativeSourceId = sourceId;
+
+  const projLocMatch = sourceId.match(/projects\/[^/]+\/locations\/([^/]+)\/sources\/(.+)$/);
+  const locMatch = sourceId.match(/locations\/([^/]+)\/sources\/(.+)$/);
+  const srcMatch = sourceId.match(/^sources\/(.+)$/);
+
+  if (projLocMatch) {
+    location = projLocMatch[1];
+    relativeSourceId = projLocMatch[2];
+  } else if (locMatch) {
+    location = locMatch[1];
+    relativeSourceId = locMatch[2];
+  } else if (srcMatch) {
+    relativeSourceId = srcMatch[1];
+  } else if (sourceId.includes('/sources/')) {
+    const parts = sourceId.split('/sources/');
+    relativeSourceId = parts[1];
+    if (parts[0].includes('locations/')) {
+      const locParts = parts[0].split('locations/');
+      location = locParts[1].split('/')[0];
     }
-  };
-
-  if (title) payload.title = title;
-
-  console.log(`[JulesService] Creating session for source "${sourceId}" on branch "${branch}"...`);
-
-  try {
-    return await request<JulesSession>('sessions', apiKey, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  } catch (error: any) {
-    const errorString = error instanceof Error ? error.message : JSON.stringify(error);
-    console.error(`[JulesService] Session creation failed. Source: ${sourceId}, Branch: ${branch}, Error: ${errorString}`, error);
-    
-    // Standardize error message for "Source context not found" which is common if branch is wrong
-    if (errorString.includes("Source context not found")) {
-      throw new Error(`Jules could not find branch "${branch}" in source "${sourceId}". Please verify the branch exists and is pushed to GitHub.`);
-    }
-    
-    if (errorString.includes("Requested entity was not found")) {
-      throw new Error(`Jules could not find the source entity "${sourceId}". This usually means the repository hasn't been indexed by Jules or the mapping is incorrect. Please check the 'Jules Source ID' in settings.`);
-    }
-
-    throw error;
   }
+
+  relativeSourceId = relativeSourceId.startsWith('/') ? relativeSourceId.substring(1) : relativeSourceId;
+
+  // Generate candidates to try in priority order
+  interface SessionCandidate {
+    parent: string;
+    source: string;
+    description: string;
+  }
+
+  const candidates: SessionCandidate[] = [];
+
+  // 1. Try root sessions first (most standard and recommended for global setups)
+  // Candidate A: Root sessions with unmodified original sourceId (e.g. projects/-/locations/global/sources/...)
+  candidates.push({
+    parent: '',
+    source: sourceId,
+    description: `root with original source ID "${sourceId}"`
+  });
+
+  // Candidate B: Root sessions with "sources/..." relative path
+  candidates.push({
+    parent: '',
+    source: relativeSourceId.startsWith('sources/') ? relativeSourceId : `sources/${relativeSourceId}`,
+    description: `root with sources prefix "sources/${relativeSourceId}"`
+  });
+
+  // Candidate C: Root sessions with clean relative source ID
+  candidates.push({
+    parent: '',
+    source: relativeSourceId,
+    description: `root with clean relative source "${relativeSourceId}"`
+  });
+
+  // 2. Location-prefixed fallbacks (just in case certain environments require location-specific routing)
+  const targetLocations = [location, ...JULES_LOCATIONS.filter(l => l !== location)];
+
+  for (const loc of targetLocations) {
+    // A. locations/{loc} with locations-prefixed source
+    candidates.push({
+      parent: `locations/${loc}`,
+      source: `locations/${loc}/sources/${relativeSourceId}`,
+      description: `locations/${loc} with locations-prefixed source`
+    });
+
+    // B. locations/{loc} with original unmodified source
+    candidates.push({
+      parent: `locations/${loc}`,
+      source: sourceId,
+      description: `locations/${loc} with original source`
+    });
+
+    // C. projects/-/locations/{loc} with locations-prefixed source
+    candidates.push({
+      parent: `projects/-/locations/${loc}`,
+      source: `projects/-/locations/${loc}/sources/${relativeSourceId}`,
+      description: `projects/-/locations/${loc} with projects-prefixed source`
+    });
+
+    // D. projects/-/locations/{loc} with original unmodified source
+    candidates.push({
+      parent: `projects/-/locations/${loc}`,
+      source: sourceId,
+      description: `projects/-/locations/${loc} with original source`
+    });
+  }
+
+  console.log(`[JulesService] Prepared ${candidates.length} session creation candidate(s) for relative ID "${relativeSourceId}"`);
+
+  let lastError: any = null;
+
+  for (const candidate of candidates) {
+    const endpoint = candidate.parent ? `${candidate.parent}/sessions` : 'sessions';
+    const payload: any = {
+      sourceContext: {
+        source: candidate.source,
+        githubRepoContext: { 
+          startingBranch: branch 
+        }
+      },
+      prompt: prompt
+    };
+
+    if (title) payload.title = title;
+
+    console.log(`[JulesService] Attempting session creation with candidate: ${candidate.description}`);
+
+    try {
+      return await request<JulesSession>(endpoint, apiKey, {
+        method: 'POST',
+        headers: { 'X-Ignore-Error': 'true' },
+        body: JSON.stringify(payload)
+      });
+    } catch (error: any) {
+      lastError = error;
+      const errorString = error instanceof Error ? error.message : JSON.stringify(error);
+      
+      if (errorString.includes("Precondition check failed")) {
+         throw new Error(`Jules Precondition Error: Likely branch "${branch}" is not found or not synced yet in source.`);
+      }
+
+      console.warn(`[JulesService] Creation rejected for candidate ${candidate.description}: ${errorString}`);
+    }
+  }
+
+  const finalErrorString = lastError instanceof Error ? lastError.message : JSON.stringify(lastError);
+  console.error(`[JulesService] All session creation candidates failed. Last error: ${finalErrorString}`);
+  throw lastError || new Error("Failed to create session: All endpoints and prefixes rejected.");
 };
 
 export const sendMessage = async (apiKey: string, sessionName: string, text: string): Promise<any> => {
-  const endpoint = sessionName.startsWith('sessions/') ? `${sessionName}:sendMessage` : `sessions/${sessionName}:sendMessage`;
-  return request(endpoint, apiKey, {
-    method: 'POST',
-    body: JSON.stringify({ prompt: text })
-  });
+  let endpoint = `${sessionName}:sendMessage`;
+  if (!sessionName.startsWith('projects/') && 
+      !sessionName.startsWith('sessions/') && 
+      !sessionName.startsWith('locations/')) {
+    endpoint = `sessions/${sessionName}:sendMessage`;
+  }
+  
+  // Try various payload formats since v1alpha can be inconsistent
+  const payloads = [
+    { message: { text } },
+    { message: text },
+    { message: { parts: [{ text }] } },
+    { message: { content: { parts: [{ text }] } } },
+    { prompt: text },
+    { query: text },
+    { queryText: text },
+    { userInput: text },
+    { userInput: { text } },
+    { request: text },
+    { request: { text } },
+    { contents: [{ parts: [{ text }] }] },
+    { content: { parts: [{ text }] } },
+    { contents: [{ role: 'user', parts: [{ text }] }] },
+    { content: { role: 'user', parts: [{ text }] } },
+    { text },
+    { input: { text } },
+    { input: text }
+  ];
+
+  let lastError: any = null;
+
+  for (const payload of payloads) {
+    try {
+      console.log(`[JulesService] Attempting sendMessage with payload key: ${Object.keys(payload)[0]}`);
+      return await request(endpoint, apiKey, {
+        method: 'POST',
+        headers: { 'X-Ignore-Error': 'true' },
+        body: JSON.stringify(payload)
+      });
+    } catch (e: any) {
+      lastError = e;
+      const errorMsg = e.message.toLowerCase();
+      // If error is not "Unknown name" or "Invalid JSON payload", it's probably a real 404, auth error, or quota
+      if (!errorMsg.includes('unknown name') && 
+          !errorMsg.includes('invalid json payload') && 
+          !errorMsg.includes('field not found') &&
+          !errorMsg.includes('invalid argument')) {
+        throw e;
+      }
+      console.warn(`[JulesService] sendMessage rejected payload ${Object.keys(payload)[0]}: ${e.message.substring(0, 200)}`);
+    }
+  }
+  
+  throw lastError || new Error("Failed to send message: All payload formats rejected.");
 };
 
 export const deleteSession = async (apiKey: string, sessionName: string): Promise<void> => {
-  const endpoint = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
+  let endpoint = sessionName;
+  if (!sessionName.startsWith('projects/') && 
+      !sessionName.startsWith('sessions/') && 
+      !sessionName.startsWith('locations/')) {
+    endpoint = `sessions/${sessionName}`;
+  }
   await request<void>(endpoint, apiKey, { method: 'DELETE' });
   // Invalidate sessions list cache to ensure refresh on next load
   storage.remove(`${StorageKeys.JULES_CACHE}_sessions`);

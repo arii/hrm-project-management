@@ -2,13 +2,7 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis, ModelTier } from '../types';
 import { storage } from './storageService';
-
-/**
- * Clean a string that might contain Markdown JSON code blocks
- */
-const cleanJsonString = (str: string): string => {
-  return str.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-};
+import { cleanJsonString, withRetry } from './aiUtils';
 
 let globalGeminiApiKey: string | null = null;
 
@@ -24,29 +18,6 @@ const getClient = () => {
   }
   return new GoogleGenAI({ apiKey });
 };
-
-/**
- * Retry helper for transient Google API errors (503 UNAVAILABLE)
- */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i <= maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (e: any) {
-      lastError = e;
-      // 503 is service unavailable, often transient
-      // 429 is rate limit (quota)
-      const isTransient = e.message?.includes('503') || e.message?.includes('UNAVAILABLE') || e.message?.includes('429');
-      if (!isTransient || i === maxRetries) throw e;
-      
-      const delay = initialDelay * Math.pow(2, i);
-      console.warn(`[GeminiService] Transient error (attempt ${i + 1}/${maxRetries + 1}): ${e.message}. Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
-}
 
 /**
  * Ensures the user has selected a Pro API key if using a Pro model.
@@ -65,12 +36,12 @@ const ensureProApiKey = async () => {
 };
 
 const PRO_MODEL = 'gemini-3.1-pro-preview';
-const FLASH_MODEL = 'gemini-3-flash-preview';
+const FLASH_MODEL = 'gemini-3.1-flash-lite';
 
 const MODELS = {
-  [ModelTier.LITE]: 'gemini-3.1-flash-lite-preview', // Cost-optimized, no thinking
-  [ModelTier.FLASH]: FLASH_MODEL, // Balanced
-  [ModelTier.PRO]: PRO_MODEL, // Thinking, Complex tasks
+  [ModelTier.LITE]: 'gemini-3.1-flash-lite', 
+  [ModelTier.FLASH]: FLASH_MODEL,
+  [ModelTier.PRO]: PRO_MODEL,
 };
 
 const getModelForTier = (tier?: ModelTier): string => {
@@ -153,7 +124,7 @@ export const analyzeWorkflowBatch = async (
         required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService');
 
   return JSON.parse(cleanJsonString(response.text || '{}'));
 };
@@ -299,7 +270,7 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
         required: ['healthScore', 'summary', 'technicalFindings', 'qualitativeAnalysis']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService');
 
   const text = response.text || "{}";
   try {
@@ -372,7 +343,7 @@ export const analyzeWorkflowQualitative = async (
         required: ['summary', 'efficacyScore', 'efficiencyScore', 'findings']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService');
 
   const text = response.text || "{}";
   try {
@@ -402,14 +373,21 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
         required: ['report', 'actions']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService');
   
-  const text = response.text || "{}";
+  const responseText = response.text || "{}";
   try {
-    return JSON.parse(cleanJsonString(text));
+    const data = JSON.parse(cleanJsonString(responseText));
+    return {
+      report: data.report || "",
+      actions: data.actions || []
+    };
   } catch (e) {
-    console.error("[GeminiService] Failed to parse PR analysis JSON:", text);
-    throw new Error("AI returned an invalid format for PR health analysis.");
+    console.error("[GeminiService] Failed to parse PR analysis JSON:", responseText);
+    return {
+      report: "Analysis failed due to format error.",
+      actions: []
+    };
   }
 };
 
@@ -500,7 +478,7 @@ export const generateCodeReview = async (
     });
 
     return JSON.parse(cleanJsonString(response.text || '{}'));
-  });
+  }, 3, 1000, 'GeminiService-Review');
 
   try {
     return await Promise.race([generatePromise, timeoutPromise]);
@@ -548,7 +526,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
         }
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService-Comments');
   
   const text = response.text || "[]";
   try {
@@ -581,7 +559,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
         required: ['plan', 'title']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService-Restart');
 
   const text = response.text || "{}";
   try {
@@ -629,7 +607,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
         required: ['syncIssues']
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService-Sync');
 
   const text = response.text || "{}";
   try {
@@ -674,7 +652,7 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
         }
       }
     }
-  }));
+  }), 3, 1000, 'GeminiService-TaskExtract');
   
   const responseText = response.text || "[]";
   try {
