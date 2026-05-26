@@ -17,12 +17,13 @@ export function useManualAudit(token: string) {
   const [isManualLoading, setIsManualLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
 
-  const handleManualAudit = useCallback(async (onSuccess: (run: GithubWorkflowRun, result: WorkflowAnalysis, jobs: GithubWorkflowJob[]) => void) => {
-    if (!manualUrl.trim() || !token) return;
+  const handleManualAudit = useCallback(async (onSuccess: (run: GithubWorkflowRun, result: WorkflowAnalysis, jobs: GithubWorkflowJob[]) => void, overrideUrl?: string) => {
+    const urlToUse = overrideUrl || manualUrl;
+    if (!urlToUse.trim() || !token) return;
     setManualError(null);
     setManualPreview(null);
     
-    const match = manualUrl.match(/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)/);
+    const match = urlToUse.match(/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)/);
     if (!match) {
       setManualError("Invalid URL format. Expected: github.com/owner/repo/actions/runs/ID");
       return;

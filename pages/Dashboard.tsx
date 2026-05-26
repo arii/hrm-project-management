@@ -62,15 +62,28 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
         <div className="inline-flex items-center justify-center p-3 bg-slate-800 rounded-2xl mb-6 border border-slate-700 shadow-xl">
           <Github className="w-10 h-10 text-white" />
         </div>
-        <h1 className="text-4xl font-bold text-white mb-4 tracking-tight">RepoAuditor</h1>
+        <h1 className="text-4xl font-bold text-white mb-4 tracking-tight">RepoAuditor AI</h1>
         <p className="text-xl text-slate-400 max-w-2xl mx-auto">
           A focused toolkit for maintaining high-quality repositories. 
           No background noise, just the tools you need.
         </p>
-        {repoName && (
+        {repoName ? (
           <div className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-full text-slate-300 text-sm font-mono">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
             {repoName}
+          </div>
+        ) : (
+          <div className="mt-8 bg-indigo-900/20 border border-indigo-500/30 rounded-2xl p-8 max-w-lg mx-auto">
+            <h2 className="text-xl font-bold text-white mb-2">New here?</h2>
+            <p className="text-slate-300 mb-6">
+              To get started, you need to configure your repository and API credentials in settings.
+            </p>
+            <Link 
+              to="/user-guide" 
+              className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition"
+            >
+              Read the User Guide
+            </Link>
           </div>
         )}
       </div>
@@ -95,7 +108,7 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
             </p>
             
             <div className="mt-8 flex items-center text-sm font-medium text-slate-500 group-hover:text-white transition-colors">
-              Launch Tool
+              Open Workflow
             </div>
           </Link>
         ))}
@@ -103,7 +116,7 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
 
       <div className="mt-20 pt-12 border-top border-slate-800 text-center">
         <p className="text-slate-500 text-sm">
-          RepoAuditor v2.0 • Focused on Minimalism & Performance
+          RepoAuditor AI v2.0 • Focused on Minimalism & Performance
         </p>
       </div>
     </div>

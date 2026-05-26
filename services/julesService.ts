@@ -242,7 +242,7 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
  */
 export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesSession[]): Promise<JulesSession[]> => {
   // Fetch details for the top N most recent sessions to avoid hitting limits or being too slow
-  const limit = 15;
+  const limit = 3;
   const recent = sessions.slice(0, limit);
   
   const enriched = await Promise.all(

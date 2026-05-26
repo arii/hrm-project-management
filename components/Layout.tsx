@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, Sparkles } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, BookOpen } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 import { ModelTier } from '../types';
@@ -46,6 +46,7 @@ const Layout: React.FC<LayoutProps> = ({
     { path: '/workflow-health', label: 'Workflow Health', icon: Activity },
     { path: '/batch-create', label: 'Issue Builder', icon: Upload },
     { path: '/jules-management', label: 'Agent Handoff', icon: Terminal },
+    { path: '/user-guide', label: 'User Guide', icon: BookOpen },
   ];
 
   const SidebarContent = () => (
