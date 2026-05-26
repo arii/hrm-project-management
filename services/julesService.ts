@@ -18,8 +18,24 @@ const clearJulesCache = () => {
   }
 };
 
+let useDirectJules = false;
+
+// Auto-detect environments where we know the local proxy is physically not there
+if (typeof window !== 'undefined') {
+  const host = window.location.hostname;
+  if (
+    host.includes('vercel.app') || 
+    host.includes('netlify.app') || 
+    host.includes('github.io') || 
+    host.includes('pages.dev')
+  ) {
+    console.log(`[JulesService] Detected static hosting platform (${host}). Bypassing local proxy, using direct Jules API.`);
+    useDirectJules = true;
+  }
+}
+
 const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}, forceRefresh = false): Promise<T> => {
-  return await withRetry(async () => {
+  const runRequest = async (): Promise<T> => {
     if (!apiKey || !apiKey.trim()) {
       throw new Error("Jules API Key is missing. Please check your settings.");
     }
@@ -42,7 +58,10 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       headers['Content-Type'] = 'application/json';
     }
 
-    const fullUrl = `${JULES_API_BASE}/${endpoint}`;
+    const fullUrl = useDirectJules 
+      ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
+      : `${JULES_API_BASE}/${endpoint}`;
+
     let response: Response;
     try {
       response = await fetch(fullUrl, {
@@ -51,36 +70,44 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       });
     } catch (e: any) {
       console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      if (!useDirectJules) {
+        console.warn(`[JulesService] Proxy path failed. Switching to direct Jules API routing...`);
+        useDirectJules = true;
+        return runRequest();
+      }
       if (e.message === 'Failed to fetch') {
         throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
       }
       throw e;
     }
 
+    const rawText = await response.text();
+
+    // Check if we got HTML on a proxy request
+    if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html') || response.status === 404)) {
+      console.warn(`[JulesService] Proxy endpoint returned HTML/404. Switching to direct Jules API routing...`);
+      useDirectJules = true;
+      return runRequest();
+    }
+
     if (!response.ok) {
       let errorMessage = `Jules API Error: ${response.status}`;
       try {
-        const text = await response.text();
-        try {
-          const errorBody = JSON.parse(text);
-          if (errorBody.error?.message) errorMessage = errorBody.error.message;
-        } catch (e) {
-          if (text.includes('<!DOCTYPE html>')) {
-            errorMessage = `Jules API returned HTML (Status: ${response.status}). Potential endpoint mismatch or network error.`;
-          } else if (text.trim().length > 0) {
-            errorMessage = `Jules API [${response.status}]: ${text.trim().substring(0, 150)}`;
-          }
+        const errorBody = JSON.parse(rawText);
+        if (errorBody.error?.message) errorMessage = errorBody.error.message;
+      } catch (e) {
+        if (rawText.trim().length > 0) {
+          errorMessage = `Jules API [${response.status}]: ${rawText.trim().substring(0, 150)}`;
         }
-      } catch (e) {}
+      }
       throw new Error(errorMessage);
     }
 
-    if (response.status === 204) {
+    if (response.status === 204 || (!rawText.trim() && response.status === 200)) {
       if (!isGet) clearJulesCache();
       return {} as T;
     }
 
-    const rawText = await response.text();
     let data: T;
     try {
       data = JSON.parse(rawText);
@@ -88,12 +115,10 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       const preview = rawText.trim().substring(0, 200);
       console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
       
-      if (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html')) {
-         throw new Error(`Jules API returned HTML instead of JSON (Status: ${response.status}). This often means a proxy or authentication error.`);
-      }
-      
-      if (rawText.trim().length === 0) {
-         throw new Error(`Jules API returned an empty response (Status: ${response.status})`);
+      if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html'))) {
+         console.warn(`[JulesService] Invalid JSON (HTML) from proxy. Retrying with direct Jules API routing...`);
+         useDirectJules = true;
+         return runRequest();
       }
 
       throw new Error(`Jules API returned invalid JSON (Status: ${response.status}). Preview: ${preview}...`);
@@ -103,12 +128,13 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       storage.setCached(cacheKey, data, CACHE_DURATION);
     } else {
       clearJulesCache();
-      // Also clear GitHub cache if we likely caused a PR update
       storage.clearCaches(); 
     }
 
     return data;
-  }, 3, 1000, 'JulesService');
+  };
+
+  return await withRetry(runRequest, 3, 1000, 'JulesService');
 };
 
 /**
