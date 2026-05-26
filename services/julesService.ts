@@ -62,6 +62,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
       : `${JULES_API_BASE}/${endpoint}`;
 
+    console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     let response: Response;
     try {
       response = await fetch(fullUrl, {
@@ -71,7 +72,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
     } catch (e: any) {
       console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
       if (!useDirectJules) {
-        console.warn(`[JulesService] Proxy path failed. Switching to direct Jules API routing...`);
+        console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
         useDirectJules = true;
         return runRequest();
       }
@@ -85,7 +86,7 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
 
     // Check if we got HTML on a proxy request
     if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html') || response.status === 404)) {
-      console.warn(`[JulesService] Proxy endpoint returned HTML/404. Switching to direct Jules API routing...`);
+      console.warn(`[JulesService] Proxy endpoint ${fullUrl} returned HTML/404. Switching to direct Jules API routing...`);
       useDirectJules = true;
       return runRequest();
     }
