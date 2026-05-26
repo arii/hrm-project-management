@@ -42,10 +42,10 @@ const Layout: React.FC<LayoutProps> = ({
   const navItems = [
     { path: '/', label: 'Overview', icon: LayoutDashboard },
     { path: '/pull-requests', label: 'Pull Requests', icon: GitPullRequest },
-    { path: '/code-review', label: 'Code Review', icon: Eye },
-    { path: '/workflow-health', label: 'Workflow Pulse', icon: Activity },
-    { path: '/batch-create', label: 'Batch Creator', icon: Upload },
-    { path: '/jules-management', label: 'Jules Sessions', icon: Terminal },
+    { path: '/code-review', label: 'AI Review', icon: Eye },
+    { path: '/workflow-health', label: 'Workflow Health', icon: Activity },
+    { path: '/batch-create', label: 'Issue Builder', icon: Upload },
+    { path: '/jules-management', label: 'Agent Handoff', icon: Terminal },
   ];
 
   const SidebarContent = () => (
@@ -54,9 +54,9 @@ const Layout: React.FC<LayoutProps> = ({
         <div>
           <div className="flex items-center gap-2 text-primary mb-1">
             <GitMerge className="w-6 h-6" />
-            <span className="font-bold text-xl tracking-tight text-white">RepoAuditor</span>
+            <span className="font-bold text-xl tracking-tight text-white">RepoAuditor AI</span>
           </div>
-          <p className="text-xs text-slate-500 font-medium tracking-wider uppercase">AI-POWERED</p>
+          <p className="text-xs text-slate-500 font-medium tracking-wider uppercase">DevAI workflow console</p>
         </div>
         <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden text-slate-400">
           <X className="w-6 h-6" />

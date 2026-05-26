@@ -35,31 +35,63 @@ const ensureProApiKey = async () => {
   }
 };
 
-const PRO_MODEL = 'gemini-3.1-pro-preview';
-const FLASH_MODEL = 'gemini-3.1-flash-lite';
+const PRO_MODEL = 'gemini-2.5-pro';
+const FLASH_MODEL = 'gemini-2.5-flash';
 
 const MODELS = {
-  [ModelTier.LITE]: 'gemini-3.1-flash-lite', 
+  [ModelTier.LITE]: 'gemini-2.5-flash', 
   [ModelTier.FLASH]: FLASH_MODEL,
   [ModelTier.PRO]: PRO_MODEL,
 };
 
-const getModelForTier = (tier?: ModelTier): string => {
-  const selectedTier = tier || storage.getModelTier();
-  return MODELS[selectedTier] || MODELS[ModelTier.FLASH];
+/**
+ * Dynamically resolves the best matching model name from the active API token.
+ * Falls back to hardcoded production configurations if listing fails or is restricted.
+ */
+export const resolveAvailableModel = async (tier: ModelTier): Promise<string> => {
+  try {
+    const ai = getClient();
+    // Fetch active models supporting generateContent as documented
+    const availableModels = await ai.models.list();
+    const models: any[] = [];
+    for await (const m of availableModels) {
+      models.push(m);
+    }
+    
+    if (models.length > 0) {
+      const validNames = models
+        .filter(m => m.supportedActions?.includes("generateContent"))
+        .map(m => m.name);
+
+      const requestedDefault = MODELS[tier];
+      
+      // If our chosen default is present in the list, return it safely
+      if (validNames.includes(requestedDefault) || validNames.includes(`models/${requestedDefault}`)) {
+        return requestedDefault;
+      }
+      
+      // Smart matching based on tier characteristics
+      if (tier === ModelTier.PRO) {
+        const proMatch = validNames.find(n => n.includes('pro'));
+        if (proMatch) return proMatch.replace('models/', '');
+      } else {
+        const flashMatch = validNames.find(n => n.includes('flash') && !n.includes('lite'));
+        if (flashMatch) return flashMatch.replace('models/', '');
+      }
+    }
+  } catch (error) {
+    console.warn("[GeminiService] Model querying not available or unauthorized. Using local defaults.", error);
+  }
+  
+  return MODELS[tier] || FLASH_MODEL;
 };
 
 /**
  * Helper to determine thinking level for a request.
- * Lite models do not support thinking level HIGH/LOW (effectively MINIMAL).
+ * Disabling thinking configuration to avoid 400 ApiErrors on unsupported models.
  */
 const getThinkingConfig = (tier: ModelTier, options: { lowThinking?: boolean } = {}) => {
-  if (tier === ModelTier.LITE) return undefined;
-  if (tier === ModelTier.PRO) return undefined; // Pro usually manages its own thinking budget in 3.1
-  
-  return { 
-    thinkingLevel: options.lowThinking ? ThinkingLevel.LOW : ThinkingLevel.HIGH 
-  };
+  return undefined;
 };
 
 export const analyzeWorkflowBatch = async (
@@ -69,7 +101,7 @@ export const analyzeWorkflowBatch = async (
 ): Promise<WorkflowAnalysis> => {
   const ai = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   
   const systemInstruction = `You are a DevOps Architect auditing GitHub Workflows for the repository "${repo}".
   Provide a comprehensive audit including a health score (0-100), a technical summary, and specific actionable findings.
@@ -138,7 +170,7 @@ export const analyzeWorkflowHealth = async (
 ): Promise<WorkflowAnalysis> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   
   const workflowSection = workflowFile
     ? `
@@ -289,7 +321,7 @@ export const analyzeWorkflowQualitative = async (
 ): Promise<WorkflowQualitativeResult> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   
   const prompt = `
     Perform a QUALITATIVE AUDIT of CI/CD Workflows.
@@ -358,7 +390,7 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
   const client = getClient();
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
   const tier = storage.getModelTier() || ModelTier.LITE;
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
@@ -402,7 +434,7 @@ export const generateCodeReview = async (
 ): Promise<CodeReviewResult> => {
   const userTier = storage.getModelTier();
   const tier = options.modelTier || userTier;
-  const modelName = getModelForTier(tier);
+  const modelName = await resolveAvailableModel(tier);
 
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
@@ -493,7 +525,7 @@ export const generateCodeReview = async (
 export const extractIssuesFromComments = async (comments: Array<{ id: number, user: string, body: string, url: string }>): Promise<ProposedIssue[]> => {
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `
@@ -541,7 +573,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
 export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string, tier: ModelTier = storage.getModelTier()): Promise<{ plan: string; title: string }> => {
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `
@@ -574,7 +606,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
 export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): Promise<{ syncIssues: string[] }> => {
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   const prompt = `
     Analyze PR #${pr.number} for synchronization and conflict resolution issues.
     
@@ -622,7 +654,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
 export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
-  const model = getModelForTier(tier);
+  const model = await resolveAvailableModel(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
     contents: `Extract tasks from this text: ${text}. 
