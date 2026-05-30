@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listSessions, sendMessage, enrichSessionsWithDetails, getSessionUrl } from '../services/julesService';
+import { listSessions, sendMessage, enrichSessionsWithDetails, getSessionUrl, findSourceForRepo } from '../services/julesService';
 import { storage } from '../services/storageService';
 import { JulesSession } from '../types';
 
@@ -7,11 +7,36 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
   const [allSessions, setAllSessions] = useState<JulesSession[]>([]);
   const [suggestedSessions, setSuggestedSessions] = useState<JulesSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [sourceId, setSourceId] = useState<string | null>(null);
   const [isEnriching, setIsEnriching] = useState(false);
   const [julesReportStatus, setJulesReportStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
 
-  const loadSessions = useCallback(async () => {
+  const performVerification = useCallback(async () => {
+    if (!julesApiKey || !repo) return null;
+    setIsVerifying(true);
+    try {
+      // Pass allowGuess=false to verify if a REAL source exists for this repo
+      const verifiedId = await findSourceForRepo(julesApiKey, repo, false);
+      setSourceId(verifiedId);
+      return verifiedId;
+    } catch (e) {
+      console.warn('[JulesSessions] Source verification failed:', e);
+      return null;
+    } finally {
+      setIsVerifying(false);
+    }
+  }, [julesApiKey, repo]);
+
+  const loadSessions = useCallback(async (verifiedId?: string | null) => {
     if (!julesApiKey) return;
+    
+    // If no verified ID was passed, and we don't have one in state, verify first
+    const activeId = verifiedId !== undefined ? verifiedId : sourceId;
+    if (!activeId) {
+      console.log('[JulesSessions] Holding off on session load - source not verified for repo:', repo);
+      return;
+    }
     
     // Check cache first
     const cached = storage.getJulesSessions();
@@ -60,17 +85,31 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
       
       // Update cache with enriched data
       storage.saveJulesSessions(detailed);
-    } catch (error) {
-      console.error('Failed to load Jules sessions:', error);
+    } catch (error: any) {
+      // Silent common errors that clutter console
+      if (!error.message?.includes('404') && !error.message?.includes('Forbidden')) {
+        console.error('Failed to load Jules sessions:', error);
+      }
     } finally {
       setIsLoading(false);
       setIsEnriching(false);
     }
-  }, [julesApiKey, repo]);
+  }, [julesApiKey, repo, sourceId]);
 
   useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+    let mounted = true;
+    
+    async function init() {
+      if (!julesApiKey || !repo) return;
+      const vId = await performVerification();
+      if (mounted && vId) {
+        loadSessions(vId);
+      }
+    }
+
+    init();
+    return () => { mounted = false; };
+  }, [julesApiKey, repo, performVerification, loadSessions]);
 
   const onReportToJules = useCallback(async (findingId: string, sessionName: string, message: string) => {
     if (!julesApiKey) return;
@@ -91,8 +130,12 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
     allSessions,
     suggestedSessions,
     isLoading,
+    isVerifying,
+    isEnriching,
+    hasVerifiedSource: !!sourceId,
+    sourceId,
     julesReportStatus,
     onReportToJules,
-    refreshSessions: loadSessions
+    refreshSessions: () => performVerification().then(v => loadSessions(v))
   };
 }

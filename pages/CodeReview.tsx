@@ -74,7 +74,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     allSessions,
     suggestedSessions,
     julesReportStatus,
-    onReportToJules
+    onReportToJules,
+    isVerifying: isJulesVerifying,
+    hasVerifiedSource,
+    sourceId
   } = useJulesSessions(julesApiKey, repoName);
 
   const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
@@ -505,6 +508,14 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                       {storage.getModelTier()}
                       <span className="mx-2 opacity-20">|</span>
                       <span className="group-hover/tier:text-amber-400 transition-colors">{(usage.totalTokens / 1000).toFixed(1)}k</span>
+                      {usage.totalCost > 0 && (
+                        <>
+                          <span className="mx-2 opacity-20">|</span>
+                          <span className="group-hover/tier:text-emerald-400 transition-colors uppercase font-mono">
+                            ${usage.totalCost.toFixed(3)}
+                          </span>
+                        </>
+                      )}
                     </a>
                   </div>
                )}
@@ -1008,6 +1019,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         julesReportStatus={julesReportStatus}
         onReportToJules={onReportToJules}
         matchingPrNumber={selectedPr?.number}
+        isVerifying={isJulesVerifying}
+        hasVerifiedSource={hasVerifiedSource}
+        sourceId={sourceId}
       />
     </div>
   );

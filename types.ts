@@ -315,5 +315,6 @@ export interface UsageMetrics {
   totalTokens: number;
   totalRequests: number;
   lastRequestTokens: number;
+  totalCost: number;
   timestamp: number;
 }

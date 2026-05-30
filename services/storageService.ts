@@ -408,16 +408,29 @@ export const storage = {
       totalTokens: 0,
       totalRequests: 0,
       lastRequestTokens: 0,
+      totalCost: 0,
       timestamp: Date.now()
     });
   },
 
-  trackUsage(tokens: number): void {
+  trackUsage(tokens: number, tier?: ModelTier): void {
     const current = this.getUsage();
+    
+    // Average pricing per 1M tokens (conservative averages of input/output rates)
+    const TIER_RATES = {
+      [ModelTier.LITE]: 0.18 / 1_000_000,
+      [ModelTier.FLASH]: 0.25 / 1_000_000,
+      [ModelTier.PRO]: 3.12 / 1_000_000,
+    };
+
+    const rate = tier ? TIER_RATES[tier] : TIER_RATES[ModelTier.FLASH];
+    const estimatedCost = tokens * rate;
+
     const updated: UsageMetrics = {
       totalTokens: current.totalTokens + tokens,
       totalRequests: current.totalRequests + 1,
       lastRequestTokens: tokens,
+      totalCost: (current.totalCost || 0) + estimatedCost,
       timestamp: Date.now()
     };
     this.set(StorageKeys.USAGE, updated);

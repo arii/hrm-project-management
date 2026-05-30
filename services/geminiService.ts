@@ -42,11 +42,11 @@ const PRO_MODEL = 'gemini-2.0-pro-exp-02-05';
 const FLASH_MODEL = 'gemini-2.0-flash';
 const LITE_MODEL = 'gemini-2.0-flash-lite';
 
-const recordUsage = (result: any) => {
+const recordUsage = (result: any, tier?: ModelTier) => {
   try {
     const tokens = result?.response?.usageMetadata?.totalTokenCount || result?.usageMetadata?.totalTokenCount;
     if (tokens) {
-      storage.trackUsage(tokens);
+      storage.trackUsage(tokens, tier);
     }
   } catch (e) {
     console.warn("[GeminiService] Failed to record usage:", e);
@@ -78,7 +78,11 @@ export const resolveAvailableModel = async (tier: ModelTier, manualModel?: strin
 
   try {
     // Use the cached detailed list instead of making a fresh models.list() call every time
-    const validModels = await listAvailableModelsDetailed();
+    const allModels = await listAvailableModelsDetailed();
+    
+    // Filter for models that are capable enough for code review tasks
+    // We explicitly exclude 'nano' models from auto-selection as they usually fail complex reasoning
+    const validModels = allModels.filter(m => !m.name.toLowerCase().includes('nano'));
     const validNames = validModels.map(m => m.name);
     
     if (validNames.length > 0) {
@@ -91,13 +95,13 @@ export const resolveAvailableModel = async (tier: ModelTier, manualModel?: strin
       
       // Smart matching based on tier characteristics
       if (tier === ModelTier.PRO) {
-        const proMatch = validNames.find(n => n.includes('pro') && !n.includes('computer-use'));
+        const proMatch = validNames.find(n => n.toLowerCase().includes('pro'));
         if (proMatch) return proMatch;
       } else if (tier === ModelTier.FLASH) {
-        const flashMatch = validNames.find(n => n.includes('flash') && !n.includes('lite'));
+        const flashMatch = validNames.find(n => n.toLowerCase().includes('flash') && !n.toLowerCase().includes('lite'));
         if (flashMatch) return flashMatch;
-      } else {
-        const liteMatch = validNames.find(n => n.includes('flash-lite'));
+      } else if (tier === ModelTier.LITE) {
+        const liteMatch = validNames.find(n => n.toLowerCase().includes('lite'));
         if (liteMatch) return liteMatch;
       }
 
@@ -167,7 +171,7 @@ export const testModelConnectivity = async (modelName: string): Promise<{ succes
       model: modelName,
       contents: "ping"
     }), 1, 500, 'Gemini-Ping');
-    recordUsage(response);
+    recordUsage(response, storage.getModelTier());
     return { success: true };
   } catch (e: any) {
     const errorMessage = typeof e === 'object' && e !== null ? (e.message || JSON.stringify(e)) : String(e);
@@ -246,7 +250,7 @@ export const analyzeWorkflowBatch = async (
       }
     }
   }), 3, 1000, 'GeminiService');
-  recordUsage(response);
+  recordUsage(response, tier);
 
   return JSON.parse(cleanJsonString(response.text || '{}'));
 };
@@ -498,7 +502,7 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
       }
     }
   }), 3, 1000, 'GeminiService');
-  recordUsage(response);
+  recordUsage(response, tier);
   
   const responseText = response.text || "{}";
   try {
@@ -601,7 +605,7 @@ export const generateCodeReview = async (
         }
       }
     });
-    recordUsage(response);
+    recordUsage(response, tier);
 
     return JSON.parse(cleanJsonString(response.text || '{}'));
   }, 3, 1000, 'GeminiService-Review');
@@ -668,7 +672,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
       }
     }
   }), 3, 1000, 'GeminiService-Comments');
-  recordUsage(response);
+  recordUsage(response, tier);
   
   const text = response.text || "[]";
   try {
@@ -702,7 +706,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
       }
     }
   }), 3, 1000, 'GeminiService-Restart');
-  recordUsage(response);
+  recordUsage(response, tier);
 
   const text = response.text || "{}";
   try {
@@ -751,7 +755,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
       }
     }
   }), 3, 1000, 'GeminiService-Sync');
-  recordUsage(response);
+  recordUsage(response, tier);
 
   const text = response.text || "{}";
   try {
@@ -797,7 +801,7 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
       }
     }
   }), 3, 1000, 'GeminiService-TaskExtract');
-  recordUsage(response);
+  recordUsage(response, tier);
   
   const responseText = response.text || "[]";
   try {

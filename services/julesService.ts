@@ -63,6 +63,8 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
       : `${JULES_API_BASE}/${endpoint}`;
 
+    const silent = (options.headers as any)?.['X-Ignore-Error'] === 'true';
+
     console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     
     // Implement a 20s timeout for network reliability
@@ -77,17 +79,20 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
         signal: controller.signal
       });
     } catch (e: any) {
-      console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      if (!silent) {
+        console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      }
+      
       if (e.name === 'AbortError') {
         throw new Error(`Jules API Request timed out (20s). The network might be slow or unstable.`);
       }
       if (!useDirectJules) {
-        console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
+        if (!silent) console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
         useDirectJules = true;
         return runRequest();
       }
-      if (e.message === 'Failed to fetch') {
-        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
+      if (e.message === 'Failed to fetch' && !silent) {
+        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection. (Target: ${fullUrl})`);
       }
       throw e;
     } finally {
@@ -500,7 +505,7 @@ export const deleteSession = async (apiKey: string, sessionName: string): Promis
   storage.remove(`${StorageKeys.JULES_CACHE}_sessions`);
 };
 
-export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {
+export const findSourceForRepo = async (apiKey: string, repoName: string, allowGuess = true): Promise<string | null> => {
   if (!repoName) return null;
   
   try {
@@ -514,7 +519,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
     const sources = await listSources(apiKey);
     if (sources.length === 0) {
       console.warn("[JulesService] No sources found in Jules account.");
-      return null;
+      return allowGuess ? `sources/${repoName.split('/').pop()?.toLowerCase()}` : null;
     }
 
     // Normalize target repo name
@@ -523,7 +528,6 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
     const repoOnly = repoParts[repoParts.length - 1].toLowerCase();
     
     // Helper to normalize strings for comparison
-    // We try two versions: one with separators and one without (super clean)
     const normalizeWithSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9\-_]/g, '');
     const normalizeNoSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -551,7 +555,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
       if (nSourceName.endsWith(nRepoOnly) || nDisplayName === nRepoOnly) return true;
       if (nSourceName.includes(nFullRepo) || nDisplayName.includes(nFullRepo)) return true;
 
-      // Super clean matches (no separators - handles "tech-dancer" vs "techdancer")
+      // Super clean matches (no separators)
       if (nSourceNameClean.endsWith(nRepoOnlyClean) || nDisplayNameClean === nRepoOnlyClean) return true;
       if (nSourceNameClean.includes(nFullRepoClean) || nDisplayNameClean.includes(nFullRepoClean)) return true;
 
@@ -563,16 +567,19 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
       return match.name;
     } 
 
-    // 2. BEST GUESS FALLBACK
-    // If no match found in the list (or list empty), try common patterns.
-    // We prioritize the short name (repoOnly) as it's more common in Jules IDs than owner/repo.
-    const guessId = `sources/${repoOnly}`;
-    console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
-    return guessId;
+    // 2. BEST GUESS FALLBACK (Only if allowed)
+    if (allowGuess) {
+      const guessId = `sources/${repoOnly}`;
+      console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
+      return guessId;
+    }
+
+    return null;
   } catch (e) {
     console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e);
-    // Even on error, try the best-guess as a last resort
-    const fallback = repoName.includes('/') ? `sources/${repoName.toLowerCase()}` : `sources/${repoName.toLowerCase()}`;
-    return fallback;
+    if (allowGuess) {
+      return `sources/${repoName.split('/').pop()?.toLowerCase()}`;
+    }
+    return null;
   }
 };
