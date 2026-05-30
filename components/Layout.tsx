@@ -1,10 +1,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, BookOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, BookOpen } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
-import Footer from './Footer';
 import { ModelTier } from '../types';
 import { AppSettings } from '../services/storageService';
 
@@ -48,7 +47,6 @@ const Layout: React.FC<LayoutProps> = ({
     { path: '/batch-create', label: 'Issue Builder', icon: Upload },
     { path: '/jules-management', label: 'Agent Handoff', icon: Terminal },
     { path: '/user-guide', label: 'User Guide', icon: BookOpen },
-    { path: '/gemini-status', label: 'Model Intel', icon: ShieldCheck },
   ];
 
   const SidebarContent = () => (
@@ -143,11 +141,8 @@ const Layout: React.FC<LayoutProps> = ({
           />
         </header>
 
-        <div className="flex-1 flex flex-col justify-between p-4 lg:p-8">
-          <div className="flex-1 pb-8">
-            <Outlet />
-          </div>
-          <Footer />
+        <div className="p-4 lg:p-8">
+          <Outlet />
         </div>
       </div>
     </div>

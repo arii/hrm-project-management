@@ -1,5 +1,5 @@
 
-import { ModelTier, UsageMetrics } from '../types';
+import { ModelTier } from '../types';
 
 /**
  * Centralized Storage Service for RepoAuditor AI.
@@ -20,7 +20,6 @@ export const StorageKeys = {
   ANALYSIS_PREFIX: `${APP_PREFIX}analysis_`, // For useGeminiAnalysis persistence
   CODE_REVIEW_STATE: `${APP_PREFIX}code_review_state`,
   EXTRACTED_ISSUES: `${APP_PREFIX}extracted_issues_`, // Prefix for extracted issues per PR
-  USAGE: `${APP_PREFIX}usage`,
 };
 
 export interface AppSettings {
@@ -30,7 +29,6 @@ export interface AppSettings {
   julesSourceId?: string; // Optional manual override
   geminiApiKey: string;
   defaultModelTier: ModelTier;
-  geminiModelOverride?: string; // Manual model selection override (specific model name or 'auto')
   theme?: 'dark' | 'light';
   autoSendToJules?: boolean;
 }
@@ -41,8 +39,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   julesApiKey: '',
   julesSourceId: '',
   geminiApiKey: '',
-  defaultModelTier: ModelTier.FLASH,
-  geminiModelOverride: 'auto',
+  defaultModelTier: ModelTier.LITE,
   autoSendToJules: false,
 };
 
@@ -401,40 +398,6 @@ export const storage = {
 
   getJulesSessions(): any[] | null {
     return this.get(StorageKeys.JULES_SESSIONS);
-  },
-
-  getUsage(): UsageMetrics {
-    return this.getRaw(StorageKeys.USAGE, {
-      totalTokens: 0,
-      totalRequests: 0,
-      lastRequestTokens: 0,
-      totalCost: 0,
-      timestamp: Date.now()
-    });
-  },
-
-  trackUsage(tokens: number, tier?: ModelTier): void {
-    const current = this.getUsage();
-    
-    // Average pricing per 1M tokens (conservative averages of input/output rates)
-    const TIER_RATES = {
-      [ModelTier.LITE]: 0.18 / 1_000_000,
-      [ModelTier.FLASH]: 0.25 / 1_000_000,
-      [ModelTier.PRO]: 3.12 / 1_000_000,
-    };
-
-    const rate = tier ? TIER_RATES[tier] : TIER_RATES[ModelTier.FLASH];
-    const estimatedCost = tokens * rate;
-
-    const updated: UsageMetrics = {
-      totalTokens: current.totalTokens + tokens,
-      totalRequests: current.totalRequests + 1,
-      lastRequestTokens: tokens,
-      totalCost: (current.totalCost || 0) + estimatedCost,
-      timestamp: Date.now()
-    };
-    this.set(StorageKeys.USAGE, updated);
-    window.dispatchEvent(new CustomEvent('usage_updated', { detail: updated }));
   },
 
   getSettings(): AppSettings {

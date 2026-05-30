@@ -114,7 +114,11 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
         ))}
       </div>
 
-
+      <div className="mt-20 pt-12 border-top border-slate-800 text-center">
+        <p className="text-slate-500 text-sm">
+          RepoAuditor AI v2.0 • Focused on Minimalism & Performance
+        </p>
+      </div>
     </div>
   );
 };
