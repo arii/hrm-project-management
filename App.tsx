@@ -9,6 +9,7 @@ import CodeReview from './pages/CodeReview';
 import WorkflowHealth from './pages/WorkflowHealth';
 import JulesManagement from './pages/JulesManagement';
 import UserGuide from './pages/UserGuide';
+import GeminiStatus from './pages/GeminiStatus';
 import { storage, AppSettings } from './services/storageService';
 import { setGeminiApiKey } from './services/geminiService';
 import { ErrorProvider } from './context/ErrorContext';
@@ -91,6 +92,7 @@ const App: React.FC = () => {
             <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
             <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} />} />
             <Route path="user-guide" element={<UserGuide />} />
+            <Route path="gemini-status" element={<GeminiStatus />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

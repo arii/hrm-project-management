@@ -311,4 +311,9 @@ export interface JulesSession {
   };
 }
 
-// End of file
+export interface UsageMetrics {
+  totalTokens: number;
+  totalRequests: number;
+  lastRequestTokens: number;
+  timestamp: number;
+}

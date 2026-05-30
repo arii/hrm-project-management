@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen } from 'lucide-react';
+import { BookOpen, User, Globe, Rss, ArrowUpRight } from 'lucide-react';
 
 export default function UserGuide() {
   return (
@@ -50,6 +50,50 @@ export default function UserGuide() {
           <div className="bg-slate-900 rounded-xl p-4 border border-slate-700">
             <h3 className="font-bold text-white">Workflow Health (Outer Loop)</h3>
             <p className="text-sm mt-1">Audit CI failures, perform Root-Cause Analysis (RCA), and create issues.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 space-y-6">
+        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+          <User className="w-6 h-6 text-indigo-400" />
+          About the Creator
+        </h2>
+        <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
+          <div className="flex-1 space-y-3">
+            <h3 className="text-lg font-bold text-white">Ariel Anders PhD</h3>
+            <p className="text-slate-400 text-sm leading-relaxed">
+              Dr. Ariel Anders is the architect behind <span className="text-indigo-400 font-semibold">RepoAuditor AI</span> and the creator of{' '}
+              <a 
+                href="https://boomtick.blog" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="text-indigo-400 hover:underline inline-flex items-center gap-1 font-medium"
+              >
+                boomtick.blog <ArrowUpRight className="w-3.5 h-3.5" />
+              </a>.
+              She is an expert in robotics, agentic systems engineering, multi-agent orchestrations, and intelligent lifecycle control loops.
+            </p>
+            <div className="flex flex-wrap items-center gap-4 pt-2">
+              <a
+                href="https://arii.github.io"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg text-sm text-slate-300 hover:text-white transition"
+              >
+                <Globe className="w-4 h-4 text-indigo-400" />
+                arii.github.io
+              </a>
+              <a
+                href="https://boomtick.blog"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg text-sm text-slate-300 hover:text-white transition"
+              >
+                <Rss className="w-4 h-4 text-indigo-400" />
+                boomtick.blog
+              </a>
+            </div>
           </div>
         </div>
       </div>

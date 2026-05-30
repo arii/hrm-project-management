@@ -5,6 +5,9 @@ import { storage } from './storageService';
 import { cleanJsonString, withRetry } from './aiUtils';
 
 let globalGeminiApiKey: string | null = null;
+let cachedModelsList: GeminiModelInfo[] | null = null;
+let lastCacheTime = 0;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 export const setGeminiApiKey = (key: string) => {
   globalGeminiApiKey = key;
@@ -35,55 +38,141 @@ const ensureProApiKey = async () => {
   }
 };
 
-const PRO_MODEL = 'gemini-2.5-pro';
-const FLASH_MODEL = 'gemini-2.5-flash';
+const PRO_MODEL = 'gemini-2.0-pro-exp-02-05';
+const FLASH_MODEL = 'gemini-2.0-flash';
+const LITE_MODEL = 'gemini-2.0-flash-lite';
+
+const recordUsage = (result: any) => {
+  try {
+    const tokens = result?.response?.usageMetadata?.totalTokenCount || result?.usageMetadata?.totalTokenCount;
+    if (tokens) {
+      storage.trackUsage(tokens);
+    }
+  } catch (e) {
+    console.warn("[GeminiService] Failed to record usage:", e);
+  }
+};
 
 const MODELS = {
-  [ModelTier.LITE]: 'gemini-2.5-flash', 
+  [ModelTier.LITE]: LITE_MODEL, 
   [ModelTier.FLASH]: FLASH_MODEL,
   [ModelTier.PRO]: PRO_MODEL,
 };
 
 /**
  * Dynamically resolves the best matching model name from the active API token.
- * Falls back to hardcoded production configurations if listing fails or is restricted.
+ * Hierarchy: Manual Call Argument > Global Pinned Model > Tier-based Auto Selection.
  */
-export const resolveAvailableModel = async (tier: ModelTier): Promise<string> => {
-  try {
-    const ai = getClient();
-    // Fetch active models supporting generateContent as documented
-    const availableModels = await ai.models.list();
-    const models: any[] = [];
-    for await (const m of availableModels) {
-      models.push(m);
-    }
-    
-    if (models.length > 0) {
-      const validNames = models
-        .filter(m => m.supportedActions?.includes("generateContent"))
-        .map(m => m.name);
+export const resolveAvailableModel = async (tier: ModelTier, manualModel?: string): Promise<string> => {
+  const settings = storage.getSettings();
+  
+  // 1. Specific model requested by caller
+  if (manualModel && manualModel !== 'auto') {
+    return manualModel;
+  }
 
+  // 2. Global pinned model override
+  if (settings.geminiModelOverride && settings.geminiModelOverride !== 'auto') {
+    return settings.geminiModelOverride;
+  }
+
+  try {
+    // Use the cached detailed list instead of making a fresh models.list() call every time
+    const validModels = await listAvailableModelsDetailed();
+    const validNames = validModels.map(m => m.name);
+    
+    if (validNames.length > 0) {
       const requestedDefault = MODELS[tier];
       
       // If our chosen default is present in the list, return it safely
-      if (validNames.includes(requestedDefault) || validNames.includes(`models/${requestedDefault}`)) {
+      if (validNames.includes(requestedDefault)) {
         return requestedDefault;
       }
       
       // Smart matching based on tier characteristics
       if (tier === ModelTier.PRO) {
-        const proMatch = validNames.find(n => n.includes('pro'));
-        if (proMatch) return proMatch.replace('models/', '');
-      } else {
+        const proMatch = validNames.find(n => n.includes('pro') && !n.includes('computer-use'));
+        if (proMatch) return proMatch;
+      } else if (tier === ModelTier.FLASH) {
         const flashMatch = validNames.find(n => n.includes('flash') && !n.includes('lite'));
-        if (flashMatch) return flashMatch.replace('models/', '');
+        if (flashMatch) return flashMatch;
+      } else {
+        const liteMatch = validNames.find(n => n.includes('flash-lite'));
+        if (liteMatch) return liteMatch;
       }
+
+      // Fallback: use first valid model if requested defaults are unavailable
+      return validNames[0];
     }
   } catch (error) {
-    console.warn("[GeminiService] Model querying not available or unauthorized. Using local defaults.", error);
+    console.warn("[GeminiService] Model resolution failed. Using local defaults.", error);
   }
   
   return MODELS[tier] || FLASH_MODEL;
+};
+
+/**
+ * Fetches detailed information about all models supported by the current API key.
+ */
+export interface GeminiModelInfo {
+  name: string;
+  displayName: string;
+  description: string;
+  inputTokenLimit: number;
+  outputTokenLimit: number;
+  supportedActions: string[];
+}
+
+export const listAvailableModelsDetailed = async (forceRefresh = false): Promise<GeminiModelInfo[]> => {
+  if (!forceRefresh && cachedModelsList && (Date.now() - lastCacheTime < CACHE_TTL)) {
+    return cachedModelsList;
+  }
+
+  try {
+    const ai = getClient();
+    const availableModels = await ai.models.list();
+    const models: GeminiModelInfo[] = [];
+    const excludedKeywords = ['-tts', 'robotics', 'antigravity', 'deep-research', 'computer-use', 'embedding', 'aqa'];
+
+    for await (const m of availableModels) {
+      const name = m.name.toLowerCase();
+      const isSpecialist = excludedKeywords.some(keyword => name.includes(keyword));
+
+      if (m.supportedActions?.includes("generateContent") && !isSpecialist) {
+        models.push({
+          name: m.name.replace('models/', ''),
+          displayName: m.displayName || m.name,
+          description: m.description || "",
+          inputTokenLimit: m.inputTokenLimit || 0,
+          outputTokenLimit: m.outputTokenLimit || 0,
+          supportedActions: m.supportedActions
+        });
+      }
+    }
+    
+    cachedModelsList = models;
+    lastCacheTime = Date.now();
+    return models;
+  } catch (error) {
+    console.error("[GeminiService] Failed to list models:", error);
+    throw error;
+  }
+};
+
+export const testModelConnectivity = async (modelName: string): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const ai = getClient();
+    // Tiny request to test connectivity and quota using standard models.generateContent from @google/genai
+    const response = await withRetry(() => ai.models.generateContent({
+      model: modelName,
+      contents: "ping"
+    }), 1, 500, 'Gemini-Ping');
+    recordUsage(response);
+    return { success: true };
+  } catch (e: any) {
+    const errorMessage = typeof e === 'object' && e !== null ? (e.message || JSON.stringify(e)) : String(e);
+    return { success: false, error: errorMessage };
+  }
 };
 
 /**
@@ -157,6 +246,7 @@ export const analyzeWorkflowBatch = async (
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
 
   return JSON.parse(cleanJsonString(response.text || '{}'));
 };
@@ -303,6 +393,7 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -376,6 +467,7 @@ export const analyzeWorkflowQualitative = async (
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -406,6 +498,7 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
   
   const responseText = response.text || "{}";
   try {
@@ -508,6 +601,7 @@ export const generateCodeReview = async (
         }
       }
     });
+    recordUsage(response);
 
     return JSON.parse(cleanJsonString(response.text || '{}'));
   }, 3, 1000, 'GeminiService-Review');
@@ -515,7 +609,22 @@ export const generateCodeReview = async (
   try {
     return await Promise.race([generatePromise, timeoutPromise]);
   } catch (e: any) {
-    if (e.message.includes("timed out")) throw e;
+    if (e.message?.includes("timed out")) throw e;
+    
+    // Check if the error is related to quota, API key limits, or billing issues
+    const errorMessage = typeof e === 'object' && e !== null ? (e.message || JSON.stringify(e)) : String(e);
+    const isQuotaOrApiKey = errorMessage.includes("429") || 
+                            errorMessage.includes("RESOURCE_EXHAUSTED") || 
+                            errorMessage.includes("quota") ||
+                            errorMessage.includes("API_KEY_INVALID") ||
+                            errorMessage.includes("billing") ||
+                            errorMessage.includes("API key");
+
+    if (isQuotaOrApiKey) {
+      console.error("[GeminiService] Gemini API quota or authorization issue detected:", e);
+      throw new Error(`Gemini API Error (Quota/Rate Limit): The configured API key has exceeded its quota or has billing restrictions. Please check your plan & billing details on Google AI Studio (https://aistudio.google.com/) or configure a different key in Settings. Detail: ${errorMessage}`);
+    }
+
     console.error("[GeminiService] Failed to parse code review JSON:", e);
     throw new Error("AI returned an invalid format for the code review.");
   }
@@ -559,6 +668,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
       }
     }
   }), 3, 1000, 'GeminiService-Comments');
+  recordUsage(response);
   
   const text = response.text || "[]";
   try {
@@ -592,6 +702,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
       }
     }
   }), 3, 1000, 'GeminiService-Restart');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -640,6 +751,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
       }
     }
   }), 3, 1000, 'GeminiService-Sync');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -685,6 +797,7 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
       }
     }
   }), 3, 1000, 'GeminiService-TaskExtract');
+  recordUsage(response);
   
   const responseText = response.text || "[]";
   try {

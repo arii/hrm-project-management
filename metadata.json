@@ -1,5 +1,6 @@
 {
   "name": "RepoAuditor AI",
   "description": "A focused toolkit for GitHub repository maintenance, featuring Code Review, PR Health, Workflow Monitoring, and Batch Issue Creation.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

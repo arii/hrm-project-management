@@ -64,14 +64,23 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       : `${JULES_API_BASE}/${endpoint}`;
 
     console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
+    
+    // Implement a 20s timeout for network reliability
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    
     let response: Response;
     try {
       response = await fetch(fullUrl, {
         ...options,
         headers,
+        signal: controller.signal
       });
     } catch (e: any) {
       console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      if (e.name === 'AbortError') {
+        throw new Error(`Jules API Request timed out (20s). The network might be slow or unstable.`);
+      }
       if (!useDirectJules) {
         console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
         useDirectJules = true;
@@ -81,6 +90,8 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
         throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
       }
       throw e;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     const rawText = await response.text();
@@ -154,14 +165,28 @@ export const getSessionUrl = (sessionNameOrId: string): string => {
 export const listSources = async (apiKey: string, filter?: string): Promise<JulesSource[]> => {
   const query = filter ? `?filter=${encodeURIComponent(filter)}` : '';
   
-  // Try root path first
-  try {
-    const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey, { headers: { 'X-Ignore-Error': 'true' } });
-    if (data.sources && data.sources.length > 0) return data.sources;
-  } catch (e: any) {}
+  // Try common paths in parallel to speed up discovery on slow networks
+  const priorityPaths = [
+    `sources${query}`,
+    `projects/-/locations/global/sources${query}`,
+    `locations/global/sources${query}`
+  ];
 
-  // Systematically try parents
-  for (const location of JULES_LOCATIONS) {
+  try {
+    const results = await Promise.allSettled(
+      priorityPaths.map(path => request<{ sources: JulesSource[] }>(path, apiKey, { headers: { 'X-Ignore-Error': 'true' } }))
+    );
+
+    for (const res of results) {
+      if (res.status === 'fulfilled' && res.value.sources && res.value.sources.length > 0) {
+        return res.value.sources;
+      }
+    }
+  } catch (e) {}
+
+  // Fallback to searching other locations sequentially if priority paths failed
+  const remainingLocations = JULES_LOCATIONS.filter(l => l !== 'global');
+  for (const location of remainingLocations) {
     const parents = [
       `projects/-/locations/${location}`,
       `locations/${location}`

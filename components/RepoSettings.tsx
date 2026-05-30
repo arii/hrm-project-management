@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload, Cpu, Zap, Brain } from 'lucide-react';
+import { Settings, Save, AlertCircle, Key, Check, Loader2, Trash2, Download, Upload, Cpu, Zap, Brain, ArrowUpRight, Lock, RotateCcw } from 'lucide-react';
 import clsx from 'clsx';
 import { storage, AppSettings } from '../services/storageService';
 import { ModelTier, JulesSource } from '../types';
@@ -37,19 +37,32 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   const [localJulesKey, setLocalJulesKey] = useState(julesApiKey || '');
   const [localJulesSourceId, setLocalJulesSourceId] = useState(julesSourceId || '');
   const [localGeminiKey, setLocalGeminiKey] = useState(geminiApiKey || '');
-  const [localTier, setLocalTier] = useState<ModelTier>(defaultModelTier || ModelTier.LITE);
   
   const [availableSources, setAvailableSources] = useState<JulesSource[]>([]);
   const [loadingSources, setLoadingSources] = useState(false);
 
+  const fetchSources = (key: string) => {
+    if (!key) return;
+    setLoadingSources(true);
+    setErrorMessage(null);
+    listSources(key)
+      .then(sources => {
+        setAvailableSources(sources);
+        if (sources.length === 0) {
+          console.warn("[RepoSettings] No Jules sources found.");
+        }
+      })
+      .catch(err => {
+        console.error("[RepoSettings] Failed to fetch sources:", err);
+        setErrorMessage(`Failed to load Jules sources: ${err.message || 'Unknown error'}`);
+      })
+      .finally(() => setLoadingSources(false));
+  };
+
   // Fetch sources when key changes or modal opens
   useEffect(() => {
     if (isOpen && localJulesKey) {
-      setLoadingSources(true);
-      listSources(localJulesKey)
-        .then(setAvailableSources)
-        .catch(console.error)
-        .finally(() => setLoadingSources(false));
+      fetchSources(localJulesKey);
     }
   }, [isOpen, localJulesKey]);
 
@@ -61,7 +74,6 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
       setLocalJulesKey(julesApiKey || '');
       setLocalJulesSourceId(julesSourceId || '');
       setLocalGeminiKey(geminiApiKey || '');
-      setLocalTier(defaultModelTier || ModelTier.LITE);
     }
   }, [isOpen, repoName, githubToken, julesApiKey, julesSourceId, geminiApiKey, defaultModelTier]);
 
@@ -92,7 +104,6 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
       julesApiKey: cleanJulesKey,
       julesSourceId: localJulesSourceId.trim(),
       geminiApiKey: cleanGeminiKey,
-      defaultModelTier: localTier
     });
 
     setSaveStatus('success');
@@ -176,48 +187,39 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
           
           <div className="max-h-[70vh] overflow-y-auto no-scrollbar pr-1">
             <form onSubmit={handleSave} className="space-y-4">
-              <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800 border-dashed mb-2">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Default Model Tier</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setLocalTier(ModelTier.LITE)}
-                    className={clsx(
-                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
-                      localTier === ModelTier.LITE ? "bg-emerald-500/10 border-emerald-500 text-emerald-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
-                    )}
+              <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 bg-linear-to-b from-slate-900/50 to-slate-950/50 mb-2">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Active Intelligence</label>
+                  <a 
+                    href="#/gemini-status" 
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 transition-colors"
+                    onClick={() => setIsOpen(false)}
                   >
-                    <Zap className="w-3.5 h-3.5" />
-                    <span>LITE</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLocalTier(ModelTier.FLASH)}
-                    className={clsx(
-                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
-                      localTier === ModelTier.FLASH ? "bg-blue-500/10 border-blue-500 text-blue-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
-                    )}
-                  >
-                    <Cpu className="w-3.5 h-3.5" />
-                    <span>FLASH</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLocalTier(ModelTier.PRO)}
-                    className={clsx(
-                      "flex flex-col items-center gap-1.5 p-2 rounded-lg border text-[10px] transition-all",
-                      localTier === ModelTier.PRO ? "bg-purple-500/10 border-purple-500 text-purple-400" : "bg-slate-800/40 border-slate-700 text-slate-500 hover:border-slate-600"
-                    )}
-                  >
-                    <Brain className="w-3.5 h-3.5" />
-                    <span>PRO</span>
-                  </button>
+                    Manage <ArrowUpRight className="w-3 h-3" />
+                  </a>
                 </div>
-                <p className="text-[9px] text-slate-500 mt-2 font-mono italic leading-relaxed text-center">
-                  {localTier === ModelTier.LITE && "Max cost efficiency / Minimum latency"}
-                  {localTier === ModelTier.FLASH && "Balanced speed and technical capability"}
-                  {localTier === ModelTier.PRO && "Complex reasoning / Thinking required"}
-                </p>
+                
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-500/10 rounded-lg border border-indigo-500/20">
+                    {storage.getSettings().geminiModelOverride && storage.getSettings().geminiModelOverride !== 'auto' ? (
+                      <Lock className="w-4 h-4 text-amber-400" />
+                    ) : (
+                      <RotateCcw className="w-4 h-4 text-indigo-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-xs font-bold text-white">
+                      {storage.getSettings().geminiModelOverride && storage.getSettings().geminiModelOverride !== 'auto' 
+                        ? storage.getSettings().geminiModelOverride 
+                        : "Auto-Selection Mode"}
+                    </p>
+                    <p className="text-[10px] text-slate-500 leading-tight mt-0.5">
+                      {storage.getSettings().geminiModelOverride && storage.getSettings().geminiModelOverride !== 'auto'
+                        ? "Pinned model active for all tasks."
+                        : "Dynamic rotation based on task load."}
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -277,7 +279,18 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-1 flex items-center justify-between gap-2">
                   <span>Jules Source ID</span>
-                  <span className="text-[10px] text-slate-500 font-normal italic">(Manual Override)</span>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      type="button" 
+                      onClick={() => fetchSources(localJulesKey)}
+                      disabled={loadingSources || !localJulesKey}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <RotateCcw className={clsx("w-3 h-3", loadingSources && "animate-spin")} />
+                      Refresh List
+                    </button>
+                    <span className="text-[10px] text-slate-500 font-normal italic">(Manual Override)</span>
+                  </div>
                 </label>
                 
                 {localJulesKey ? (

@@ -59,8 +59,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [loadingMessage, setLoadingMessage] = useState<string>("");
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [bulkProgress, setBulkProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
-  const [manualTier, setManualTier] = useState<ModelTier | null>(null);
-  
   const [actionError, setActionError] = useState<string | null>(null);
 
   const [extractedIssues, setExtractedIssues] = useState<ExtractedIssueUI[]>([]);
@@ -69,6 +67,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [aiSuggestions, setAiSuggestions] = useState<ExtractedIssueUI[]>([]);
   const [reviewedShas, setReviewedShas] = useState<Record<number, string>>({});
   const [autoSendToJules, setAutoSendToJules] = useState(storage.getSettings().autoSendToJules || false);
+  const [usage, setUsage] = useState(storage.getUsage());
 
   const { isDispatching, dispatchIssue, dispatchErrors } = useIssueDispatch(repoName, token);
   const {
@@ -162,6 +161,12 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setLoading(false);
       setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
     }
+
+    const handleUsageUpdate = (e: any) => {
+      setUsage(e.detail);
+    };
+    window.addEventListener('usage_updated', handleUsageUpdate);
+    return () => window.removeEventListener('usage_updated', handleUsageUpdate);
   }, [repoName, token, loadPrList]);
 
   // Persist selected PR to storage
@@ -262,7 +267,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setErrors(prev => { const next = { ...prev }; delete next[pr.number]; return next; });
     
     // Explicit model tier logic: User selection > Storage Tier > Flash (if Pro fails)
-    const tier = options.modelTier || manualTier || storage.getModelTier();
+    const tier = options.modelTier || storage.getModelTier();
 
     const setMsg = (msg: string) => {
       if (!isBulk) setLoadingMessage(msg);
@@ -491,17 +496,16 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                     >
                       {hasExistingReview ? 'Refresh' : 'Run Audit'}
                     </Button>
-                    <div className="border-l border-slate-700 flex items-center px-1 bg-slate-800">
-                      <select 
-                        value={manualTier || storage.getModelTier()} 
-                        onChange={(e) => setManualTier(e.target.value as ModelTier)}
-                        className="bg-transparent text-[10px] text-slate-300 font-bold focus:outline-none cursor-pointer px-1 uppercase tracking-tighter"
-                      >
-                        <option value={ModelTier.LITE}>Lite</option>
-                        <option value={ModelTier.FLASH}>Flash</option>
-                        <option value={ModelTier.PRO}>Pro (Deep)</option>
-                      </select>
-                    </div>
+                    <a 
+                      href="#/gemini-status"
+                      className="border-l border-slate-700 flex items-center px-3 bg-slate-800 text-[10px] text-slate-400 font-bold hover:text-white transition-colors uppercase tracking-tighter group/tier"
+                      title="Manage Intelligence Settings"
+                    >
+                      <BrainCircuit className="w-3 h-3 mr-1.5 text-slate-500 group-hover/tier:text-indigo-400 transition-colors" />
+                      {storage.getModelTier()}
+                      <span className="mx-2 opacity-20">|</span>
+                      <span className="group-hover/tier:text-amber-400 transition-colors">{(usage.totalTokens / 1000).toFixed(1)}k</span>
+                    </a>
                   </div>
                )}
              </div>
