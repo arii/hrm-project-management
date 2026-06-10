@@ -127,22 +127,30 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const toEnrich = initialPrs.slice(0, 30); // Enrich more here as it's the main list
       setListProgress({ total: toEnrich.length, current: 0 });
       
-      const chunkSize = 3; // Reduced from 5 for stability
+      const chunkSize = 3; // Chunk size for stability & rate mitigation
       let completedCount = 0;
       
       for (let i = 0; i < toEnrich.length; i += chunkSize) {
         const chunk = toEnrich.slice(i, i + chunkSize);
-        await Promise.all(chunk.map(async (pr) => {
+        const enrichedResults = await Promise.all(chunk.map(async (pr) => {
           try {
             const enriched = await enrichSinglePr(repoName, pr, token, false);
-            setPrs(prev => prev.map(p => p.number === pr.number ? enriched : p));
+            return enriched;
           } catch (e) {
             console.warn(`[PullRequests] Failed to enrich PR #${pr.number}`, e);
+            return pr; // Fallback to unenriched on failure
           } finally {
             completedCount++;
-            setListProgress({ total: toEnrich.length, current: completedCount });
           }
         }));
+
+        // Apply state updates in chunks instead of per individual item
+        setPrs(prev => prev.map(p => {
+          const matchingEnriched = enrichedResults.find(er => er.number === p.number);
+          return matchingEnriched ? matchingEnriched : p;
+        }));
+        
+        setListProgress({ total: toEnrich.length, current: completedCount });
       }
     } catch (e: any) {
       console.error(e);
@@ -465,7 +473,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-8 items-start">
         {/* LEFT: Audit Results & Recommendations */}
         <div className="xl:col-span-1 space-y-6">
-          <AnalysisCard title="Health Audit" description="AI risks & staleness check." status={analysis.status} result={analysis.result?.report ? String(analysis.result.report) : null} onAnalyze={() => analysis.run(prs)} repoName={repoName} disabled={loading || prs.length === 0} />
+          <AnalysisCard title="Health Audit" description="AI risks & staleness check." status={analysis.status} result={analysis.result?.report ? String(analysis.result.report) : null} modelUsed={analysis.result?.modelUsed} onAnalyze={() => analysis.run(prs)} repoName={repoName} disabled={loading || prs.length === 0} />
           
           {proposedActions.length > 0 && (
             <div className="bg-surface border border-slate-700 rounded-xl overflow-hidden shadow-xl animate-in fade-in slide-in-from-left-4">
@@ -565,7 +573,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                       <div className="text-xs text-slate-500 flex items-center gap-3 mt-1">
                         <span className="font-mono text-blue-400 font-bold">#{pr.number}</span>
                         <span className="h-1 w-1 bg-slate-700 rounded-full" />
-                        <span className="flex items-center gap-1.5"><User className="w-3.5 h-3.5"/> {pr.user.login}</span>
+                        <span className="flex items-center gap-1.5"><User className="w-3.5 h-3.5"/> {pr.user?.login || 'unknown'}</span>
                         <span className="h-1 w-1 bg-slate-700 rounded-full" />
                         <span className="flex items-center gap-1.5"><Badge variant="slate" className="font-mono text-[9px] bg-slate-900 border-slate-800">{pr.head.ref}</Badge></span>
                       </div>

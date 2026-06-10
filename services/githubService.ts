@@ -6,6 +6,40 @@ import { pruneDiff } from './aiUtils';
 const BASE_URL = '/api/github';
 const CACHE_DURATION = 15 * 60 * 1000;
 
+// Global state to disable GraphQL if it failed recently for the current session/token
+let isGraphQLUnsupported = false;
+
+class ConcurrencyQueue {
+  private activeCount = 0;
+  private queue: (() => void)[] = [];
+  private maxConcurrency: number;
+
+  constructor(maxConcurrency: number) {
+    this.maxConcurrency = maxConcurrency;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.activeCount >= this.maxConcurrency) {
+      await new Promise<void>(resolve => {
+        this.queue.push(resolve);
+      });
+    }
+    this.activeCount++;
+    try {
+      return await fn();
+    } finally {
+      this.activeCount--;
+      const next = this.queue.shift();
+      if (next) {
+        next();
+      }
+    }
+  }
+}
+
+// Global queue to limit active server-proxy connections to GitHub to at most 4 at a time
+const githubQueue = new ConcurrencyQueue(4);
+
 const request = async <T>(endpoint: string, token: string | undefined, options: RequestInit = {}, isText = false): Promise<T> => {
   const isGet = !options.method || options.method === 'GET';
   
@@ -14,9 +48,25 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     throw new Error(`Invalid endpoint: ${endpoint}. Endpoints must start with /`);
   }
 
+  const requestBodyStr = typeof options.body === 'string' ? options.body : '';
+  const isGraphQL = endpoint === '/graphql';
+  const isGraphQLMutation = isGraphQL && requestBodyStr.includes('mutation');
+  const isGraphQLQuery = isGraphQL && !isGraphQLMutation;
+
   const customHeaders = options.headers as Record<string, string> | undefined;
   const skipCache = customHeaders?.['X-Skip-Cache'] === 'true';
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_${endpoint}`;
+
+  // Generate a distinct cache key for GraphQL queries using a simple hashing of the body
+  let graphqlCacheKey = '';
+  if (isGraphQLQuery) {
+    let hash = 0;
+    for (let c = 0; c < requestBodyStr.length; c++) {
+      hash = (hash << 5) - hash + requestBodyStr.charCodeAt(c);
+      hash |= 0; // Convert to 32bit integer
+    }
+    graphqlCacheKey = `${StorageKeys.GITHUB_CACHE}_graphql_${Math.abs(hash)}`;
+  }
 
   if (isGet && !skipCache && !isText) {
     const cached = storage.getRaw<{ timestamp: number; data: any } | null>(cacheKey, null);
@@ -25,127 +75,140 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
     }
   }
 
-  const headers: Record<string, string> = {
-    'Accept': isText ? 'application/vnd.github.v3.diff' : 'application/vnd.github.v3+json',
-  };
-
-  // Add token if provided
-  if (token && token.trim()) {
-    const trimmedToken = token.trim();
-    // Basic validation for GitHub token format
-    if (!/^(ghp_|github_pat_|[a-zA-Z0-9_]+$)/.test(trimmedToken)) {
-      console.warn("[GithubService] Token format looks unusual, but proceeding.");
+  if (isGraphQLQuery && !skipCache) {
+    const cached = storage.getRaw<{ timestamp: number; data: any } | null>(graphqlCacheKey, null);
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return cached.data as T;
     }
-    headers['Authorization'] = `token ${trimmedToken}`;
   }
 
-  // Add options headers, but filter out internal ones
-  if (options.headers) {
-    Object.entries(options.headers).forEach(([key, value]) => {
-      if (key.toLowerCase() !== 'x-skip-cache') {
-        headers[key] = value as string;
+  return githubQueue.run(async (): Promise<T> => {
+    const headers: Record<string, string> = {
+      'Accept': isText ? 'application/vnd.github.v3.diff' : 'application/vnd.github.v3+json',
+    };
+
+    // Add token if provided
+    if (token && token.trim()) {
+      const trimmedToken = token.trim();
+      // Basic validation for GitHub token format
+      if (!/^(ghp_|github_pat_|[a-zA-Z0-9_]+$)/.test(trimmedToken)) {
+        console.warn("[GithubService] Token format looks unusual, but proceeding.");
       }
-    });
-  }
+      headers['Authorization'] = `token ${trimmedToken}`;
+    }
 
-  if (!isGet && !isText && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const fetchOptions: RequestInit = { 
-    ...options,
-    headers,
-    mode: 'cors'
-  };
-
-  let response: Response | undefined;
-  let retries = 2;
-  const fullUrl = `${BASE_URL}${endpoint}`;
-  const timeout = 30000; // 30 seconds timeout (was 15s)
-
-  while (retries >= 0) {
-    const controller = new AbortController();
-    const id = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch (e) {}
-    }, timeout);
-    
-    try {
-      response = await fetch(fullUrl, {
-        ...fetchOptions,
-        signal: controller.signal
+    // Add options headers, but filter out internal ones
+    if (options.headers) {
+      Object.entries(options.headers).forEach(([key, value]) => {
+        if (key.toLowerCase() !== 'x-skip-cache') {
+          headers[key] = value as string;
+        }
       });
-      clearTimeout(id);
-      
-      if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
-          throw new Error("GitHub API Rate Limit Exceeded.");
-      }
-      break;
-    } catch (e: any) {
-      clearTimeout(id);
-      if (retries === 0) {
-        console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
-        
-        const isAbort = e.name === 'AbortError' || 
-                        e.name === 'TimeoutError' || 
-                        controller.signal.aborted || 
-                        (e.message && e.message.toLowerCase().includes('aborted'));
+    }
 
-        if (isAbort) {
-          throw new Error(`Request timed out or was aborted after ${timeout/1000}s. GitHub might be slow or the request is too large. (Target: ${fullUrl})`);
+    if (!isGet && !isText && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const fetchOptions: RequestInit = { 
+      ...options,
+      headers,
+      mode: 'cors'
+    };
+
+    let response: Response | undefined;
+    let retries = 2;
+    const fullUrl = `${BASE_URL}${endpoint}`;
+    const timeout = 30000; // 30 seconds timeout (was 15s)
+
+    while (retries >= 0) {
+      const controller = new AbortController();
+      const id = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch (e) {}
+      }, timeout);
+      
+      try {
+        response = await fetch(fullUrl, {
+          ...fetchOptions,
+          signal: controller.signal
+        });
+        clearTimeout(id);
+        
+        if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
+            throw new Error("GitHub API Rate Limit Exceeded.");
         }
-        if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
-          throw new Error(`Network error: Failed to reach GitHub API. Check connection or CORS. (Target: ${fullUrl})`);
+        break;
+      } catch (e: any) {
+        clearTimeout(id);
+        if (retries === 0) {
+          console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
+          
+          const isAbort = e.name === 'AbortError' || 
+                          e.name === 'TimeoutError' || 
+                          controller.signal.aborted || 
+                          (e.message && e.message.toLowerCase().includes('aborted'));
+
+          if (isAbort) {
+            throw new Error(`Request timed out or was aborted after ${timeout/1000}s. GitHub might be slow or the request is too large. (Target: ${fullUrl})`);
+          }
+          if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
+            throw new Error(`Network error: Failed to reach GitHub API. Check connection or CORS. (Target: ${fullUrl})`);
+          }
+          throw e;
         }
-        throw e;
-      }
-      // Retry up to 2 times with 1s/2s backoff for transient network errors (only if not aborted)
-      if (controller.signal.aborted) {
-        retries = 0; // Don't retry timeouts
-      } else {
-        retries--;
-        await new Promise(r => setTimeout(r, 1000 * (2 - retries)));
+        // Retry up to 2 times with 1s/2s backoff for transient network errors (only if not aborted)
+        if (controller.signal.aborted) {
+          retries = 0; // Don't retry timeouts
+        } else {
+          retries--;
+          await new Promise(r => setTimeout(r, 1000 * (2 - retries)));
+        }
       }
     }
-  }
 
-  if (!response) throw new Error("Unknown network error: No response received from GitHub.");
+    if (!response) throw new Error("Unknown network error: No response received from GitHub.");
 
-  if (!response.ok) {
-    let errorMessage = `Error: ${response.status}`;
-    try {
-      const errorBody = await response.json();
-      if (errorBody.message) {
-        errorMessage = errorBody.message;
-        
-        // Enrich common error messages with helpful solutions
-        if (errorMessage.includes('Resource not accessible by personal access token')) {
-          errorMessage = "GitHub Permissions Error: Your Personal Access Token doesn't have enough permissions to perform this action. If using a Fine-grained token, ensure 'Issues' and 'Pull Requests' have Read & Write access. If using a Classic token, ensure 'repo' scope is selected.";
-        } else if (response.status === 403 && errorMessage.includes('rate limit exceeded')) {
-          errorMessage = "GitHub API Rate Limit Exceeded. Please wait a few minutes before trying again.";
-        } else if (response.status === 404) {
-          errorMessage = `Resource not found (404). Check if the repository name "${endpoint.split('/')[2]}/${endpoint.split('/')[3]}" is correct and your token has access to it.`;
+    if (!response.ok) {
+      let errorMessage = `Error: ${response.status}`;
+      try {
+        const errorBody = await response.json();
+        if (errorBody.message) {
+          errorMessage = errorBody.message;
+          
+          // Enrich common error messages with helpful solutions
+          if (errorMessage.includes('Resource not accessible by personal access token')) {
+            errorMessage = "GitHub Permissions Error: Your Personal Access Token doesn't have enough permissions to perform this action. If using a Fine-grained token, ensure 'Issues' and 'Pull Requests' have Read & Write access. If using a Classic token, ensure 'repo' scope is selected.";
+          } else if (response.status === 403 && errorMessage.includes('rate limit exceeded')) {
+            errorMessage = "GitHub API Rate Limit Exceeded. Please wait a few minutes before trying again.";
+          } else if (response.status === 404) {
+            errorMessage = `Resource not found (404). Check if the repository name "${endpoint.split('/')[2]}/${endpoint.split('/')[3]}" is correct and your token has access to it.`;
+          }
         }
-      }
-    } catch (e) {}
-    throw new Error(errorMessage);
-  }
+      } catch (e) {}
+      throw new Error(errorMessage);
+    }
 
-  if (!isGet) {
-    // Clear relevant caches on mutation
-    storage.clearCaches();
-    if (response.status === 204) return {} as T;
-    return response.json();
-  }
+    if (isText) return response.text() as unknown as T;
 
-  if (isText) return response.text() as unknown as T;
+    const data = await response.json();
 
-  const data = await response.json();
-  if (isGet) {
+    if (isGraphQLQuery) {
+      storage.set(graphqlCacheKey, { timestamp: Date.now(), data });
+      return data;
+    }
+
+    if (!isGet) {
+      // Clear relevant caches on mutation
+      storage.clearCaches();
+      if (response.status === 204) return {} as T;
+      return data;
+    }
+
     storage.set(cacheKey, { timestamp: Date.now(), data });
-  }
-  return data;
+    return data;
+  });
 };
 
 export const fetchPullRequests = async (repo: string, token?: string, state: 'open' | 'closed' | 'all' = 'open', skipCache = false): Promise<GithubPullRequest[]> => {
@@ -552,13 +615,24 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
   if (cached) return cached;
 
   // Try GraphQL first as it's much faster (1 request vs 4)
-  if (token) {
+  if (token && !isGraphQLUnsupported) {
     try {
       const enriched = await enrichSinglePrGraphQL(repo, pr, token, includeReviews);
       storage.setCached(cacheKey, enriched);
       return enriched;
-    } catch (e) {
+    } catch (e: any) {
       console.warn("[GithubService] GraphQL enrichment failed, falling back to REST:", e);
+      const errorMsg = e.message || '';
+      if (
+        errorMsg.includes('Resource not accessible') ||
+        errorMsg.includes('Parse error') || 
+        errorMsg.includes('403') || 
+        errorMsg.includes('401') ||
+        errorMsg.includes('Permissions')
+      ) {
+        console.warn("[GithubService] Disabling GraphQL queries for remainder of session to protect rate limits.");
+        isGraphQLUnsupported = true;
+      }
     }
   }
 

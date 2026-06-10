@@ -1,10 +1,13 @@
 
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis, ModelTier } from '../types';
-import { storage } from './storageService';
+import { storage, StorageKeys } from './storageService';
 import { cleanJsonString, withRetry } from './aiUtils';
 
 let globalGeminiApiKey: string | null = null;
+let cachedModelsList: GeminiModelInfo[] | null = null;
+let lastCacheTime = 0;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 export const setGeminiApiKey = (key: string) => {
   globalGeminiApiKey = key;
@@ -35,55 +38,205 @@ const ensureProApiKey = async () => {
   }
 };
 
-const PRO_MODEL = 'gemini-2.5-pro';
-const FLASH_MODEL = 'gemini-2.5-flash';
+const PRO_MODEL = 'gemini-2.0-pro-exp-02-05';
+const FLASH_MODEL = 'gemini-2.0-flash';
+const LITE_MODEL = 'gemini-1.5-flash';
+
+const recordUsage = (result: any, tier?: ModelTier) => {
+  try {
+    const tokens = result?.response?.usageMetadata?.totalTokenCount || result?.usageMetadata?.totalTokenCount;
+    if (tokens) {
+      storage.trackUsage(tokens, tier);
+    }
+  } catch (e) {
+    console.warn("[GeminiService] Failed to record usage:", e);
+  }
+};
 
 const MODELS = {
-  [ModelTier.LITE]: 'gemini-2.5-flash', 
+  [ModelTier.LITE]: LITE_MODEL, 
   [ModelTier.FLASH]: FLASH_MODEL,
   [ModelTier.PRO]: PRO_MODEL,
 };
 
 /**
  * Dynamically resolves the best matching model name from the active API token.
- * Falls back to hardcoded production configurations if listing fails or is restricted.
+ * Hierarchy: Manual Call Argument > Global Pinned Model > Tier-based Auto Selection.
  */
-export const resolveAvailableModel = async (tier: ModelTier): Promise<string> => {
-  try {
-    const ai = getClient();
-    // Fetch active models supporting generateContent as documented
-    const availableModels = await ai.models.list();
-    const models: any[] = [];
-    for await (const m of availableModels) {
-      models.push(m);
-    }
-    
-    if (models.length > 0) {
-      const validNames = models
-        .filter(m => m.supportedActions?.includes("generateContent"))
-        .map(m => m.name);
+export const resolveAvailableModel = async (tier: ModelTier, manualModel?: string): Promise<string> => {
+  const settings = storage.getSettings();
+  
+  // 1. Specific model requested by caller
+  if (manualModel && manualModel !== 'auto') {
+    return manualModel;
+  }
 
+  // 2. Global pinned model override
+  if (settings.geminiModelOverride && settings.geminiModelOverride !== 'auto') {
+    return settings.geminiModelOverride;
+  }
+
+  try {
+    // Use the cached detailed list instead of making a fresh models.list() call every time
+    const allModels = await listAvailableModelsDetailed();
+    
+    // Load cached model health to skip models known to be restricted
+    const cachedHealth = storage.getRaw<Record<string, { status: string }>>(StorageKeys.MODEL_HEALTH, {});
+    
+    // Strict filtering: Include only stable, core reasoning models
+    // Exclude 'nano' (underpowered), 'tuning' (internal), 'experiment' (unstable), and stale 1.0 or preview versions
+    const validModels = allModels.filter(m => {
+      const name = m.name.toLowerCase();
+      if (!name.startsWith('gemini-')) return false; // Ensure it's a Gemini core model
+      if (name.includes('vision') || name.includes('learnlm')) return false;
+      
+      const isStaleOrDeprecated = name.includes('gemini-1.0') || name.includes('-preview');
+      const isUnderpowered = name.includes('nano') || name.includes('8b');
+      const isInternal = name.includes('tuning') || name.includes('experiment') || name.includes('alpha');
+      
+      // Exclude models known to be restricted
+      const isRestricted = cachedHealth[m.name]?.status === 'restricted';
+      
+      return !isUnderpowered && !isInternal && !isRestricted && !isStaleOrDeprecated;
+    });
+    const validNames = validModels.map(m => m.name);
+    
+    if (validNames.length > 0) {
       const requestedDefault = MODELS[tier];
       
       // If our chosen default is present in the list, return it safely
-      if (validNames.includes(requestedDefault) || validNames.includes(`models/${requestedDefault}`)) {
+      if (validNames.includes(requestedDefault)) {
         return requestedDefault;
       }
       
       // Smart matching based on tier characteristics
       if (tier === ModelTier.PRO) {
-        const proMatch = validNames.find(n => n.includes('pro'));
-        if (proMatch) return proMatch.replace('models/', '');
-      } else {
-        const flashMatch = validNames.find(n => n.includes('flash') && !n.includes('lite'));
-        if (flashMatch) return flashMatch.replace('models/', '');
+        const proMatch = validNames.find(n => n.toLowerCase().includes('pro'));
+        if (proMatch) return proMatch;
+      } else if (tier === ModelTier.FLASH) {
+        const flashMatch = validNames.find(n => n.toLowerCase().includes('2.0-flash') && !n.toLowerCase().includes('lite'));
+        if (flashMatch) return flashMatch;
+      } else if (tier === ModelTier.LITE) {
+        const liteMatch = validNames.find(n => n.toLowerCase().includes('1.5-flash') && !n.toLowerCase().includes('8b'));
+        if (liteMatch) return liteMatch;
       }
+
+      // Fallback: use first valid model if requested defaults are unavailable
+      return validNames[0];
     }
   } catch (error) {
-    console.warn("[GeminiService] Model querying not available or unauthorized. Using local defaults.", error);
+    console.warn("[GeminiService] Model resolution failed. Using local defaults.", error);
   }
   
   return MODELS[tier] || FLASH_MODEL;
+};
+
+/**
+ * Fetches detailed information about all models supported by the current API key.
+ */
+export interface GeminiModelInfo {
+  name: string;
+  displayName: string;
+  description: string;
+  inputTokenLimit: number;
+  outputTokenLimit: number;
+  supportedActions: string[];
+}
+
+export const listAvailableModelsDetailed = async (forceRefresh = false): Promise<GeminiModelInfo[]> => {
+  if (!forceRefresh && cachedModelsList && (Date.now() - lastCacheTime < CACHE_TTL)) {
+    return cachedModelsList;
+  }
+
+  try {
+    const ai = getClient();
+    const availableModels = await ai.models.list();
+    const models: GeminiModelInfo[] = [];
+    const excludedKeywords = ['-tts', 'robotics', 'antigravity', 'deep-research', 'computer-use', 'embedding', 'aqa'];
+
+    for await (const m of availableModels) {
+      const name = m.name.toLowerCase();
+      const isSpecialist = excludedKeywords.some(keyword => name.includes(keyword));
+      
+      if (!name.startsWith('models/gemini-')) continue; // Must be a core Gemini model
+      if (name.includes('vision') || name.includes('learnlm')) continue;
+
+      // Filter out old/stale/unsupported 1.0 models and preview versions
+      const isStaleOrDeprecated = name.includes('gemini-1.0') || name.includes('-preview');
+      const isUnderpowered = name.includes('nano') || name.includes('8b');
+      const isInternal = name.includes('tuning') || name.includes('experiment') || name.includes('alpha');
+
+      if (m.supportedActions?.includes("generateContent") && !isSpecialist && !isUnderpowered && !isInternal && !isStaleOrDeprecated) {
+        models.push({
+          name: m.name.replace('models/', ''),
+          displayName: m.displayName || m.name,
+          description: m.description || "",
+          inputTokenLimit: m.inputTokenLimit || 0,
+          outputTokenLimit: m.outputTokenLimit || 0,
+          supportedActions: m.supportedActions
+        });
+      }
+    }
+    
+    cachedModelsList = models;
+    lastCacheTime = Date.now();
+    return models;
+  } catch (error) {
+    console.error("[GeminiService] Failed to list models:", error);
+    throw error;
+  }
+};
+
+export const registerModelFailure = (modelName: string, errorMessage: string) => {
+  if (!modelName) return;
+  const lowerMsg = errorMessage.toLowerCase();
+  const isQuotaOrRestriction = 
+    lowerMsg.includes("429") || 
+    lowerMsg.includes("resource_exhausted") || 
+    lowerMsg.includes("quota") ||
+    lowerMsg.includes("limit: 0") ||
+    lowerMsg.includes("limit is 0") ||
+    lowerMsg.includes("billing") ||
+    lowerMsg.includes("not enabled") ||
+    lowerMsg.includes("unauthorized") ||
+    lowerMsg.includes("access restricted") ||
+    lowerMsg.includes("permission denied") ||
+    lowerMsg.includes("unsupported") ||
+    lowerMsg.includes("blocked") ||
+    lowerMsg.includes("restricted");
+
+  if (isQuotaOrRestriction) {
+    try {
+      const cachedHealth = storage.getRaw<Record<string, any>>(StorageKeys.MODEL_HEALTH, {});
+      cachedHealth[modelName] = {
+        name: modelName,
+        status: 'restricted',
+        lastError: errorMessage.substring(0, 150)
+      };
+      storage.set(StorageKeys.MODEL_HEALTH, cachedHealth);
+      console.log(`[GeminiService] Automatically registered ${modelName} as restricted due to: ${errorMessage}`);
+    } catch (e) {
+      console.warn("[GeminiService] Failed to update health cache:", e);
+    }
+  }
+};
+
+export const testModelConnectivity = async (modelName: string): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const ai = getClient();
+    // Tiny request to test connectivity and quota using standard models.generateContent from @google/genai
+    const response = await withRetry(() => ai.models.generateContent({
+      model: modelName,
+      contents: "ping"
+    }), 1, 500, 'Gemini-Ping');
+    recordUsage(response, storage.getModelTier());
+    return { success: true };
+  } catch (e: any) {
+    const errorMessage = typeof e === 'object' && e !== null ? (e.message || JSON.stringify(e)) : String(e);
+    // Automatically register as restricted if it matches restriction keywords
+    registerModelFailure(modelName, errorMessage);
+    return { success: false, error: errorMessage };
+  }
 };
 
 /**
@@ -157,6 +310,7 @@ export const analyzeWorkflowBatch = async (
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response, tier);
 
   return JSON.parse(cleanJsonString(response.text || '{}'));
 };
@@ -303,6 +457,7 @@ OUTPUT: Respond ONLY with the specified JSON schema. Do not add prose outside th
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -376,6 +531,7 @@ export const analyzeWorkflowQualitative = async (
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response);
 
   const text = response.text || "{}";
   try {
@@ -406,19 +562,22 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
       }
     }
   }), 3, 1000, 'GeminiService');
+  recordUsage(response, tier);
   
   const responseText = response.text || "{}";
   try {
     const data = JSON.parse(cleanJsonString(responseText));
     return {
       report: data.report || "",
-      actions: data.actions || []
+      actions: data.actions || [],
+      modelUsed: model
     };
   } catch (e) {
     console.error("[GeminiService] Failed to parse PR analysis JSON:", responseText);
     return {
       report: "Analysis failed due to format error.",
-      actions: []
+      actions: [],
+      modelUsed: model
     };
   }
 };
@@ -508,8 +667,13 @@ export const generateCodeReview = async (
         }
       }
     });
+    recordUsage(response, tier);
 
-    return JSON.parse(cleanJsonString(response.text || '{}'));
+    const parsed = JSON.parse(cleanJsonString(response.text || '{}'));
+    return {
+      ...parsed,
+      modelUsed: modelName
+    };
   }, 3, 1000, 'GeminiService-Review');
 
   try {
@@ -527,8 +691,7 @@ export const generateCodeReview = async (
                             errorMessage.includes("API key");
 
     if (isQuotaOrApiKey) {
-      console.error("[GeminiService] Gemini API quota or authorization issue detected:", e);
-      throw new Error(`Gemini API Error (Quota/Rate Limit): The configured API key has exceeded its quota or has billing restrictions. Please check your plan & billing details on Google AI Studio (https://aistudio.google.com/) or configure a different key in Settings. Detail: ${errorMessage}`);
+      throw new Error(`Gemini API Error (Quota/Rate Limit): The configured API key has exceeded its quota or has billing restrictions. Please check your plan & billing details on Google AI Studio (https://aistudio.google.com/). Detail: ${errorMessage.substring(0, 300)}`);
     }
 
     console.error("[GeminiService] Failed to parse code review JSON:", e);
@@ -574,6 +737,7 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
       }
     }
   }), 3, 1000, 'GeminiService-Comments');
+  recordUsage(response, tier);
   
   const text = response.text || "[]";
   try {
@@ -607,6 +771,7 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
       }
     }
   }), 3, 1000, 'GeminiService-Restart');
+  recordUsage(response, tier);
 
   const text = response.text || "{}";
   try {
@@ -655,6 +820,7 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
       }
     }
   }), 3, 1000, 'GeminiService-Sync');
+  recordUsage(response, tier);
 
   const text = response.text || "{}";
   try {
@@ -700,6 +866,7 @@ export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]
       }
     }
   }), 3, 1000, 'GeminiService-TaskExtract');
+  recordUsage(response, tier);
   
   const responseText = response.text || "[]";
   try {

@@ -12,6 +12,19 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Permissive CORS middleware for cross-origin and iframe compliance
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Goog-Api-Key, X-Ignore-Error");
+    
+    if (req.method === "OPTIONS") {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: '10mb' }));
 
   // GitHub API Proxy

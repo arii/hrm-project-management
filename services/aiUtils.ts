@@ -21,20 +21,52 @@ export async function withRetry<T>(
       return await fn();
     } catch (e: any) {
       lastError = e;
-      // 503 is service unavailable, often transient for Google APIs
-      // 429 is rate limit (quota)
-      // fetch often throws "Failed to fetch" for transient network drops
+      
+      // Determine transient nature and potential retry delay
+      const errorMessage = e.message || '';
+      
+      // Attempt to extract delay from JSON error body if it exists
+      let suggestedDelay = 0;
+      if (errorMessage.includes('429')) {
+        try {
+          const jsonMatch = errorMessage.match(/\{.*\}/);
+          if (jsonMatch) {
+            const errorBody = JSON.parse(jsonMatch[0]);
+            // Look for RetryInfo in Google API error format
+            const retryInfo = errorBody.details?.find((d: any) => d['@type']?.includes('RetryInfo'));
+            if (retryInfo && retryInfo.retryDelay) {
+              // Convert "Xs" string to milliseconds
+              const delaySeconds = parseFloat(retryInfo.retryDelay);
+              suggestedDelay = delaySeconds * 1000;
+            }
+          }
+        } catch (parseError) {
+          console.warn(`[${loggerName}] Failed to parse RetryInfo from error`, parseError);
+        }
+      }
+
+      if (suggestedDelay > 30000 && maxRetries < 5) {
+        throw new Error(`Rate limit exceeded. Try again in ${Math.round(suggestedDelay / 1000)} seconds. Detail: ${errorMessage.substring(0, 150)}`);
+      }
+
       const isTransient = 
-        e.message?.includes('503') || 
-        e.message?.includes('UNAVAILABLE') || 
-        e.message?.includes('429') ||
-        e.message?.includes('Failed to fetch') ||
+        errorMessage.includes('503') || 
+        errorMessage.includes('UNAVAILABLE') || 
+        errorMessage.includes('429') ||
+        errorMessage.includes('Failed to fetch') ||
         e.name === 'AbortError';
 
       if (!isTransient || i === maxRetries) throw e;
       
-      const delay = initialDelay * Math.pow(2, i);
-      console.warn(`[${loggerName}] Transient error (attempt ${i + 1}/${maxRetries + 1}): ${e.message}. Retrying in ${delay}ms...`);
+      // Use suggested delay if 429, otherwise exponential backoff
+      const delay = suggestedDelay > 0 
+        ? suggestedDelay + (Math.random() * 1000) // jitter
+        : initialDelay * Math.pow(2, i);
+
+      // Only warn on second attempt onwards to keep console clean for single-request flutter
+      if (i > 0 || suggestedDelay > 0) {
+        console.warn(`[${loggerName}] Transient error (attempt ${i + 1}/${maxRetries + 1}): ${errorMessage.substring(0, 100)}... Retrying in ${Math.round(delay)}ms...`);
+      }
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

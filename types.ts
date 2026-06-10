@@ -249,6 +249,7 @@ export interface PrHealthAction {
 export interface PrHealthAnalysisResult {
   report: string;
   actions: PrHealthAction[];
+  modelUsed?: string;
 }
 
 export interface CodeReviewResult {
@@ -256,6 +257,7 @@ export interface CodeReviewResult {
   labels: string[];
   recommendation?: 'Approved' | 'Approved with Minor Changes' | 'Not Approved';
   suggestedIssues?: ProposedIssue[];
+  modelUsed?: string;
 }
 
 export interface RecoveryAnalysisResult {
@@ -311,4 +313,10 @@ export interface JulesSession {
   };
 }
 
-// End of file
+export interface UsageMetrics {
+  totalTokens: number;
+  totalRequests: number;
+  lastRequestTokens: number;
+  totalCost: number;
+  timestamp: number;
+}

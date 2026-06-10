@@ -1,5 +1,5 @@
 
-import { ModelTier } from '../types';
+import { ModelTier, UsageMetrics } from '../types';
 
 /**
  * Centralized Storage Service for RepoAuditor AI.
@@ -20,6 +20,8 @@ export const StorageKeys = {
   ANALYSIS_PREFIX: `${APP_PREFIX}analysis_`, // For useGeminiAnalysis persistence
   CODE_REVIEW_STATE: `${APP_PREFIX}code_review_state`,
   EXTRACTED_ISSUES: `${APP_PREFIX}extracted_issues_`, // Prefix for extracted issues per PR
+  USAGE: `${APP_PREFIX}usage`,
+  MODEL_HEALTH: `${APP_PREFIX}model_health`,
 };
 
 export interface AppSettings {
@@ -29,6 +31,7 @@ export interface AppSettings {
   julesSourceId?: string; // Optional manual override
   geminiApiKey: string;
   defaultModelTier: ModelTier;
+  geminiModelOverride?: string; // Manual model selection override (specific model name or 'auto')
   theme?: 'dark' | 'light';
   autoSendToJules?: boolean;
 }
@@ -39,7 +42,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   julesApiKey: '',
   julesSourceId: '',
   geminiApiKey: '',
-  defaultModelTier: ModelTier.LITE,
+  defaultModelTier: ModelTier.FLASH,
+  geminiModelOverride: 'auto',
   autoSendToJules: false,
 };
 
@@ -58,11 +62,17 @@ interface CacheEntry<T> {
 
 // Memory fallback for environments where LocalStorage is failing or full
 const memoryCache: Record<string, string> = {};
+// Parsed object cache to avoid repeated JSON parsing
+const parsedMemoryCache: Record<string, any> = {};
 
 const MAX_LOCALSTORAGE_ITEM_SIZE = 2 * 1024 * 1024; // 2MB limit for LocalStorage items
 
 export const storage = {
   getRaw<T>(key: string, defaultValue: T): T {
+    if (parsedMemoryCache[key] !== undefined) {
+      return parsedMemoryCache[key] as T;
+    }
+
     let item: string | null = null;
     try {
       item = localStorage.getItem(key);
@@ -77,7 +87,9 @@ export const storage = {
     if (!item) return defaultValue;
 
     try {
-      return JSON.parse(item);
+      const parsed = JSON.parse(item) as T;
+      parsedMemoryCache[key] = parsed;
+      return parsed;
     } catch (e) {
       console.warn(`[Storage] Error parsing key "${key}":`, e);
       return defaultValue;
@@ -91,6 +103,7 @@ export const storage = {
 
     // Save to memory cache regardless of LocalStorage status
     memoryCache[key] = serialized;
+    parsedMemoryCache[key] = value;
 
     // Guard against oversized items that will definitely fail or lag LocalStorage
     if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
@@ -172,7 +185,7 @@ export const storage = {
         keysToRemove.push(key);
       }
     }
-    keysToRemove.forEach(k => localStorage.removeItem(k));
+    keysToRemove.forEach(k => this.remove(k));
   },
 
   /**
@@ -198,7 +211,7 @@ export const storage = {
             }
         }
     }
-    keysToRemove.forEach(k => localStorage.removeItem(k));
+    keysToRemove.forEach(k => this.remove(k));
   },
 
   /**
@@ -232,7 +245,7 @@ export const storage = {
     let freed = 0;
     for (const cand of candidates) {
       if (freed >= targetSpace) break;
-      localStorage.removeItem(cand.key);
+      this.remove(cand.key);
       freed += cand.size;
     }
   },
@@ -287,7 +300,11 @@ export const storage = {
   },
 
   remove(key: string): void {
-    localStorage.removeItem(key);
+    delete memoryCache[key];
+    delete parsedMemoryCache[key];
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
   },
 
   /**
@@ -329,7 +346,7 @@ export const storage = {
       }
     }
 
-    keysToRemove.forEach(k => localStorage.removeItem(k));
+    keysToRemove.forEach(k => this.remove(k));
   },
 
   savePrReview(repo: string, prNumber: number, review: any): void {
@@ -398,6 +415,41 @@ export const storage = {
 
   getJulesSessions(): any[] | null {
     return this.get(StorageKeys.JULES_SESSIONS);
+  },
+
+  getUsage(): UsageMetrics {
+    return this.getRaw(StorageKeys.USAGE, {
+      totalTokens: 0,
+      totalRequests: 0,
+      lastRequestTokens: 0,
+      totalCost: 0,
+      timestamp: Date.now()
+    });
+  },
+
+  trackUsage(tokens: number, tier?: ModelTier): void {
+    const current = this.getUsage();
+    
+    // Average pricing per 1M tokens (conservative averages of input/output rates)
+    // Flash: ~$0.15 in / $0.60 out | Pro: ~$3.50 in / $10.50 out
+    const TIER_RATES = {
+      [ModelTier.LITE]: 0.15 / 1_000_000,
+      [ModelTier.FLASH]: 0.35 / 1_000_000,
+      [ModelTier.PRO]: 7.00 / 1_000_000,
+    };
+
+    const rate = tier ? TIER_RATES[tier] : TIER_RATES[ModelTier.FLASH];
+    const estimatedCost = tokens * rate;
+
+    const updated: UsageMetrics = {
+      totalTokens: current.totalTokens + tokens,
+      totalRequests: current.totalRequests + 1,
+      lastRequestTokens: tokens,
+      totalCost: (current.totalCost || 0) + estimatedCost,
+      timestamp: Date.now()
+    };
+    this.set(StorageKeys.USAGE, updated);
+    window.dispatchEvent(new CustomEvent('usage_updated', { detail: updated }));
   },
 
   getSettings(): AppSettings {

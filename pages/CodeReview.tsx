@@ -59,8 +59,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [loadingMessage, setLoadingMessage] = useState<string>("");
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [bulkProgress, setBulkProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
-  const [manualTier, setManualTier] = useState<ModelTier | null>(null);
-  
   const [actionError, setActionError] = useState<string | null>(null);
 
   const [extractedIssues, setExtractedIssues] = useState<ExtractedIssueUI[]>([]);
@@ -69,13 +67,18 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [aiSuggestions, setAiSuggestions] = useState<ExtractedIssueUI[]>([]);
   const [reviewedShas, setReviewedShas] = useState<Record<number, string>>({});
   const [autoSendToJules, setAutoSendToJules] = useState(storage.getSettings().autoSendToJules || false);
+  const [usage, setUsage] = useState(storage.getUsage());
 
   const { isDispatching, dispatchIssue, dispatchErrors } = useIssueDispatch(repoName, token);
   const {
     allSessions,
     suggestedSessions,
     julesReportStatus,
-    onReportToJules
+    onReportToJules,
+    isVerifying: isJulesVerifying,
+    hasVerifiedSource,
+    sourceId,
+    verificationError: julesVerificationError
   } = useJulesSessions(julesApiKey, repoName);
 
   const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
@@ -123,18 +126,36 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       
       for (let i = 0; i < toEnrich.length; i += chunkSize) {
         const chunk = toEnrich.slice(i, i + chunkSize);
-        await Promise.all(chunk.map(async (pr) => {
+        const enrichedResults = await Promise.all(chunk.map(async (pr) => {
           try {
             const enriched = await enrichSinglePr(repoName, pr, token, false);
-            setEnrichedMap(prev => ({ ...prev, [pr.number]: enriched }));
-            setPrs(prev => prev.map(p => p.number === pr.number ? enriched : p));
+            return enriched;
           } catch (e) {
             console.warn(`[CodeReview] Failed to enrich PR #${pr.number}`, e);
+            return null;
           } finally {
             completedCount++;
-            setListProgress({ total: toEnrich.length, current: completedCount });
           }
         }));
+
+        // Batch state updates once per chunk
+        const validEnriched = enrichedResults.filter((er): er is EnrichedPullRequest => er !== null);
+        if (validEnriched.length > 0) {
+          setEnrichedMap(prev => {
+            const nextMap = { ...prev };
+            validEnriched.forEach(er => {
+              nextMap[er.number] = er;
+            });
+            return nextMap;
+          });
+
+          setPrs(prev => prev.map(p => {
+            const matchingEnriched = validEnriched.find(er => er.number === p.number);
+            return matchingEnriched ? matchingEnriched : p;
+          }));
+        }
+        
+        setListProgress({ total: toEnrich.length, current: completedCount });
       }
       
       return initialPrs;
@@ -162,6 +183,12 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setLoading(false);
       setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
     }
+
+    const handleUsageUpdate = (e: any) => {
+      setUsage(e.detail);
+    };
+    window.addEventListener('usage_updated', handleUsageUpdate);
+    return () => window.removeEventListener('usage_updated', handleUsageUpdate);
   }, [repoName, token, loadPrList]);
 
   // Persist selected PR to storage
@@ -262,7 +289,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setErrors(prev => { const next = { ...prev }; delete next[pr.number]; return next; });
     
     // Explicit model tier logic: User selection > Storage Tier > Flash (if Pro fails)
-    const tier = options.modelTier || manualTier || storage.getModelTier();
+    const tier = options.modelTier || storage.getModelTier();
 
     const setMsg = (msg: string) => {
       if (!isBulk) setLoadingMessage(msg);
@@ -412,7 +439,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         fetchComments(repoName, selectedPr.number, token),
         fetchReviewComments(repoName, selectedPr.number, token)
       ]);
-      const allComments = [...issueComments, ...reviewComments].map(c => ({ id: c.id, user: c.user.login, body: c.body, url: c.html_url }));
+      const allComments = [...issueComments, ...reviewComments].map(c => ({ id: c.id, user: c.user?.login || 'unknown', body: c.body, url: c.html_url }));
       if (allComments.length === 0) { setActionError("No relevant comments found."); return; }
       const proposed = await extractIssuesFromComments(allComments);
       const mapped = proposed.map(p => ({ ...p, _id: Math.random().toString(36).substr(2, 9) }));
@@ -491,17 +518,24 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                     >
                       {hasExistingReview ? 'Refresh' : 'Run Audit'}
                     </Button>
-                    <div className="border-l border-slate-700 flex items-center px-1 bg-slate-800">
-                      <select 
-                        value={manualTier || storage.getModelTier()} 
-                        onChange={(e) => setManualTier(e.target.value as ModelTier)}
-                        className="bg-transparent text-[10px] text-slate-300 font-bold focus:outline-none cursor-pointer px-1 uppercase tracking-tighter"
-                      >
-                        <option value={ModelTier.LITE}>Lite</option>
-                        <option value={ModelTier.FLASH}>Flash</option>
-                        <option value={ModelTier.PRO}>Pro (Deep)</option>
-                      </select>
-                    </div>
+                    <a 
+                      href="#/gemini-status"
+                      className="border-l border-slate-700 flex items-center px-3 bg-slate-800 text-[10px] text-slate-400 font-bold hover:text-white transition-colors uppercase tracking-tighter group/tier"
+                      title="Manage Intelligence Settings"
+                    >
+                      <BrainCircuit className="w-3 h-3 mr-1.5 text-slate-500 group-hover/tier:text-indigo-400 transition-colors" />
+                      {storage.getModelTier()}
+                      <span className="mx-2 opacity-20">|</span>
+                      <span className="group-hover/tier:text-amber-400 transition-colors">{(usage.totalTokens / 1000).toFixed(1)}k</span>
+                      {usage.totalCost > 0 && (
+                        <>
+                          <span className="mx-2 opacity-20">|</span>
+                          <span className="group-hover/tier:text-emerald-400 transition-colors uppercase font-mono">
+                            ${usage.totalCost.toFixed(3)}
+                          </span>
+                        </>
+                      )}
+                    </a>
                   </div>
                )}
              </div>
@@ -945,8 +979,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
                         <Bot className="w-3 h-3 text-blue-400" /> Detailed Audit Report
                       </h4>
-                      <span className="text-[10px] text-slate-600 font-mono">
-                        Generated by Principal AI
+                      <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1.5 bg-slate-900 px-2.5 py-1 rounded-md border border-slate-800">
+                        <BrainCircuit className="w-3 h-3 text-indigo-400" />
+                        AI Architect: <span className="text-blue-400 font-semibold">{reviews[selectedPr.number].modelUsed || 'Gemini 2.0 Pro'}</span>
                       </span>
                     </div>
                     <div className="bg-slate-900/80 border border-slate-700/50 p-6 lg:p-10 rounded-2xl shadow-2xl backdrop-blur-sm">
@@ -1004,6 +1039,10 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         julesReportStatus={julesReportStatus}
         onReportToJules={onReportToJules}
         matchingPrNumber={selectedPr?.number}
+        isVerifying={isJulesVerifying}
+        hasVerifiedSource={hasVerifiedSource}
+        sourceId={sourceId}
+        verificationError={julesVerificationError}
       />
     </div>
   );

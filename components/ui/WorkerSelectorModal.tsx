@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, X, Terminal, CheckCircle2, AlertTriangle, Loader2, Send, Key, Plus } from 'lucide-react';
+import { Bot, X, Terminal, CheckCircle2, AlertTriangle, Loader2, Send, Key, Plus, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Badge from './Badge';
 import Button from './Button';
@@ -17,6 +17,10 @@ interface WorkerSelectorModalProps {
   julesReportStatus: Record<string, 'idle' | 'loading' | 'success' | 'error'>;
   onReportToJules: (id: string, sessionName: string, message: string) => void;
   matchingPrNumber?: number;
+  isVerifying?: boolean;
+  hasVerifiedSource?: boolean;
+  sourceId?: string | null;
+  verificationError?: string | null;
 }
 
 const WorkerSelectorModal: React.FC<WorkerSelectorModalProps> = ({
@@ -29,7 +33,11 @@ const WorkerSelectorModal: React.FC<WorkerSelectorModalProps> = ({
   description,
   julesReportStatus,
   onReportToJules,
-  matchingPrNumber
+  matchingPrNumber,
+  isVerifying,
+  hasVerifiedSource,
+  sourceId,
+  verificationError
 }) => {
   const navigate = useNavigate();
 
@@ -90,7 +98,29 @@ const WorkerSelectorModal: React.FC<WorkerSelectorModalProps> = ({
             </div>
             <div>
               <h3 className="text-white font-bold">Remediation Worker</h3>
-              <p className="text-xs text-slate-500 mt-0.5">Select a recent Jules session to receive this audit finding.</p>
+              <div className="flex items-center gap-2 mt-0.5">
+                {isVerifying ? (
+                  <div className="flex items-center gap-1.5 text-[10px] text-indigo-400 font-medium">
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    Verifying Repo Source...
+                  </div>
+                ) : hasVerifiedSource ? (
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-500 font-medium">
+                    <CheckCircle2 className="w-2.5 h-2.5" />
+                    Source Verified: {sourceId?.split('/').pop()}
+                  </div>
+                ) : verificationError ? (
+                  <div className="flex items-center gap-1.5 text-[10px] text-rose-500 font-medium">
+                    <XCircle className="w-2.5 h-2.5 flex-shrink-0" />
+                    <span className="truncate">{verificationError}</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-[10px] text-amber-500 font-medium">
+                    <AlertTriangle className="w-2.5 h-2.5" />
+                    Source Not Verified (Repo Match Only)
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">

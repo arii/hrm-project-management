@@ -32,21 +32,63 @@ if (typeof window !== 'undefined') {
     // Let the edge network rewrite rule do the work; do not switch to direct fetching
     console.log(`[JulesService] Detected static hosting platform (${host}). Utilizing native routing configurations.`);
     useDirectJules = false; 
+  } else {
+    // Check if we have persistently stored that proxy is not working
+    const cachedDirect = localStorage.getItem('jules_use_direct_api');
+    if (cachedDirect === 'true') {
+      console.log(`[JulesService] Loaded cached preference: using direct API routing.`);
+      useDirectJules = true;
+    }
   }
 }
 
-const request = async <T>(endpoint: string, apiKey: string, options: RequestInit = {}, forceRefresh = false): Promise<T> => {
+class ConcurrencyQueue {
+  private activeCount = 0;
+  private queue: (() => void)[] = [];
+  private maxConcurrency: number;
+
+  constructor(maxConcurrency: number) {
+    this.maxConcurrency = maxConcurrency;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.activeCount >= this.maxConcurrency) {
+      await new Promise<void>(resolve => {
+        this.queue.push(resolve);
+      });
+    }
+    this.activeCount++;
+    try {
+      return await fn();
+    } finally {
+      this.activeCount--;
+      const next = this.queue.shift();
+      if (next) {
+        next();
+      }
+    }
+  }
+}
+
+const julesQueue = new ConcurrencyQueue(3);
+
+const request = async <T>(
+  endpoint: string, 
+  apiKey: string, 
+  options: RequestInit & { noRetry?: boolean } = {}, 
+  forceRefresh = false
+): Promise<T> => {
+  const isGet = !options.method || options.method === 'GET';
+  const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
+
+  if (isGet && !forceRefresh) {
+    const cached = storage.get<T>(cacheKey);
+    if (cached) return cached;
+  }
+
   const runRequest = async (): Promise<T> => {
     if (!apiKey || !apiKey.trim()) {
       throw new Error("Jules API Key is missing. Please check your settings.");
-    }
-
-    const isGet = !options.method || options.method === 'GET';
-    const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
-
-    if (isGet && !forceRefresh) {
-      const cached = storage.get<T>(cacheKey);
-      if (cached) return cached;
     }
 
     const headers: HeadersInit = {
@@ -63,24 +105,44 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
       : `${JULES_API_BASE}/${endpoint}`;
 
+    const silent = (options.headers as any)?.['X-Ignore-Error'] === 'true';
+
     console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
+    
+    // Implement a custom shorter timeout for connectivity fast-checks / noRetry
+    const timeoutDuration = options.noRetry ? 4000 : 20000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
+    
     let response: Response;
     try {
       response = await fetch(fullUrl, {
         ...options,
         headers,
+        signal: controller.signal
       });
     } catch (e: any) {
-      console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      if (!silent) {
+        console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+      }
+      
+      if (e.name === 'AbortError') {
+        throw new Error(`Jules API Request timed out (${timeoutDuration / 1000}s). The network might be slow or unstable.`);
+      }
       if (!useDirectJules) {
-        console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
+        if (!silent) console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
         useDirectJules = true;
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('jules_use_direct_api', 'true');
+        }
         return runRequest();
       }
-      if (e.message === 'Failed to fetch') {
-        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection or if the URL is blocked. (Target: ${fullUrl})`);
+      if (e.message === 'Failed to fetch' && !silent) {
+        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection. (Target: ${fullUrl})`);
       }
       throw e;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     const rawText = await response.text();
@@ -89,6 +151,9 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
     if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html') || response.status === 404)) {
       console.warn(`[JulesService] Proxy endpoint ${fullUrl} returned HTML/404. Switching to direct Jules API routing...`);
       useDirectJules = true;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jules_use_direct_api', 'true');
+      }
       return runRequest();
     }
 
@@ -120,6 +185,9 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
       if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html'))) {
          console.warn(`[JulesService] Invalid JSON (HTML) from proxy. Retrying with direct Jules API routing...`);
          useDirectJules = true;
+         if (typeof window !== 'undefined') {
+           localStorage.setItem('jules_use_direct_api', 'true');
+         }
          return runRequest();
       }
 
@@ -136,7 +204,12 @@ const request = async <T>(endpoint: string, apiKey: string, options: RequestInit
     return data;
   };
 
-  return await withRetry(runRequest, 3, 1000, 'JulesService');
+  const retries = options.noRetry ? 1 : 3;
+  const retryDelay = options.noRetry ? 0 : 1000;
+  
+  return await julesQueue.run(async () => {
+    return await withRetry(runRequest, retries, retryDelay, 'JulesService');
+  });
 };
 
 /**
@@ -151,31 +224,83 @@ export const getSessionUrl = (sessionNameOrId: string): string => {
   return `https://jules.google.com/session/${id}/`;
 };
 
-export const listSources = async (apiKey: string, filter?: string): Promise<JulesSource[]> => {
-  const query = filter ? `?filter=${encodeURIComponent(filter)}` : '';
+export const listSources = async (apiKey: string, options: RequestInit = {}): Promise<JulesSource[]> => {
+  const query = ''; 
   
-  // Try root path first
-  try {
-    const data = await request<{ sources: JulesSource[] }>(`sources${query}`, apiKey, { headers: { 'X-Ignore-Error': 'true' } });
-    if (data.sources && data.sources.length > 0) return data.sources;
-  } catch (e: any) {}
+  const isSilent = (options?.headers as any)?.['X-Ignore-Error'] === 'true';
+  const silentOptions = {
+    ...options,
+    noRetry: true, // Prevent cascade retry storm during discovery Probes!
+    headers: { ...options.headers, 'X-Ignore-Error': 'true' }
+  };
 
-  // Systematically try parents
-  for (const location of JULES_LOCATIONS) {
+  // 1. Check cached successful path first
+  const cachedPath = typeof window !== 'undefined' ? localStorage.getItem('jules_successful_source_path') : null;
+  if (cachedPath) {
+    try {
+      console.log(`[JulesService] Trying cached successful source path: "${cachedPath}"`);
+      const data = await request<{ sources: JulesSource[] }>(cachedPath, apiKey, {
+        ...silentOptions,
+        noRetry: false // Allow standard retries for the verified cached path
+      });
+      if (data.sources && data.sources.length > 0) {
+        return data.sources;
+      }
+    } catch (e) {
+      console.warn(`[JulesService] Cached source path "${cachedPath}" failed or empty. Re-initiating discovery check...`);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('jules_successful_source_path');
+      }
+    }
+  }
+
+  // Common paths to search
+  const priorityPaths = [
+    `sources${query}`,
+    `projects/-/locations/global/sources${query}`,
+    `locations/global/sources${query}`
+  ];
+
+  // Try priority paths sequentially to prevent duplicate parallel state switching & retry storms
+  for (const path of priorityPaths) {
+    try {
+      const data = await request<{ sources: JulesSource[] }>(path, apiKey, silentOptions);
+      if (data.sources && data.sources.length > 0) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('jules_successful_source_path', path);
+          console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
+        }
+        return data.sources;
+      }
+    } catch (e) {}
+  }
+
+  // Fallback to searching other locations sequentially
+  const remainingLocations = JULES_LOCATIONS.filter(l => l !== 'global');
+  for (const location of remainingLocations) {
     const parents = [
       `projects/-/locations/${location}`,
       `locations/${location}`
     ];
 
     for (const parent of parents) {
+      const path = `${parent}/sources${query}`;
       try {
-        const data = await request<{ sources: JulesSource[] }>(`${parent}/sources${query}`, apiKey, { headers: { 'X-Ignore-Error': 'true' } });
-        if (data.sources && data.sources.length > 0) return data.sources;
+        const data = await request<{ sources: JulesSource[] }>(path, apiKey, silentOptions);
+        if (data.sources && data.sources.length > 0) {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('jules_successful_source_path', path);
+            console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
+          }
+          return data.sources;
+        }
       } catch (e) {}
     }
   }
 
-  console.error(`[JulesService] All source listing paths failed.`);
+  if (!isSilent) {
+    console.error(`[JulesService] All source listing paths failed.`);
+  }
   return [];
 };
 
@@ -475,7 +600,7 @@ export const deleteSession = async (apiKey: string, sessionName: string): Promis
   storage.remove(`${StorageKeys.JULES_CACHE}_sessions`);
 };
 
-export const findSourceForRepo = async (apiKey: string, repoName: string): Promise<string | null> => {
+export const findSourceForRepo = async (apiKey: string, repoName: string, allowGuess = true): Promise<string | null> => {
   if (!repoName) return null;
   
   try {
@@ -489,7 +614,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
     const sources = await listSources(apiKey);
     if (sources.length === 0) {
       console.warn("[JulesService] No sources found in Jules account.");
-      return null;
+      return allowGuess ? `sources/${repoName.split('/').pop()?.toLowerCase()}` : null;
     }
 
     // Normalize target repo name
@@ -498,7 +623,6 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
     const repoOnly = repoParts[repoParts.length - 1].toLowerCase();
     
     // Helper to normalize strings for comparison
-    // We try two versions: one with separators and one without (super clean)
     const normalizeWithSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9\-_]/g, '');
     const normalizeNoSep = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -526,7 +650,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
       if (nSourceName.endsWith(nRepoOnly) || nDisplayName === nRepoOnly) return true;
       if (nSourceName.includes(nFullRepo) || nDisplayName.includes(nFullRepo)) return true;
 
-      // Super clean matches (no separators - handles "tech-dancer" vs "techdancer")
+      // Super clean matches (no separators)
       if (nSourceNameClean.endsWith(nRepoOnlyClean) || nDisplayNameClean === nRepoOnlyClean) return true;
       if (nSourceNameClean.includes(nFullRepoClean) || nDisplayNameClean.includes(nFullRepoClean)) return true;
 
@@ -538,16 +662,19 @@ export const findSourceForRepo = async (apiKey: string, repoName: string): Promi
       return match.name;
     } 
 
-    // 2. BEST GUESS FALLBACK
-    // If no match found in the list (or list empty), try common patterns.
-    // We prioritize the short name (repoOnly) as it's more common in Jules IDs than owner/repo.
-    const guessId = `sources/${repoOnly}`;
-    console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
-    return guessId;
+    // 2. BEST GUESS FALLBACK (Only if allowed)
+    if (allowGuess) {
+      const guessId = `sources/${repoOnly}`;
+      console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
+      return guessId;
+    }
+
+    return null;
   } catch (e) {
     console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e);
-    // Even on error, try the best-guess as a last resort
-    const fallback = repoName.includes('/') ? `sources/${repoName.toLowerCase()}` : `sources/${repoName.toLowerCase()}`;
-    return fallback;
+    if (allowGuess) {
+      return `sources/${repoName.split('/').pop()?.toLowerCase()}`;
+    }
+    return null;
   }
 };
