@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { listSessions, deleteSession, enrichSessionsWithDetails, getSessionUrl, sendMessage } from '../services/julesService';
+import { listSessions, deleteSession, getSession, getSessionUrl, sendMessage } from '../services/julesService';
 import { JulesSession, EnrichedPullRequest } from '../types';
 import { Trash2, RefreshCw, AlertCircle, CheckCircle2, Loader2, Search, ExternalLink, GitPullRequest, GitBranch, Shield, ShieldCheck, ShieldAlert, ShieldQuestion, Send, Check, Activity, Rocket, Zap } from 'lucide-react';
 import Button from '../components/ui/Button';
@@ -43,10 +43,10 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isEnriching, setIsEnriching] = useState(false);
-  const [sortField, setSortField] = useState<'date' | 'status' | 'name'>('date');
+  const [sortField, setSortField] = useState<'date' | 'status' | 'name' | 'prStatus'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'ARCHIVED'>('ALL');
-  const [ciStatuses, setCiStatuses] = useState<Record<string, { status: string, prNumber: number, url: string }>>({});
+  const [ciStatuses, setCiStatuses] = useState<Record<string, { status: string, prNumber: number, url: string, prData?: EnrichedPullRequest }>>({});
 
   // Modal State
   const [confirmModal, setConfirmModal] = useState<{
@@ -89,17 +89,29 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
 
       // Background enrichment
       setIsEnriching(true);
-      try {
-        const enriched = await enrichSessionsWithDetails(julesApiKey, sorted);
-        setSessions(enriched);
-        
-        // After sessions are enriched with PR details, fetch CI status for found PRs
-        fetchCiStatusesForSessions(enriched);
-      } catch (e) {
-        console.warn("[JulesManagement] Enrichment failed:", e);
-      } finally {
+      
+      // Separate the enrichment process to allow incremental updates
+      const enrichAll = async () => {
+        for (let i = 0; i < sorted.length; i++) {
+          const session = sorted[i];
+          try {
+            // Re-fetch individual session details
+            const enrichedDetails = await getSession(julesApiKey, session.name);
+            
+            setSessions(prev => prev.map(s => s.name === session.name ? enrichedDetails : s));
+            
+            // Fetch CI status for this enriched session if it has PRs
+            if (enrichedDetails.outputs) {
+              fetchCiStatusesForSessions([enrichedDetails], force);
+            }
+          } catch (e: any) {
+            console.warn(`[JulesManagement] Enrichment failed for ${session.name}:`, e?.message || e);
+          }
+        }
         setIsEnriching(false);
-      }
+      };
+      
+      enrichAll();
     } catch (e: any) {
       setError(e.message || "Failed to load sessions");
     } finally {
@@ -107,7 +119,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     }
   }, [julesApiKey]);
 
-  const fetchCiStatusesForSessions = async (sessionsList: JulesSession[]) => {
+  const fetchCiStatusesForSessions = async (sessionsList: JulesSession[], skipCache = false) => {
     const ghToken = storage.getGithubToken();
     if (!ghToken) return;
 
@@ -144,17 +156,18 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
             head: { sha: '' } // enrichSinglePr handles empty SHA by fetching details
           } as any;
           
-          const enriched = await enrichSinglePr(item.repo, prObj, ghToken);
+          const enriched = await enrichSinglePr(item.repo, prObj, ghToken, false, skipCache);
           setCiStatuses(prev => ({
             ...prev,
             [item.sessionName]: { 
               status: enriched.testStatus, 
               prNumber: item.number,
-              url: item.url
+              url: item.url,
+              prData: enriched
             }
           }));
-        } catch (e) {
-          console.warn(`[JulesManagement] Failed to fetch CI status for PR #${item.number} in repo ${item.repo}:`, e);
+        } catch (e: any) {
+          console.warn(`[JulesManagement] Failed to fetch CI status for PR #${item.number} in repo ${item.repo}:`, e?.message || e);
         }
       }));
     }
@@ -254,6 +267,15 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     });
   };
 
+  const handleSort = (field: 'date' | 'status' | 'name' | 'prStatus') => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('desc');
+    }
+  };
+
   const filteredSessions = sessions.filter(s => {
     const searchLow = searchTerm.toLowerCase();
     const hasPrMatch = s.outputs?.some(o => 
@@ -281,6 +303,18 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       comparison = timeA - timeB;
     } else if (sortField === 'status') {
       comparison = (a.state || '').localeCompare(b.state || '');
+    } else if (sortField === 'prStatus') {
+      const getPrStatusValue = (s: JulesSession) => {
+        const pr = ciStatuses[s.name]?.prData;
+        if (!pr) return 0;
+        const stateLower = (pr.state || 'open').toLowerCase().trim();
+        const hasMergedAt = !!(pr.merged_at && pr.merged_at !== 'null' && pr.merged_at !== 'undefined');
+        // Merged > Open > Draft > Closed > None
+        if (stateLower === 'merged' || hasMergedAt) return 4;
+        if (stateLower === 'closed') return 1;
+        return pr.draft ? 2 : 3;
+      };
+      comparison = getPrStatusValue(a) - getPrStatusValue(b);
     } else {
       comparison = (a.title || a.name).localeCompare(b.title || b.name);
     }
@@ -319,6 +353,36 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     } else {
       setSelectedIds(new Set(filteredSessions.map(s => s.name)));
     }
+  };
+
+  const getPrStatusBadge = (sessionName: string, pr?: EnrichedPullRequest) => {
+    if (isEnriching && !pr) {
+        return <div className="flex items-center gap-1.5 text-xs text-slate-500"><Loader2 className="w-3 h-3 animate-spin text-purple-500" /> Loading...</div>;
+    }
+    if (!pr) return null;
+    
+    let label = 'Unknown';
+    let variant: 'blue' | 'green' | 'red' | 'yellow' | 'purple' | 'gray' | 'slate' = 'slate';
+    
+    const stateLower = (pr.state || 'open').toLowerCase().trim();
+    const hasMergedAt = !!(pr.merged_at && pr.merged_at !== 'null' && pr.merged_at !== 'undefined');
+    
+    // Improved PR state logic to fix inaccurate statuses
+    if (stateLower === 'merged' || hasMergedAt) {
+        label = 'Merged';
+        variant = 'purple';
+    } else if (stateLower === 'closed') {
+        label = 'Closed';
+        variant = 'red';
+    } else if (pr.draft) {
+        label = 'Draft';
+        variant = 'yellow';
+    } else {
+        label = 'Open';
+        variant = 'green';
+    }
+    
+    return <Badge variant={variant}>{label}</Badge>;
   };
 
   return (
@@ -380,7 +444,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
           {isEnriching && (
             <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[10px] text-purple-400 font-medium">
               <Loader2 className="w-3 h-3 animate-spin" />
-              Enriching PR info...
+              Loading status...
             </div>
           )}
         </div>
@@ -438,9 +502,10 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                       onChange={toggleSelectAll}
                     />
                   </th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Session</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Created</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Status</th>
+                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('name')}>Session</th>
+                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('date')}>Created</th>
+                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('prStatus')}>PR Status</th>
+                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('status')}>Status</th>
                   <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
                 </tr>
               </thead>
@@ -515,6 +580,9 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                     </td>
                     <td className="p-4 text-sm text-slate-400">
                       {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown'}
+                    </td>
+                    <td className="p-4">
+                      {getPrStatusBadge(session.name, sessionCi?.prData)}
                     </td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">

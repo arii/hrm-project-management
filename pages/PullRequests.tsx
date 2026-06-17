@@ -210,7 +210,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const diffPart = diff ? `\n\n### CURRENT CHANGES (Diff):\n${diff.substring(0, 15000)}` : "";
 
       const prompt = `
-        REPAIR PR #${pr.number} on branch '${pr.head.ref}'.
+        REPAIR PR #${pr.number} on branch '${pr.head?.ref || 'main'}'.
         
         GOAL: Implement all architectural improvements and fixes identified in the feedback and directives below.
         ${auditPart}
@@ -227,7 +227,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         6. SURGICAL FIXES: Address the specific feedback from reviewers and the principal engineer audit.
       `;
       
-      const branch = pr.head.ref;
+      const branch = pr.head?.ref || 'main';
       if (!branch) throw new Error("Could not determine head branch for this PR.");
       
       const session = await createSession(julesApiKey, prompt, sourceId, branch, `Repair Audit: #${pr.number}`);
@@ -270,7 +270,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         IMPLEMENTATION PLAN:
         ${plan}
         
-        GOAL: Build a clean version of this feature on ${pr.base.ref} following the roadmap above.
+        GOAL: Build a clean version of this feature on ${pr.base?.ref || 'main'} following the roadmap above.
         
         ### ZERO-SLOP REQUIREMENTS:
         1. ZERO-WASTE: Do not carry over any boilerplate or over-engineered abstractions from the previous PR.
@@ -278,7 +278,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         3. CODE MINIMIZATION: Prioritize a solution that uses the fewest lines of code possible.
       `;
       
-      const branch = pr.base.ref;
+      const branch = pr.base?.ref || 'main';
       if (!branch) throw new Error("Could not determine base branch for this PR.");
       
       const session = await createSession(julesApiKey, prompt, sourceId, branch, `Restart: ${title}`);
@@ -314,9 +314,9 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const issuesList = syncIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n');
 
       const prompt = `
-        AI SYNCHRONIZATION & CONFLICT RESOLUTION SESSION for PR #${pr.number} on branch '${pr.head.ref}'.
+        AI SYNCHRONIZATION & CONFLICT RESOLUTION SESSION for PR #${pr.number} on branch '${pr.head?.ref || 'main'}'.
         
-        GOAL: Restore structural alignment between the feature branch and its parent branch ('${pr.base.ref}') while PROTECTING the feature's intent.
+        GOAL: Restore structural alignment between the feature branch and its parent branch ('${pr.base?.ref || 'main'}') while PROTECTING the feature's intent.
         
         ### IDENTIFIED SYNCHRONIZATION ISSUES:
         ${issuesList}
@@ -333,7 +333,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         The final delta must represent ONLY the intentional work of the developer, cleaned of all git-related noise.
       `;
       
-      const branch = pr.head.ref;
+      const branch = pr.head?.ref || 'main';
       if (!branch) throw new Error("Could not determine head branch for this PR.");
       
       const session = await createSession(julesApiKey, prompt, sourceId, branch, `Sync & Conflict: #${pr.number}`);
@@ -483,7 +483,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
               </div>
               <div className="max-h-[600px] overflow-y-auto divide-y divide-slate-700 custom-scrollbar">
                 {proposedActions.map(action => (
-                  <div key={action._id} className="p-4 flex items-start gap-3 bg-slate-900/30 hover:bg-slate-900/50 transition-colors group">
+                  <div key={action.prNumber} className="p-4 flex items-start gap-3 bg-slate-900/30 hover:bg-slate-900/50 transition-colors group">
                     <div className="mt-1">
                       {action.status === 'processing' ? <Loader2 className="w-4 h-4 animate-spin text-blue-500" /> : 
                        action.status === 'success' ? <CheckCircle2 className="w-4 h-4 text-green-500" /> :
@@ -559,7 +559,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
              const syncSuccess = syncStatuses[pr.number] === 'success';
 
              return (
-             <div key={pr.id} className="bg-surface border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-all p-5 flex flex-col md:flex-row gap-6 items-center">
+             <div key={pr.number} className="bg-surface border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-all p-5 flex flex-col md:flex-row gap-6 items-center">
                 <div className="flex-1 min-w-0 w-full">
                   <div className="flex items-center gap-4 mb-3">
                     <div className={clsx("p-3 rounded-xl", pr.draft ? "bg-slate-800 text-slate-500" : "bg-green-500/10 text-green-500 shadow-inner shadow-green-500/5")}>
@@ -575,7 +575,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                         <span className="h-1 w-1 bg-slate-700 rounded-full" />
                         <span className="flex items-center gap-1.5"><User className="w-3.5 h-3.5"/> {pr.user?.login || 'unknown'}</span>
                         <span className="h-1 w-1 bg-slate-700 rounded-full" />
-                        <span className="flex items-center gap-1.5"><Badge variant="slate" className="font-mono text-[9px] bg-slate-900 border-slate-800">{pr.head.ref}</Badge></span>
+                        <span className="flex items-center gap-1.5"><Badge variant="slate" className="font-mono text-[9px] bg-slate-900 border-slate-800">{pr.head?.ref || 'unknown'}</Badge></span>
                       </div>
                       <div className="flex items-center gap-4 mt-2">
                         <div className="flex items-center gap-1 text-[10px] text-slate-400" title="Files Changed">

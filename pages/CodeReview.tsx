@@ -105,8 +105,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       initialPrs.forEach(pr => {
         const existing = storage.getPrReview(repoName, pr.number);
         if (existing) {
+          console.log(`[CodeReview] Found cached review for #${pr.number}:`, existing);
           newStatuses[pr.number] = 'completed';
           newReviews[pr.number] = existing;
+        } else {
+          console.log(`[CodeReview] No cached review for #${pr.number}`);
         }
       });
       
@@ -715,9 +718,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                        <Button variant="ghost" size="sm" onClick={() => handleSelectPr(selectedPr)} isLoading={isRefreshingPr} icon={RefreshCw} className="h-6 w-6 p-0" />
                     </h3>
                     <div className="flex gap-3 text-[10px] text-slate-400 font-mono">
-                      <span className="truncate max-w-[100px]">{selectedPr.head.ref}</span>
+                      <span className="truncate max-w-[100px]">{selectedPr.head?.ref || 'unknown'}</span>
                       <span className="text-slate-600">→</span>
-                      <span className="truncate max-w-[100px]">{selectedPr.base.ref}</span>
+                      <span className="truncate max-w-[100px]">{selectedPr.base?.ref || 'unknown'}</span>
                     </div>
                  </div>
                  <div className="flex items-center gap-3 shrink-0">

@@ -38,9 +38,35 @@ const ensureProApiKey = async () => {
   }
 };
 
-const PRO_MODEL = 'gemini-2.0-pro-exp-02-05';
-const FLASH_MODEL = 'gemini-2.0-flash';
-const LITE_MODEL = 'gemini-1.5-flash';
+const DEPRECATED_MODELS = [
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-pro',
+  'gemini-2.0-flash',
+  'gemini-2.0-pro',
+  'gemini-2.0-flash-thinking'
+];
+
+const isModelDeprecated = (name: string): boolean => {
+  const norm = name.toLowerCase().replace('models/', '');
+  // Exclude explicitly deprecated models
+  if (DEPRECATED_MODELS.some(dep => norm === dep || norm.startsWith(dep + '-'))) {
+    return true;
+  }
+  // Exclude legacy 1.0 models
+  if (norm.includes('gemini-1.0')) {
+    return true;
+  }
+  // Exclude old preview versions of 1.x / 2.x models
+  if (norm.includes('-preview') && !norm.includes('gemini-3')) {
+    return true;
+  }
+  return false;
+};
+
+const PRO_MODEL = 'gemini-3.1-pro-preview';
+const FLASH_MODEL = 'gemini-3.5-flash';
+const LITE_MODEL = 'gemini-3.1-flash-lite';
 
 const recordUsage = (result: any, tier?: ModelTier) => {
   try {
@@ -90,14 +116,14 @@ export const resolveAvailableModel = async (tier: ModelTier, manualModel?: strin
       if (!name.startsWith('gemini-')) return false; // Ensure it's a Gemini core model
       if (name.includes('vision') || name.includes('learnlm')) return false;
       
-      const isStaleOrDeprecated = name.includes('gemini-1.0') || name.includes('-preview');
+      const isDeprecated = isModelDeprecated(name);
       const isUnderpowered = name.includes('nano') || name.includes('8b');
       const isInternal = name.includes('tuning') || name.includes('experiment') || name.includes('alpha');
       
       // Exclude models known to be restricted
       const isRestricted = cachedHealth[m.name]?.status === 'restricted';
       
-      return !isUnderpowered && !isInternal && !isRestricted && !isStaleOrDeprecated;
+      return !isUnderpowered && !isInternal && !isRestricted && !isDeprecated;
     });
     const validNames = validModels.map(m => m.name);
     
@@ -111,13 +137,13 @@ export const resolveAvailableModel = async (tier: ModelTier, manualModel?: strin
       
       // Smart matching based on tier characteristics
       if (tier === ModelTier.PRO) {
-        const proMatch = validNames.find(n => n.toLowerCase().includes('pro'));
+        const proMatch = validNames.find(n => n.toLowerCase().includes('3.1-pro') || n.toLowerCase().includes('pro'));
         if (proMatch) return proMatch;
       } else if (tier === ModelTier.FLASH) {
-        const flashMatch = validNames.find(n => n.toLowerCase().includes('2.0-flash') && !n.toLowerCase().includes('lite'));
+        const flashMatch = validNames.find(n => (n.toLowerCase().includes('3.5-flash') || n.toLowerCase().includes('flash')) && !n.toLowerCase().includes('lite'));
         if (flashMatch) return flashMatch;
       } else if (tier === ModelTier.LITE) {
-        const liteMatch = validNames.find(n => n.toLowerCase().includes('1.5-flash') && !n.toLowerCase().includes('8b'));
+        const liteMatch = validNames.find(n => n.toLowerCase().includes('lite') || n.toLowerCase().includes('3.1-flash-lite'));
         if (liteMatch) return liteMatch;
       }
 
@@ -162,11 +188,11 @@ export const listAvailableModelsDetailed = async (forceRefresh = false): Promise
       if (name.includes('vision') || name.includes('learnlm')) continue;
 
       // Filter out old/stale/unsupported 1.0 models and preview versions
-      const isStaleOrDeprecated = name.includes('gemini-1.0') || name.includes('-preview');
+      const isDeprecated = isModelDeprecated(name);
       const isUnderpowered = name.includes('nano') || name.includes('8b');
       const isInternal = name.includes('tuning') || name.includes('experiment') || name.includes('alpha');
 
-      if (m.supportedActions?.includes("generateContent") && !isSpecialist && !isUnderpowered && !isInternal && !isStaleOrDeprecated) {
+      if (m.supportedActions?.includes("generateContent") && !isSpecialist && !isUnderpowered && !isInternal && !isDeprecated) {
         models.push({
           name: m.name.replace('models/', ''),
           displayName: m.displayName || m.name,
@@ -669,7 +695,14 @@ export const generateCodeReview = async (
     });
     recordUsage(response, tier);
 
-    const parsed = JSON.parse(cleanJsonString(response.text || '{}'));
+    const text = response.text || "{}";
+    
+    // Check if the response is actually an error object before parsing as code review
+    if (text.includes('"status":403') || text.includes('"status":401')) {
+      throw new Error(`AI API Error: ${text}`);
+    }
+
+    const parsed = JSON.parse(cleanJsonString(text));
     return {
       ...parsed,
       modelUsed: modelName

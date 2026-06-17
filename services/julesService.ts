@@ -34,11 +34,13 @@ if (typeof window !== 'undefined') {
     useDirectJules = false; 
   } else {
     // Check if we have persistently stored that proxy is not working
-    const cachedDirect = localStorage.getItem('jules_use_direct_api');
-    if (cachedDirect === 'true') {
-      console.log(`[JulesService] Loaded cached preference: using direct API routing.`);
-      useDirectJules = true;
-    }
+    // const cachedDirect = localStorage.getItem('jules_use_direct_api');
+    // if (cachedDirect === 'true') {
+    //   console.log(`[JulesService] Loaded cached preference: using direct API routing.`);
+    //   useDirectJules = true;
+    // }
+    localStorage.removeItem('jules_use_direct_api'); // Force proxy for everyone to avoid CORS
+
   }
 }
 
@@ -70,16 +72,20 @@ class ConcurrencyQueue {
   }
 }
 
-const julesQueue = new ConcurrencyQueue(3);
+const julesQueue = new ConcurrencyQueue(6);
 
 const request = async <T>(
   endpoint: string, 
   apiKey: string, 
-  options: RequestInit & { noRetry?: boolean } = {}, 
+  options: RequestInit & { noRetry?: boolean, silent?: boolean } = {}, 
   forceRefresh = false
 ): Promise<T> => {
   const isGet = !options.method || options.method === 'GET';
   const cacheKey = `${StorageKeys.JULES_CACHE}_${endpoint}`;
+
+  const h = options.headers as any;
+  const isHeaderSilent = (h instanceof Headers ? h.get('X-Ignore-Error') === 'true' : (h?.['X-Ignore-Error'] === 'true' || h?.['x-ignore-error'] === 'true'));
+  const silent = !!options.silent || !!isHeaderSilent;
 
   if (isGet && !forceRefresh) {
     const cached = storage.get<T>(cacheKey);
@@ -105,9 +111,7 @@ const request = async <T>(
       ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
       : `${JULES_API_BASE}/${endpoint}`;
 
-    const silent = (options.headers as any)?.['X-Ignore-Error'] === 'true';
-
-    console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
+    !silent && console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     
     // Implement a custom shorter timeout for connectivity fast-checks / noRetry
     const timeoutDuration = options.noRetry ? 4000 : 20000;
@@ -123,22 +127,11 @@ const request = async <T>(
       });
     } catch (e: any) {
       if (!silent) {
-        console.error(`[JulesService] Fetch failed for ${fullUrl}:`, e);
+        console.warn(`[JulesService] Fetch failed for ${fullUrl} (recovering with direct routing if fallback available):`, e?.message || e);
       }
       
       if (e.name === 'AbortError') {
         throw new Error(`Jules API Request timed out (${timeoutDuration / 1000}s). The network might be slow or unstable.`);
-      }
-      if (!useDirectJules) {
-        if (!silent) console.warn(`[JulesService] Proxy path ${fullUrl} failed. Switching to direct Jules API routing...`);
-        useDirectJules = true;
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('jules_use_direct_api', 'true');
-        }
-        return runRequest();
-      }
-      if (e.message === 'Failed to fetch' && !silent) {
-        throw new Error(`Network error: Failed to reach Jules API. Check your internet connection. (Target: ${fullUrl})`);
       }
       throw e;
     } finally {
@@ -147,7 +140,6 @@ const request = async <T>(
 
     const rawText = await response.text();
 
-    // Check if we got HTML on a proxy request
     if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html') || response.status === 404)) {
       console.warn(`[JulesService] Proxy endpoint ${fullUrl} returned HTML/404. Switching to direct Jules API routing...`);
       useDirectJules = true;
@@ -208,7 +200,7 @@ const request = async <T>(
   const retryDelay = options.noRetry ? 0 : 1000;
   
   return await julesQueue.run(async () => {
-    return await withRetry(runRequest, retries, retryDelay, 'JulesService');
+    return await withRetry(runRequest, retries, retryDelay, 'JulesService', silent);
   });
 };
 
@@ -227,10 +219,10 @@ export const getSessionUrl = (sessionNameOrId: string): string => {
 export const listSources = async (apiKey: string, options: RequestInit = {}): Promise<JulesSource[]> => {
   const query = ''; 
   
-  const isSilent = (options?.headers as any)?.['X-Ignore-Error'] === 'true';
+  const sourceListSilent = (options?.headers as any)?.['X-Ignore-Error'] === 'true';
   const silentOptions = {
     ...options,
-    noRetry: true, // Prevent cascade retry storm during discovery Probes!
+    silent: true,
     headers: { ...options.headers, 'X-Ignore-Error': 'true' }
   };
 
@@ -298,7 +290,7 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
     }
   }
 
-  if (!isSilent) {
+  if (!sourceListSilent) {
     console.error(`[JulesService] All source listing paths failed.`);
   }
   return [];
@@ -366,23 +358,19 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
  * Opt-in for performance.
  */
 export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesSession[]): Promise<JulesSession[]> => {
-  // Fetch details for the top N most recent sessions to avoid hitting limits or being too slow
-  const limit = 3;
-  const recent = sessions.slice(0, limit);
-  
+  // Fetch details for all sessions, with controlled concurrency via julesQueue
   const enriched = await Promise.all(
-    recent.map(async (s) => {
+    sessions.map(async (s) => {
       try {
-        return await getSession(apiKey, s.name);
-      } catch (e) {
-        console.warn(`[JulesService] Failed to enrich session ${s.name}:`, e);
+        return await julesQueue.run(async () => await getSession(apiKey, s.name));
+      } catch (e: any) {
+        console.warn(`[JulesService] Failed to enrich session ${s.name}:`, e?.message || e);
         return s;
       }
     })
   );
 
-  // Return enriched sessions joined with the rest of the list
-  return [...enriched, ...sessions.slice(limit)];
+  return enriched;
 };
 
 export const createSession = async (
@@ -670,8 +658,8 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     }
 
     return null;
-  } catch (e) {
-    console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e);
+  } catch (e: any) {
+    console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e?.message || e);
     if (allowGuess) {
       return `sources/${repoName.split('/').pop()?.toLowerCase()}`;
     }

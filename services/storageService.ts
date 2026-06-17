@@ -67,6 +67,106 @@ const parsedMemoryCache: Record<string, any> = {};
 
 const MAX_LOCALSTORAGE_ITEM_SIZE = 2 * 1024 * 1024; // 2MB limit for LocalStorage items
 
+const DB_NAME = 'RepoAuditorDB';
+const STORE_NAME = 'StorageStore';
+let dbInstance: IDBDatabase | null = null;
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    if (dbInstance) {
+      resolve(dbInstance);
+      return;
+    }
+    try {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = () => {
+        dbInstance = request.result;
+        resolve(dbInstance);
+      };
+      request.onerror = (e) => {
+        console.warn("[Storage] IndexedDB open error:", e);
+        reject(e);
+      };
+    } catch (err) {
+      console.warn("[Storage] IndexedDB not supported:", err);
+      reject(err);
+    }
+  });
+};
+
+const idbSet = async (key: string, value: string): Promise<void> => {
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(value, key);
+      request.onsuccess = () => resolve();
+      request.onerror = (e) => reject(e);
+    });
+  } catch (err) {
+    console.warn("[Storage] IndexedDB set failed:", err);
+  }
+};
+
+const idbRemove = async (key: string): Promise<void> => {
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.delete(key);
+      request.onsuccess = () => resolve();
+      request.onerror = (e) => reject(e);
+    });
+  } catch (err) {
+    console.warn("[Storage] IndexedDB delete failed:", err);
+  }
+};
+
+const loadAllFromIDB = async () => {
+  try {
+    const db = await initDB();
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const keysRequest = store.getAllKeys();
+    
+    keysRequest.onsuccess = () => {
+      const keys = keysRequest.result;
+      const valuesRequest = store.getAll();
+      
+      valuesRequest.onsuccess = () => {
+        const values = valuesRequest.result;
+        keys.forEach((key, index) => {
+          const kStr = String(key);
+          const vStr = String(values[index]);
+          if (memoryCache[kStr] === undefined) {
+            memoryCache[kStr] = vStr;
+            try {
+              parsedMemoryCache[kStr] = JSON.parse(vStr);
+            } catch (e) {
+              console.warn(`[Storage] Failed to pre-parse IndexedDB key ${kStr}`);
+            }
+          }
+        });
+        window.dispatchEvent(new CustomEvent('storage_cache_hydrated'));
+      };
+    };
+  } catch (err) {
+    console.warn("[Storage] IndexedDB preload failed:", err);
+  }
+};
+
+if (typeof window !== 'undefined' && typeof indexedDB !== 'undefined') {
+  loadAllFromIDB();
+}
+
 export const storage = {
   getRaw<T>(key: string, defaultValue: T): T {
     if (parsedMemoryCache[key] !== undefined) {
@@ -105,10 +205,16 @@ export const storage = {
     memoryCache[key] = serialized;
     parsedMemoryCache[key] = value;
 
+    // Asynchronously write to IndexedDB
+    idbSet(key, serialized).catch(e => console.warn(`[Storage] background IndexedDB set failed for ${key}:`, e));
+
     // Guard against oversized items that will definitely fail or lag LocalStorage
     if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
-      console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Using memory-only storage.`);
-      return true; // We consider it success because it's in memoryCache
+      console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Preserved in memory & IndexedDB.`);
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
+      return true; // We consider it success because it's safely stored in IndexedDB and memory
     }
 
     try {
@@ -138,8 +244,7 @@ export const storage = {
             return true;
           } catch (finalError) {
             const finalUsage = this.getSpaceUsage();
-            // Downgrade to warn as we have memory fallback
-            console.warn(`[Storage] LocalStorage is full. Item size: ${itemSizeKb}KB. Total usage after clear: ${Math.round(finalUsage.total / 1024)}KB. Falling back to memory-only.`);
+            console.warn(`[Storage] LocalStorage is full. Item size: ${itemSizeKb}KB. Falling back to memory & IndexedDB.`);
             
             // Last resort: clear EVERYTHING except settings to make room for future smaller saves
             this.emergencyReset();
@@ -147,14 +252,14 @@ export const storage = {
               localStorage.setItem(key, serialized);
               return true;
             } catch (totalFailure) {
-              return false; // Already in memoryCache
+              return true; // Return true because it is safely in memoryCache + IndexedDB
             }
           }
         }
       } else {
-        console.warn(`[Storage] Failed to write to localStorage for key "${key}" (not a quota error). Falling back to memory.`, e);
+        console.warn(`[Storage] Failed to write to localStorage for key "${key}" (not a quota error). Falling back to memory & IndexedDB.`, e);
       }
-      return false;
+      return true; // Success fallback through IndexedDB & memory
     }
   },
 
@@ -302,6 +407,7 @@ export const storage = {
   remove(key: string): void {
     delete memoryCache[key];
     delete parsedMemoryCache[key];
+    idbRemove(key).catch(e => console.warn(`[Storage] background IndexedDB remove failed for ${key}:`, e));
     try {
       localStorage.removeItem(key);
     } catch (e) {}
@@ -319,7 +425,7 @@ export const storage = {
     const transientKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];
     
     // Items that are cleared only in aggressive mode or manual clear
-    const semiPersistentKeys = [StorageKeys.PR_REVIEWS, StorageKeys.ANALYSIS_PREFIX];
+    const semiPersistentKeys = [StorageKeys.PR_REVIEWS, StorageKeys.ANALYSIS_PREFIX, StorageKeys.EXTRACTED_ISSUES];
 
     const isAbsoluteKeep = (key: string) => 
       absoluteKeep.some(k => key === k || key.startsWith(StorageKeys.REVIEWED_SHAS));
@@ -340,7 +446,7 @@ export const storage = {
       if (aggressive) {
         keysToRemove.push(key);
       } else {
-        if (isTransient(key) || isSemiPersistent(key)) {
+        if (isTransient(key)) {
           keysToRemove.push(key);
         }
       }
@@ -352,6 +458,7 @@ export const storage = {
   savePrReview(repo: string, prNumber: number, review: any): void {
     const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
     const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
+    console.log(`[Storage] Saving review key: ${key}`);
     this.set(key, {
       ...review,
       timestamp: Date.now()
@@ -361,7 +468,15 @@ export const storage = {
   getPrReview(repo: string, prNumber: number): any | null {
     const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
     const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
-    return this.getRaw(key, null);
+    const review = this.getRaw(key, null);
+    if (!review) {
+      console.log(`[Storage] No review found for key: ${key}`);
+      const relevantKeys = Object.keys(localStorage).filter(k => k.startsWith(StorageKeys.PR_REVIEWS));
+      console.log(`[Storage] Available review keys:`, relevantKeys);
+    } else {
+      console.log(`[Storage] Found review for key: ${key}`);
+    }
+    return review;
   },
 
   saveReviewedShas(repo: string, shas: Record<number, string>): void {

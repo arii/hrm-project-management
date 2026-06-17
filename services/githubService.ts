@@ -143,7 +143,7 @@ const request = async <T>(endpoint: string, token: string | undefined, options: 
       } catch (e: any) {
         clearTimeout(id);
         if (retries === 0) {
-          console.error(`[GithubService] Fetch failed for ${fullUrl}:`, e);
+          console.warn(`[GithubService] Fetch failed for ${fullUrl} (recovering if fallback exists):`, e?.message || e);
           
           const isAbort = e.name === 'AbortError' || 
                           e.name === 'TimeoutError' || 
@@ -385,14 +385,14 @@ export const fetchWorkflowFileAtSha = async (
           ref,
           content: decoded.substring(0, 8000)
         };
-      } catch (decodeError) {
-        console.error(`[githubService] Failed to decode base64 content for ${filePath}:`, decodeError);
+      } catch (decodeError: any) {
+        console.error(`[githubService] Failed to decode base64 content for ${filePath}:`, decodeError?.message || decodeError);
         return null;
       }
     }
     return null;
-  } catch (e) {
-    console.warn(`[githubService] fetchWorkflowFileAtSha failed for run ${run.id}:`, e);
+  } catch (e: any) {
+    console.warn(`[githubService] fetchWorkflowFileAtSha failed for run ${run.id}:`, e?.message || e);
     return null;
   }
 };
@@ -441,8 +441,8 @@ export const findPrPreviewUrl = async (repo: string, number: number, token: stri
       }
     }
     return null;
-  } catch (e) {
-    console.error("[GithubService] Failed to find preview URL:", e);
+  } catch (e: any) {
+    console.error("[GithubService] Failed to find preview URL:", e?.message || e);
     return null;
   }
 };
@@ -460,7 +460,7 @@ export const publishPullRequest = async (repo: string, token: string, number: nu
  * GRAPHQL-BASED PR ENRICHMENT (High Speed)
  * Replaces 4 REST calls with 1 GraphQL call.
  */
-const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token: string, includeReviews = false): Promise<EnrichedPullRequest> => {
+const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token: string, includeReviews = false, skipCache = false): Promise<EnrichedPullRequest> => {
   const [owner, name] = repo.split('/');
   const query = `
     query($owner: String!, $name: String!, $number: Int!) {
@@ -470,6 +470,7 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
           title
           body
           state
+          mergedAt
           mergeable
           mergeStateStatus
           changedFiles
@@ -479,6 +480,7 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
           baseRefName
           headRefOid
           author { login }
+          url
           ${includeReviews ? `
           reviews(last: 50) {
             nodes {
@@ -518,6 +520,7 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
 
   const response = await request<any>('/graphql', token, {
     method: 'POST',
+    headers: skipCache ? { 'X-Skip-Cache': 'true' } : {},
     body: JSON.stringify({ query, variables: { owner, name, number: pr.number } })
   });
 
@@ -565,6 +568,20 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
 
   return {
     ...pr,
+    title: data.title || pr.title || '',
+    body: data.body || pr.body || '',
+    state: data.state === 'OPEN' ? 'open' : 'closed',
+    draft: data.draft || false,
+    merged_at: data.mergedAt || (data.state === 'MERGED' ? (pr.merged_at || new Date().toISOString()) : null),
+    html_url: data.url || pr.html_url || '',
+    user: data.author ? { login: data.author.login, avatar_url: '', html_url: '' } : (pr.user || { login: '', avatar_url: '', html_url: '' }),
+    head: {
+      ref: data.headRefName || pr.head?.ref || '',
+      sha: data.headRefOid || pr.head?.sha || ''
+    },
+    base: {
+      ref: data.baseRefName || pr.base?.ref || ''
+    },
     mergeable: data.mergeable === 'MERGEABLE',
     mergeable_state: data.mergeStateStatus?.toLowerCase(),
     changed_files: data.changedFiles,
@@ -575,7 +592,7 @@ const enrichSinglePrGraphQL = async (repo: string, pr: GithubPullRequest, token:
     isApproved,
     isBig: data.changedFiles > 15,
     isReadyToMerge: data.mergeable === 'MERGEABLE',
-    isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(data.baseRefName.toLowerCase())
+    isLeaderBranch: ['leader', 'main', 'master', 'develop'].includes(data.baseRefName.toLowerCase()),
   } as EnrichedPullRequest;
 };
 
@@ -602,7 +619,7 @@ function deriveTestStatus(
  * HIGH-FIDELITY SINGLE PR ENRICHMENT
  * Fetches both Checks and Statuses to determine test health.
  */
-export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, includeReviews = false): Promise<EnrichedPullRequest> => {
+export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?: string, includeReviews = false, skipCache = false): Promise<EnrichedPullRequest> => {
   if (!repo || !repo.includes('/')) {
     throw new Error(`Invalid repository name: "${repo}". Must be in "owner/repo" format.`);
   }
@@ -611,18 +628,20 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}_${includeReviews ? 'full' : 'lite'}`;
   
   // Tier 3: SHA-based invalidation
-  const cached = storage.getCachedBySha<EnrichedPullRequest>(cacheKey, pr.head.sha);
-  if (cached) return cached;
+  if (!skipCache) {
+    const cached = storage.getCachedBySha<EnrichedPullRequest>(cacheKey, pr.head.sha);
+    if (cached) return cached;
+  }
 
   // Try GraphQL first as it's much faster (1 request vs 4)
   if (token && !isGraphQLUnsupported) {
     try {
-      const enriched = await enrichSinglePrGraphQL(repo, pr, token, includeReviews);
+      const enriched = await enrichSinglePrGraphQL(repo, pr, token, includeReviews, skipCache);
       storage.setCached(cacheKey, enriched);
       return enriched;
     } catch (e: any) {
-      console.warn("[GithubService] GraphQL enrichment failed, falling back to REST:", e);
-      const errorMsg = e.message || '';
+      const errorMsg = e?.message || String(e);
+      console.warn(`[GithubService] GraphQL enrichment failed, falling back to REST: ${errorMsg}`);
       if (
         errorMsg.includes('Resource not accessible') ||
         errorMsg.includes('Parse error') || 
@@ -638,9 +657,9 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
 
   // REST Fallback
   // Tier 1: Use 'pr' object directly, only fetch details if missing changed_files
-  const detailsPromise = (pr as any).changed_files !== undefined 
+  const detailsPromise = (pr as any).changed_files !== undefined && !skipCache
     ? Promise.resolve(pr as any) 
-    : fetchPrDetails(repo, pr.number, token);
+    : fetchPrDetails(repo, pr.number, token, skipCache);
 
   const [details, reviews, checkResults] = await Promise.all([
     detailsPromise,
@@ -741,8 +760,8 @@ export const fetchRepoContent = async (repo: string, path: string, token: string
     if (!Array.isArray(data) && data.content && data.encoding === 'base64') {
         try {
           return atob(data.content.replace(/\n/g, ''));
-        } catch (decodeError) {
-          console.error(`[githubService] Failed to decode base64 content for ${path}:`, decodeError);
+        } catch (decodeError: any) {
+          console.error(`[githubService] Failed to decode base64 content for ${path}:`, decodeError?.message || decodeError);
           throw new Error(`Failed to decode file content for ${path}. The data might be malformed.`);
         }
     }
