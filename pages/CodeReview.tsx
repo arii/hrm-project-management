@@ -26,6 +26,7 @@ import CredentialsRequired from '../components/ui/CredentialsRequired';
 import WorkerSelectorModal from '../components/ui/WorkerSelectorModal';
 import { useIssueDispatch } from '../hooks/useIssueDispatch';
 import { useJulesSessions } from '../hooks/useJulesSessions';
+import { useEnrichedPr } from '../hooks/useEnrichedPr';
 
 interface CodeReviewProps {
   repoName: string;
@@ -55,8 +56,21 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [prs, setPrs] = useState<GithubPullRequest[]>([]);
   const [enrichedMap, setEnrichedMap] = useState<Record<number, EnrichedPullRequest>>({});
   const [loading, setLoading] = useState(false);
-  const [isRefreshingPr, setIsRefreshingPr] = useState(false);
   const [selectedPr, setSelectedPr] = useState<EnrichedPullRequest | null>(null);
+  const [baseSelectedPr, setBaseSelectedPr] = useState<GithubPullRequest | null>(null);
+
+  const { enriched: enrichedSelectedPr, loading: enrichmentLoading, error: enrichmentError } = useEnrichedPr(
+    repoName,
+    baseSelectedPr as GithubPullRequest,
+    token,
+    true
+  );
+
+  useEffect(() => {
+    if (enrichedSelectedPr) {
+        setSelectedPr(enrichedSelectedPr);
+    }
+  }, [enrichedSelectedPr]);
   
   const [selectedPrIds, setSelectedPrIds] = useState<Set<number>>(new Set());
   const [isBulkAuditing, setIsBulkAuditing] = useState(false);
@@ -115,11 +129,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       initialPrs.forEach(pr => {
         const existing = storage.getPrReview(repoName, pr.number);
         if (existing) {
-          console.log(`[CodeReview] Found cached review for #${pr.number}:`, existing);
+          // console.log(`[CodeReview] Found cached review for #${pr.number}:`, existing);
           newStatuses[pr.number] = 'completed';
           newReviews[pr.number] = existing;
         } else {
-          console.log(`[CodeReview] No cached review for #${pr.number}`);
+          // console.log(`[CodeReview] No cached review for #${pr.number}`);
         }
       });
       
@@ -237,11 +251,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     if (currentFetchPrRef.current === pr.number) return;
     currentFetchPrRef.current = pr.number;
     
-    // Check if we already have enriched data
-    const existingEnriched = enrichedMap[pr.number];
-    
     // Immediate selection feedback
-    const fastEnriched: EnrichedPullRequest = existingEnriched || {
+    const fastEnriched: EnrichedPullRequest = enrichedMap[pr.number] || {
       ...pr,
       testStatus: 'pending',
       isApproved: false,
@@ -250,6 +261,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       isLeaderBranch: false
     };
     setSelectedPr(fastEnriched);
+    setBaseSelectedPr(pr); // This will trigger enrichment via hook
     
     // Clear temporary UI state
     setLoadingMessage("");
@@ -270,29 +282,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
     if (storedIssues && storedIssues.length > 0) {
       setExtractedIssues(storedIssues.map((i: any) => ({ ...i, _id: i._id || Math.random().toString(36).substr(2, 9) })));
-    }
-
-    // Only refresh if we don't have check results or if it's explicitly requested
-    // For now, we'll always do a background refresh but use cached data if available
-    setIsRefreshingPr(true);
-    try {
-      // Tier 2: includeReviews = true for the detail view
-      const full = await enrichSinglePr(repoName, pr, token, true);
-      
-      // Prevent race condition: only update if this is still the active PR
-      if (currentFetchPrRef.current === pr.number) {
-        setEnrichedMap(prev => ({ ...prev, [pr.number]: full }));
-        setSelectedPr(full);
-      }
-    } catch (e: any) {
-      console.error("Enrichment failed", e);
-      if (currentFetchPrRef.current === pr.number) {
-        setActionError(e.message || "Failed to fetch full technical metadata. Results may be incomplete.");
-      }
-    } finally {
-      if (currentFetchPrRef.current === pr.number) {
-        setIsRefreshingPr(false);
-      }
     }
   };
 
@@ -332,7 +321,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         setMsg("Applying context labels...");
         const labelsToRemove = pr.labels.map(l => l.name).filter(name => MANAGED_LABELS.has(name));
         for (const label of labelsToRemove) { await removeLabel(repoName, token, pr.number, label).catch(() => {}); }
-        await addLabels(repoName, token, pr.number, review.labels);
+        await addLabels(repoName, token, pr.number, review.labels).catch((e) => console.warn('[CodeReview] Failed to apply labels:', e));
       }
 
       updateReviewedSha(pr.number, pr.head.sha);
@@ -725,7 +714,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                  <div className="min-w-0 flex-1">
                     <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2 truncate">
                        {selectedPr.title} 
-                       <Button variant="ghost" size="sm" onClick={() => handleSelectPr(selectedPr)} isLoading={isRefreshingPr} icon={RefreshCw} className="h-6 w-6 p-0" />
+                       <Button variant="ghost" size="sm" onClick={() => setBaseSelectedPr(selectedPr)} isLoading={enrichmentLoading} icon={RefreshCw} className="h-6 w-6 p-0" />
                     </h3>
                     <div className="flex gap-3 text-[10px] text-slate-400 font-mono">
                       <span className="truncate max-w-[100px]">{selectedPr.head?.ref || 'unknown'}</span>
@@ -742,7 +731,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 lg:p-8 bg-[#0B1120] custom-scrollbar space-y-8">
-                {isRefreshingPr && (
+                {enrichmentLoading && (
                   <div className="flex items-center gap-3 text-sm text-blue-400 font-mono animate-pulse bg-blue-900/10 p-3 rounded-lg border border-blue-500/20">
                      <Loader2 className="w-4 h-4 animate-spin" /> Fetching technical metadata (Checks & Statuses)...
                   </div>

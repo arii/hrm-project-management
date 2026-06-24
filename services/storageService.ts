@@ -167,6 +167,8 @@ if (typeof window !== 'undefined' && typeof indexedDB !== 'undefined') {
   loadAllFromIDB();
 }
 
+const normalizeRepo = (repo: string) => repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
+
 export const storage = {
   getRaw<T>(key: string, defaultValue: T): T {
     if (parsedMemoryCache[key] !== undefined) {
@@ -177,7 +179,7 @@ export const storage = {
     try {
       item = localStorage.getItem(key);
     } catch (e) {
-      console.warn(`[Storage] Failed to read "${key}" from localStorage:`, e);
+      // console.warn(`[Storage] Failed to read "${key}" from localStorage:`, e);
     }
 
     if (!item) {
@@ -191,7 +193,7 @@ export const storage = {
       parsedMemoryCache[key] = parsed;
       return parsed;
     } catch (e) {
-      console.warn(`[Storage] Error parsing key "${key}":`, e);
+      // console.warn(`[Storage] Error parsing key "${key}":`, e);
       return defaultValue;
     }
   },
@@ -206,11 +208,10 @@ export const storage = {
     parsedMemoryCache[key] = value;
 
     // Asynchronously write to IndexedDB
-    idbSet(key, serialized).catch(e => console.warn(`[Storage] background IndexedDB set failed for ${key}:`, e));
+    idbSet(key, serialized).catch(e => { /* console.warn(`[Storage] background IndexedDB set failed for ${key}:`, e) */ });
 
     // Guard against oversized items that will definitely fail or lag LocalStorage
     if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
-      // console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Preserved in memory & IndexedDB.`);
       try {
         localStorage.removeItem(key);
       } catch (e) {}
@@ -223,7 +224,7 @@ export const storage = {
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
         const usage = this.getSpaceUsage();
-        console.warn(`[Storage] Quota exceeded (Used: ${Math.round(usage.total / 1024)}KB). Item: "${key}" (${itemSizeKb}KB). Attempting recovery...`, usage.usageByPrefix);
+        // console.warn(`[Storage] Quota exceeded (Used: ${Math.round(usage.total / 1024)}KB). Item: "${key}" (${itemSizeKb}KB). Attempting recovery...`, usage.usageByPrefix);
         
         // 1. Clear expired cache first
         this.clearExpired();
@@ -236,15 +237,14 @@ export const storage = {
           return true;
         } catch (retryError) {
           // Final attempt: clear all non-essential data
-          console.warn('[Storage] Quota still exceeded after scavenging. Evicting ALL transient data...');
+          // console.warn('[Storage] Quota still exceeded after scavenging. Evicting ALL transient data...');
           this.clearCaches(true);
           
           try {
             localStorage.setItem(key, serialized);
             return true;
           } catch (finalError) {
-            const finalUsage = this.getSpaceUsage();
-            console.warn(`[Storage] LocalStorage is full. Item size: ${itemSizeKb}KB. Falling back to memory & IndexedDB.`);
+            // console.warn(`[Storage] LocalStorage is full. Item size: ${itemSizeKb}KB. Falling back to memory & IndexedDB.`);
             
             // Last resort: clear EVERYTHING except settings to make room for future smaller saves
             this.emergencyReset();
@@ -257,7 +257,7 @@ export const storage = {
           }
         }
       } else {
-        console.warn(`[Storage] Failed to write to localStorage for key "${key}" (not a quota error). Falling back to memory & IndexedDB.`, e);
+        // console.warn(`[Storage] Failed to write to localStorage for key "${key}" (not a quota error). Falling back to memory & IndexedDB.`, e);
       }
       return true; // Success fallback through IndexedDB & memory
     }
@@ -456,8 +456,7 @@ export const storage = {
   },
 
   savePrReview(repo: string, prNumber: number, review: any): void {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
+    const key = `${StorageKeys.PR_REVIEWS}${normalizeRepo(repo)}_${prNumber}`;
     // console.log(`[Storage] Saving review key: ${key}`);
     this.set(key, {
       ...review,
@@ -466,8 +465,7 @@ export const storage = {
   },
 
   getPrReview(repo: string, prNumber: number): any | null {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
+    const key = `${StorageKeys.PR_REVIEWS}${normalizeRepo(repo)}_${prNumber}`;
     const review = this.getRaw(key, null);
     if (!review) {
       // console.log(`[Storage] No review found for key: ${key}`);
@@ -480,13 +478,11 @@ export const storage = {
   },
 
   saveReviewedShas(repo: string, shas: Record<number, string>): void {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    this.set(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, shas);
+    this.set(`${StorageKeys.REVIEWED_SHAS}_${normalizeRepo(repo)}`, shas);
   },
 
   saveExtractedIssues(repo: string, prNumber: number, issues: any[]): void {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizedRepo}_${prNumber}`;
+    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizeRepo(repo)}_${prNumber}`;
     this.set(key, {
       issues,
       timestamp: Date.now()
@@ -494,20 +490,17 @@ export const storage = {
   },
 
   getExtractedIssues(repo: string, prNumber: number): any[] {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizedRepo}_${prNumber}`;
+    const key = `${StorageKeys.EXTRACTED_ISSUES}${normalizeRepo(repo)}_${prNumber}`;
     const data = this.getRaw(key, null as any);
     return data?.issues || [];
   },
 
   getReviewedShas(repo: string): Record<number, string> {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${normalizedRepo}`, {});
+    return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${normalizeRepo(repo)}`, {});
   },
 
   saveWorkflowAudit(repo: string, audit: any): void {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizedRepo}`;
+    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizeRepo(repo)}`;
     this.set(key, {
       ...audit,
       timestamp: Date.now()
@@ -515,8 +508,7 @@ export const storage = {
   },
 
   getWorkflowAudit(repo: string): any | null {
-    const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
-    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizedRepo}`;
+    const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizeRepo(repo)}`;
     return this.getRaw(key, null);
   },
 

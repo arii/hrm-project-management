@@ -246,7 +246,7 @@ export const registerModelFailure = (modelName: string, errorMessage: string) =>
         lastError: errorMessage.substring(0, 150)
       };
       storage.set(StorageKeys.MODEL_HEALTH, cachedHealth);
-      console.log(`[GeminiService] Automatically registered ${modelName} as restricted due to: ${errorMessage}`);
+      // console.log(`[GeminiService] Automatically registered ${modelName} as restricted due to: ${errorMessage}`);
     } catch (e) {
       console.warn("[GeminiService] Failed to update health cache:", e);
     }

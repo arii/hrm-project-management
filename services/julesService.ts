@@ -30,7 +30,7 @@ if (typeof window !== 'undefined') {
     host.includes('pages.dev')
   ) {
     // Let the edge network rewrite rule do the work; do not switch to direct fetching
-    console.log(`[JulesService] Detected static hosting platform (${host}). Utilizing native routing configurations.`);
+    // console.log(`[JulesService] Detected static hosting platform (${host}). Utilizing native routing configurations.`);
     useDirectJules = false; 
   } else {
     // Check if we have persistently stored that proxy is not working
@@ -111,7 +111,7 @@ const request = async <T>(
       ? `https://jules.googleapis.com/v1alpha/${endpoint}` 
       : `${JULES_API_BASE}/${endpoint}`;
 
-    !silent && console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
+    // !silent && console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     
     // Implement a custom shorter timeout for connectivity fast-checks / noRetry
     const timeoutDuration = options.noRetry ? 4000 : 20000;
@@ -140,7 +140,7 @@ const request = async <T>(
 
     const rawText = await response.text();
 
-    if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html') || response.status === 404)) {
+    if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html')) && response.status === 404) {
       console.warn(`[JulesService] Proxy endpoint ${fullUrl} returned HTML/404. Switching to direct Jules API routing...`);
       useDirectJules = true;
       if (typeof window !== 'undefined') {
@@ -230,7 +230,7 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
   const cachedPath = typeof window !== 'undefined' ? localStorage.getItem('jules_successful_source_path') : null;
   if (cachedPath) {
     try {
-      console.log(`[JulesService] Trying cached successful source path: "${cachedPath}"`);
+      // console.log(`[JulesService] Trying cached successful source path: "${cachedPath}"`);
       const data = await request<{ sources: JulesSource[] }>(cachedPath, apiKey, {
         ...silentOptions,
         noRetry: false // Allow standard retries for the verified cached path
@@ -260,7 +260,7 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
       if (data.sources && data.sources.length > 0) {
         if (typeof window !== 'undefined') {
           localStorage.setItem('jules_successful_source_path', path);
-          console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
+          // console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
         }
         return data.sources;
       }
@@ -269,6 +269,10 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
 
   // Fallback to searching other locations sequentially
   const remainingLocations = JULES_LOCATIONS.filter(l => l !== 'global');
+  
+  // Keep track of failed paths to avoid retry storms
+  const failedPaths = new Set<string>();
+
   for (const location of remainingLocations) {
     const parents = [
       `projects/-/locations/${location}`,
@@ -277,16 +281,20 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
 
     for (const parent of parents) {
       const path = `${parent}/sources${query}`;
+      if (failedPaths.has(path)) continue;
+      
       try {
         const data = await request<{ sources: JulesSource[] }>(path, apiKey, silentOptions);
         if (data.sources && data.sources.length > 0) {
           if (typeof window !== 'undefined') {
             localStorage.setItem('jules_successful_source_path', path);
-            console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
+            // console.log(`[JulesService] Discovered and cached successful path: "${path}"`);
           }
           return data.sources;
         }
-      } catch (e) {}
+      } catch (e) {
+        failedPaths.add(path);
+      }
     }
   }
 
@@ -356,7 +364,7 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
         return allSessions;
       }
     } catch (e: any) {
-      if (!e.message.includes('404')) {
+      if (!e.message.includes('404') && !e.message.includes('Failed to fetch')) {
         console.warn(`[JulesService] Failed to list sessions with parent "${parent}": ${e.message}`);
       }
     }
@@ -488,7 +496,7 @@ export const createSession = async (
     });
   }
 
-  console.log(`[JulesService] Prepared ${candidates.length} session creation candidate(s) for relative ID "${relativeSourceId}"`);
+  // console.log(`[JulesService] Prepared ${candidates.length} session creation candidate(s) for relative ID "${relativeSourceId}"`);
 
   let lastError: any = null;
 
@@ -506,7 +514,7 @@ export const createSession = async (
 
     if (title) payload.title = title;
 
-    console.log(`[JulesService] Attempting session creation with candidate: ${candidate.description}`);
+    // console.log(`[JulesService] Attempting session creation with candidate: ${candidate.description}`);
 
     try {
       return await request<JulesSession>(endpoint, apiKey, {
@@ -561,7 +569,7 @@ export const sendMessage = async (apiKey: string, sessionName: string, text: str
 
   for (const payload of payloads) {
     try {
-      console.log(`[JulesService] Attempting sendMessage with payload key: ${Object.keys(payload)[0]}`);
+      // console.log(`[JulesService] Attempting sendMessage with payload key: ${Object.keys(payload)[0]}`);
       return await request(endpoint, apiKey, {
         method: 'POST',
         headers: { 'X-Ignore-Error': 'true' },
@@ -603,7 +611,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     // 0. Check for manual override first
     const manualSourceId = storage.getJulesSourceId();
     if (manualSourceId) {
-      console.log(`[JulesService] Using manual source ID override: "${manualSourceId}"`);
+      // console.log(`[JulesService] Using manual source ID override: "${manualSourceId}"`);
       return manualSourceId;
     }
 
@@ -627,7 +635,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     const nFullRepo = normalizeWithSep(repoName);
     const nFullRepoClean = normalizeNoSep(repoName);
     
-    console.log(`[JulesService] Matching repo "${repoName}" against ${sources.length} sources.`);
+    // console.log(`[JulesService] Matching repo "${repoName}" against ${sources.length} sources.`);
 
     // 1. HIGH-CONFIDENCE MATCHES
     let match = sources.find(s => {
@@ -654,7 +662,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     });
 
     if (match) {
-      console.log(`[JulesService] Auto-detected source: "${repoName}" -> "${match.name}"`);
+    // console.log(`[JulesService] Auto-detected source: "${repoName}" -> "${match.name}"`);
       return match.name;
     } 
 

@@ -1,4 +1,4 @@
-console.log("[Server] Initializing application startup sequence...");
+// console.log("[Server] Initializing application startup sequence...");
 
 import express from "express";
 import { createServer as createViteServer } from "vite";
@@ -96,8 +96,8 @@ async function startServer() {
         headers['X-Goog-Api-Key'] = apiKey;
       }
 
-      console.log(`[Proxy] Request: ${req.method} ${req.path} -> Targeting Jules: ${julesUrl}`);
-      console.log(`[Proxy] Headers:`, JSON.stringify({ ...headers, 'X-Goog-Api-Key': 'REDACTED' }));
+      // console.log(`[Proxy] Request: ${req.method} ${req.path} -> Targeting Jules: ${julesUrl}`);
+      // console.log(`[Proxy] Headers:`, JSON.stringify({ ...headers, 'X-Goog-Api-Key': 'REDACTED' }));
 
       try {
         const fs = await import('fs/promises');
@@ -126,8 +126,8 @@ async function startServer() {
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       try {
-        console.log(`[Proxy] Target URL: ${julesUrl}`);
-        console.log(`[Proxy] Method: ${req.method}`);
+        // console.log(`[Proxy] Target URL: ${julesUrl}`);
+        // console.log(`[Proxy] Method: ${req.method}`);
         
         const response = await fetch(julesUrl, {
           ...fetchOptions,
@@ -139,7 +139,7 @@ async function startServer() {
         const ignoreError = req.headers['x-ignore-error'] === 'true' || req.headers['X-Ignore-Error'] === 'true';
 
         if (!ignoreError) {
-          console.log(`[Proxy] Jules response [${response.status}]: Characters: ${rawText.length}`);
+          // console.log(`[Proxy] Jules response [${response.status}]: Characters: ${rawText.length}`);
 
           if (response.status >= 400) {
             console.warn(`[Proxy] Jules error body: ${rawText || '(empty)'}`);
@@ -208,9 +208,9 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Server] Success: Application listening on port ${PORT}`);
-    console.log(`[Server] Jules Proxy active at /api/jules/`);
-    console.log(`[Server] Health check at /api/health`);
+    // console.log(`[Server] Success: Application listening on port ${PORT}`);
+    // console.log(`[Server] Jules Proxy active at /api/jules/`);
+    // console.log(`[Server] Health check at /api/health`);
   });
 }
 

@@ -40,7 +40,7 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
     // If no verified ID was passed, and we don't have one in state, verify first
     const activeId = verifiedId !== undefined ? verifiedId : sourceId;
     if (!activeId) {
-      console.log('[JulesSessions] Holding off on session load - awaiting verified sourceId');
+      // console.log('[JulesSessions] Holding off on session load - awaiting verified sourceId');
       return;
     }
     
