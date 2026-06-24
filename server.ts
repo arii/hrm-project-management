@@ -42,7 +42,7 @@ async function startServer() {
       if (authHeader) headers['Authorization'] = authHeader;
       if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
 
-      console.log(`[GithubProxy] ${req.method} ${githubUrl}`);
+      // console.log(`[GithubProxy] ${req.method} ${githubUrl}`);
 
       const fetchOptions: any = {
         method: req.method,

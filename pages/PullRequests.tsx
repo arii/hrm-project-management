@@ -72,6 +72,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
+  const [batchStatus, setBatchStatus] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -151,6 +152,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         }));
         
         setListProgress({ total: toEnrich.length, current: completedCount });
+        setBatchStatus(`Analyzing PRs ${i + 1}-${Math.min(i + chunkSize, toEnrich.length)} of ${toEnrich.length}...`);
       }
     } catch (e: any) {
       console.error(e);
@@ -533,7 +535,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                  <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
                  <div className="flex flex-col">
                    <span className="text-xs font-bold text-white uppercase tracking-wider">Background Sync</span>
-                   <span className="text-[10px] text-blue-400 font-mono italic">Finding metadata & checks for item {listProgress.current}/{listProgress.total}...</span>
+                   <span className="text-[10px] text-blue-400 font-mono italic">{batchStatus}</span>
                  </div>
                </div>
                <div className="flex flex-col items-end gap-1">

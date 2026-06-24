@@ -49,9 +49,9 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 // Fallback values from environment, using safe access patterns
 const ENV_DEFAULTS = {
-  githubToken: (typeof process !== 'undefined' && process.env?.GITHUB_TOKEN) || (import.meta as any).env?.VITE_GITHUB_TOKEN || '',
-  julesApiKey: (typeof process !== 'undefined' && process.env?.JULES_API_KEY) || (import.meta as any).env?.VITE_JULES_API_KEY || '',
-  geminiApiKey: (typeof process !== 'undefined' && (process.env?.GEMINI_API_KEY || process.env?.API_KEY)) || (import.meta as any).env?.VITE_GEMINI_API_KEY || '',
+  githubToken: (typeof process !== 'undefined' && process.env?.GITHUB_TOKEN) || '',
+  julesApiKey: (typeof process !== 'undefined' && process.env?.JULES_API_KEY) || '',
+  geminiApiKey: (typeof process !== 'undefined' && (process.env?.GEMINI_API_KEY || process.env?.API_KEY)) || '',
 };
 
 interface CacheEntry<T> {
@@ -210,7 +210,7 @@ export const storage = {
 
     // Guard against oversized items that will definitely fail or lag LocalStorage
     if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
-      console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Preserved in memory & IndexedDB.`);
+      // console.warn(`[Storage] Item "${key}" is too large for LocalStorage (${itemSizeKb}KB). Preserved in memory & IndexedDB.`);
       try {
         localStorage.removeItem(key);
       } catch (e) {}
@@ -458,7 +458,7 @@ export const storage = {
   savePrReview(repo: string, prNumber: number, review: any): void {
     const normalizedRepo = repo.toLowerCase().trim().replace(/^\/+|\/+$/g, '');
     const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
-    console.log(`[Storage] Saving review key: ${key}`);
+    // console.log(`[Storage] Saving review key: ${key}`);
     this.set(key, {
       ...review,
       timestamp: Date.now()
@@ -470,11 +470,11 @@ export const storage = {
     const key = `${StorageKeys.PR_REVIEWS}${normalizedRepo}_${prNumber}`;
     const review = this.getRaw(key, null);
     if (!review) {
-      console.log(`[Storage] No review found for key: ${key}`);
+      // console.log(`[Storage] No review found for key: ${key}`);
       const relevantKeys = Object.keys(localStorage).filter(k => k.startsWith(StorageKeys.PR_REVIEWS));
-      console.log(`[Storage] Available review keys:`, relevantKeys);
+      // console.log(`[Storage] Available review keys:`, relevantKeys);
     } else {
-      console.log(`[Storage] Found review for key: ${key}`);
+      // console.log(`[Storage] Found review for key: ${key}`);
     }
     return review;
   },

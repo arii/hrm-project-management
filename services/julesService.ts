@@ -311,14 +311,21 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
   let nextToken: string | undefined = undefined;
   let pages = 0;
   
+  const cachedParent = typeof window !== 'undefined' ? localStorage.getItem('jules_successful_session_parent') : null;
   const parents: string[] = ['']; // root first
   
+  if (cachedParent) {
+    parents.unshift(cachedParent);
+  }
+
   for (const location of JULES_LOCATIONS) {
     parents.push(`projects/-/locations/${location}`);
     parents.push(`locations/${location}`);
   }
 
-  for (const parent of parents) {
+  const uniqueParents = Array.from(new Set(parents));
+
+  for (const parent of uniqueParents) {
     try {
       nextToken = undefined;
       pages = 0;
@@ -342,7 +349,12 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
         pages++;
       } while (nextToken && pages < 10);
 
-      if (allSessions.length > 0) return allSessions;
+      if (allSessions.length > 0) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('jules_successful_session_parent', parent);
+        }
+        return allSessions;
+      }
     } catch (e: any) {
       if (!e.message.includes('404')) {
         console.warn(`[JulesService] Failed to list sessions with parent "${parent}": ${e.message}`);
@@ -529,10 +541,6 @@ export const sendMessage = async (apiKey: string, sessionName: string, text: str
   
   // Try various payload formats since v1alpha can be inconsistent
   const payloads = [
-    { message: { text } },
-    { message: text },
-    { message: { parts: [{ text }] } },
-    { message: { content: { parts: [{ text }] } } },
     { prompt: text },
     { query: text },
     { queryText: text },

@@ -36,7 +36,17 @@ interface CodeReviewProps {
 type ReviewStatus = 'idle' | 'analyzing' | 'posting' | 'completed' | 'error';
 type ExtractedIssueUI = ProposedIssue & { _id: string; isCreated?: boolean; isDispatched?: boolean };
 
-const MANAGED_LABELS = new Set(['small', 'medium', 'large', 'xl', 'needs-improvement', 'ready-for-approval']);
+const MANAGED_LABELS = new Set([
+  'approved',
+  'approved with suggestions',
+  'not approved',
+  'small',
+  'medium',
+  'large',
+  'xl',
+  'needs-improvement',
+  'ready-for-approval'
+]);
 
 const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey }) => {
   const location = useLocation();

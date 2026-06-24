@@ -15,7 +15,13 @@ export const setGeminiApiKey = (key: string) => {
 
 const getClient = () => {
   const settings = storage.getSettings();
-  const apiKey = globalGeminiApiKey || settings.geminiApiKey || process.env.GEMINI_API_KEY || process.env.API_KEY;
+  
+  let apiKey = globalGeminiApiKey || settings.geminiApiKey;
+  
+  if (!apiKey && typeof process !== 'undefined' && process.env) {
+    apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  }
+  
   if (!apiKey) {
     throw new Error("Gemini API Key is missing. Please check your settings.");
   }
@@ -64,7 +70,7 @@ const isModelDeprecated = (name: string): boolean => {
   return false;
 };
 
-const PRO_MODEL = 'gemini-3.1-pro-preview';
+const PRO_MODEL = 'gemini-2.5-pro';
 const FLASH_MODEL = 'gemini-3.5-flash';
 const LITE_MODEL = 'gemini-3.1-flash-lite';
 
@@ -137,7 +143,7 @@ export const resolveAvailableModel = async (tier: ModelTier, manualModel?: strin
       
       // Smart matching based on tier characteristics
       if (tier === ModelTier.PRO) {
-        const proMatch = validNames.find(n => n.toLowerCase().includes('3.1-pro') || n.toLowerCase().includes('pro'));
+        const proMatch = validNames.find(n => n.toLowerCase().includes('2.5-pro') || n.toLowerCase().includes('pro'));
         if (proMatch) return proMatch;
       } else if (tier === ModelTier.FLASH) {
         const flashMatch = validNames.find(n => (n.toLowerCase().includes('3.5-flash') || n.toLowerCase().includes('flash')) && !n.toLowerCase().includes('lite'));
@@ -632,6 +638,13 @@ export const generateCodeReview = async (
     Flag: Verbose comments, over-engineering, duplicate patterns, and slop.
     Audit ratio: If additions > 100 lines, find 10+ lines to remove.
 
+    ### LABEL DIRECTIVES
+    You MUST output exactly one label in the "labels" array. This label must be one of:
+    - "approved" (if your recommendation is Approved)
+    - "approved with suggestions" (if your recommendation is Approved with Minor Changes)
+    - "not approved" (if your recommendation is Not Approved)
+    DO NOT use any other labels (do not use small, medium, xl, ready-for-approval, needs-improvement, etc.).
+
     ### REPAIR DIRECTIVES (for suggestedIssues)
     - DO NOT include diffs.
     - Provide ONLY specific, actionable instructions to fix the issue.
@@ -671,7 +684,14 @@ export const generateCodeReview = async (
           type: Type.OBJECT,
           properties: {
             reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section and a 'FINAL RECOMMENDATION' section." },
-            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            labels: { 
+              type: Type.ARRAY, 
+              items: { 
+                type: Type.STRING, 
+                enum: ['approved', 'approved with suggestions', 'not approved'] 
+              },
+              description: "Specify exactly one label matching the final status: 'approved', 'approved with suggestions', or 'not approved'."
+            },
             recommendation: { type: Type.STRING, enum: ['Approved', 'Approved with Minor Changes', 'Not Approved'] },
             suggestedIssues: { 
               type: Type.ARRAY, 
@@ -702,9 +722,31 @@ export const generateCodeReview = async (
       throw new Error(`AI API Error: ${text}`);
     }
 
-    const parsed = JSON.parse(cleanJsonString(text));
+    let parsed;
+    try {
+      const cleanText = cleanJsonString(text);
+      if (cleanText.toLowerCase().includes('<html') || cleanText.toLowerCase().includes('<!doctype')) {
+        throw new Error(`AI returned invalid HTML response instead of JSON. Response snippet: ${cleanText.substring(0, 100)}...`);
+      }
+      parsed = JSON.parse(cleanText);
+    } catch (e: any) {
+      throw new Error(`Failed to parse AI response as JSON: ${e.message}. Response snippet: ${text.substring(0, 100)}...`);
+    }
+    
+    // Enforce matching only the three standard labels: 'approved', 'approved with suggestions', 'not approved'
+    let finalLabels: string[] = [];
+    const rec = (parsed.recommendation || '').toLowerCase();
+    if (rec.includes('not approved')) {
+      finalLabels = ['not approved'];
+    } else if (rec.includes('minor') || rec.includes('changes') || rec.includes('suggest')) {
+      finalLabels = ['approved with suggestions'];
+    } else {
+      finalLabels = ['approved'];
+    }
+
     return {
       ...parsed,
+      labels: finalLabels,
       modelUsed: modelName
     };
   }, 3, 1000, 'GeminiService-Review');
