@@ -70,17 +70,17 @@ export default function WorkflowHealth({ repoName, token, julesApiKey }: Workflo
     dispatchIssue
   } = useIssueDispatch(repo, token);
 
+  const [workerModal, setWorkerModal] = useState<{
+    isOpen: boolean;
+    finding: any | null;
+  }>({ isOpen: false, finding: null });
+
   const {
     allSessions,
     suggestedSessions,
     julesReportStatus,
     onReportToJules
   } = useJulesSessions(julesApiKey, repo);
-
-  const [workerModal, setWorkerModal] = useState<{
-    isOpen: boolean;
-    finding: any | null;
-  }>({ isOpen: false, finding: null });
 
   const hasCredentials = repo && token;
 

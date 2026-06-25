@@ -1,38 +1,12 @@
 
-import { useState, useCallback, useEffect } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { AnalysisStatus } from '../types';
 import { storage, StorageKeys } from '../services/storageService';
 
-export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>, persistenceKey?: string) {
-  const [status, setStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
-  const [error, setError] = useState<string | null>(null);
-  
-  const [result, setResult] = useState<T | null>(() => {
-    if (persistenceKey) {
-      const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
-      const cached = storage.getRaw<T | null>(fullKey, null);
-      if (cached) {
-        // If we have a cached result, we start as COMPLETE
-        return cached;
-      }
-    }
-    return null;
-  });
-
-  // Ensure status is COMPLETE if we have a result
-  useEffect(() => {
-    if (result && status === AnalysisStatus.IDLE) {
-      setStatus(AnalysisStatus.COMPLETE);
-    }
-  }, [result, status]);
-
-  const run = useCallback(async (...args: any[]) => {
-    setStatus(AnalysisStatus.LOADING);
-    setError(null);
-    try {
+export function useGeminiAnalysis<T, A extends any[]>(analyzerFn: (...args: A) => Promise<T>, persistenceKey?: string) {
+  const mutation = useMutation({
+    mutationFn: async (args: A) => {
       const data = await analyzerFn(...args);
-      setResult(data);
-      setStatus(AnalysisStatus.COMPLETE);
       
       if (persistenceKey) {
         const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
@@ -41,21 +15,36 @@ export function useGeminiAnalysis<T>(analyzerFn: (...args: any[]) => Promise<T>,
           console.warn('[useGeminiAnalysis] Persistence failed (likely quota). Analysis succeeded but result will not be cached.');
         }
       }
-    } catch (e: any) {
-      setError(e.message || 'Analysis failed');
-      setStatus(AnalysisStatus.ERROR);
-    }
-  }, [analyzerFn, persistenceKey]);
+      return data;
+    },
+  });
 
-  const reset = useCallback(() => {
-    setStatus(AnalysisStatus.IDLE);
-    setResult(null);
-    setError(null);
+  const run = async (...args: A) => {
+    return mutation.mutateAsync(args);
+  };
+
+  const reset = () => {
+    mutation.reset();
     if (persistenceKey) {
       const fullKey = `${StorageKeys.ANALYSIS_PREFIX}${persistenceKey}`;
       storage.remove(fullKey);
     }
-  }, [persistenceKey]);
+  };
 
-  return { status, result, error, run, reset, setResult };
+  const status = mutation.isPending 
+    ? AnalysisStatus.LOADING 
+    : mutation.isError 
+      ? AnalysisStatus.ERROR 
+      : mutation.isSuccess 
+        ? AnalysisStatus.COMPLETE 
+        : AnalysisStatus.IDLE;
+
+  return { 
+    status, 
+    result: mutation.data || null, 
+    error: mutation.error ? (mutation.error as Error).message : null, 
+    run, 
+    reset,
+    setResult: (data: T | null) => {} // Simplified/Removed, as mutation result is driven by run
+  };
 }

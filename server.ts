@@ -59,7 +59,12 @@ async function startServer() {
       res.status(response.status).set('Content-Type', response.headers.get('content-type') || 'application/json').send(data);
     } catch (error: any) {
       console.error(`[GithubProxy] Error:`, error.message);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ 
+        error: {
+          message: error.message || 'Unknown GitHub Proxy Error',
+          code: 'GITHUB_PROXY_ERROR'
+        }
+      });
     }
   });
 
@@ -142,7 +147,14 @@ async function startServer() {
           // console.log(`[Proxy] Jules response [${response.status}]: Characters: ${rawText.length}`);
 
           if (response.status >= 400) {
-            console.warn(`[Proxy] Jules error body: ${rawText || '(empty)'}`);
+            let errorBody = rawText;
+            try {
+              const parsed = JSON.parse(rawText);
+              errorBody = JSON.stringify(parsed);
+            } catch (e) {
+              // Not JSON, keep as is
+            }
+            console.warn(`[Proxy] Jules error [${response.status}]: ${errorBody}`);
             console.warn(`[Proxy] Original request body: ${JSON.stringify(req.body)}`);
           }
         }

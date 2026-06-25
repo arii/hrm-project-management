@@ -92,23 +92,29 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       
       // Separate the enrichment process to allow incremental updates
       const enrichAll = async () => {
-        for (let i = 0; i < sorted.length; i++) {
-          const session = sorted[i];
-          try {
-            // Re-fetch individual session details
-            const enrichedDetails = await getSession(julesApiKey, session.name);
-            
-            setSessions(prev => prev.map(s => s.name === session.name ? enrichedDetails : s));
-            
-            // Fetch CI status for this enriched session if it has PRs
-            if (enrichedDetails.outputs) {
-              fetchCiStatusesForSessions([enrichedDetails], force);
-            }
-          } catch (e: any) {
-            console.warn(`[JulesManagement] Enrichment failed for ${session.name}:`, e?.message || e);
+        try {
+          const chunkSize = 5;
+          for (let i = 0; i < sorted.length; i += chunkSize) {
+            const chunk = sorted.slice(i, i + chunkSize);
+            await Promise.all(chunk.map(async (session) => {
+              try {
+                // Re-fetch individual session details
+                const enrichedDetails = await getSession(julesApiKey, session.name);
+                
+                setSessions(prev => prev.map(s => s.name === session.name ? enrichedDetails : s));
+                
+                // Fetch CI status for this enriched session if it has PRs
+                if (enrichedDetails.outputs) {
+                  fetchCiStatusesForSessions([enrichedDetails], force);
+                }
+              } catch (e: any) {
+                console.warn(`[JulesManagement] Enrichment failed for ${session.name}:`, e?.message || e);
+              }
+            }));
           }
+        } finally {
+          setIsEnriching(false);
         }
-        setIsEnriching(false);
       };
       
       enrichAll();

@@ -330,6 +330,16 @@ export const fetchWorkflowsContent = async (repo: string, token: string): Promis
   }
 };
 
+export const fetchActionTags = async (repo: string, token: string): Promise<string[]> => {
+  try {
+    const tags = await request<any[]>(`/repos/${repo}/tags`, token);
+    return tags.map((t: any) => t.name);
+  } catch (e) {
+    console.warn(`[GithubService] Failed to fetch tags for ${repo}:`, e);
+    return [];
+  }
+};
+
 export const createIssue = async (repo: string, token: string, issue: { title: string; body: string; labels?: string[] }) => {
   return request(`/repos/${repo}/issues`, token, { method: 'POST', body: JSON.stringify(issue) });
 };

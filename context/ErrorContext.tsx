@@ -26,7 +26,18 @@ export const ErrorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       message.includes('[vite]') || 
       message.includes('WebSocket connection to') || 
       message.includes('WebSocket closed without opened') ||
-      message.includes('failed to connect to websocket')
+      message.includes('failed to connect to websocket') ||
+      message.includes('[JulesService]') ||
+      message.includes('[GithubService]') ||
+      message.includes('[Storage]') ||
+      message.includes('[GeminiService]') ||
+      message.includes('[Proxy]') ||
+      message.includes('[JulesManagement]') ||
+      message.includes('[CodeReview]') ||
+      message.includes('[PullRequests]') ||
+      message.includes('Cached source path') ||
+      message.includes('fetchWorkflowFileAtSha') ||
+      message.includes('GraphQL enrichment failed')
     ) {
       return;
     }
@@ -48,14 +59,26 @@ export const ErrorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     const originalConsoleWarn = console.warn;
 
     console.error = (...args: any[]) => {
-      const message = args.map(arg => 
-        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
-      ).join(' ');
+      let message = '';
+      let stack: string | undefined;
+
+      args.forEach(arg => {
+        if (arg instanceof Error) {
+          message += arg.message + ' ';
+          stack = arg.stack;
+        } else if (typeof arg === 'object') {
+          message += JSON.stringify(arg) + ' ';
+        } else {
+          message += String(arg) + ' ';
+        }
+      });
       
-      // Capture stack trace if available
-      const stack = new Error().stack;
+      // If we didn't get a stack from an Error object, capture it here
+      if (!stack) {
+        stack = new Error().stack;
+      }
       
-      addError(message, stack);
+      addError(message.trim(), stack);
       originalConsoleError.apply(console, args);
     };
 

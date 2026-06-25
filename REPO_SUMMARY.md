@@ -6,7 +6,7 @@ RepoAuditor AI is a full-stack web application designed to automate and augment 
 
 - **Architecture**: Full-stack SPA with an Express backend (proxied).
 - **Core Functionality**:
-  - **AI Code Review**: Analyzes pull requests against set guidelines (Anti-AI-Slop, best practices).
+  - **AI Code Review**: Analyzes pull requests against set guidelines.
   - **Workflow Monitoring**: Checks GitHub Actions health and status.
   - **Agent Interaction**: Integrates with Jules agent via Vertex AI.
   - **Intelligent Caching**: Complex storage layer (LocalStorage + IndexedDB) to manage large data sets, minimize API costs, and improve performance.
@@ -15,67 +15,62 @@ RepoAuditor AI is a full-stack web application designed to automate and augment 
 
 *   **/server.ts**: The backend entry point. Acts as a secure proxy to hide API keys from the browser. Mounts Vite middleware for frontend serving.
 *   **/services/**: Contains business logic.
-    *   `geminiService.ts`: Manages communication with Gemini API, including JSON parsing, prompt management, and review logic.
+    *   `geminiService.ts`: Manages communication with Gemini API.
     *   `julesService.ts`: Manages interactions with Vertex AI/Jules agent.
     *   `githubService.ts`: Wraps GitHub API calls (GraphQL/REST).
     *   `storageService.ts`: Complex caching mechanism to balance performance and storage limits.
-*   **/pages/**: UI components representing the application modules (CodeReview, PullRequests, Dashboard, etc.).
-*   **/types.ts**: Global type definitions to ensure data consistency across services and UI.
+*   **/pages/**: UI components representing the application modules.
+*   **/types.ts**: Global type definitions.
 
 ---
 
-## Strategy for Re-creation
+## Strategy for Implementation & Retrospective
 
-If I were to rebuild this repository from scratch, I would focus on modularization from day one:
+Having completed the initial implementation, I can refine the strategy for building such an application:
 
-1.  **Architecture First**: Establish the Express backend (`server.ts`) as a robust proxy for *all* external API interactions immediately. Never let client-side code touch API secrets.
-2.  **Type Safety**: Define `types.ts` early. Rigid typing prevents runtime errors when handling complex JSON responses from AI models.
-3.  **Storage Abstraction**: The most crucial component for user experience is `storageService.ts`. Recreating this *before* building the UI is key. I would use a `Strategy` pattern to handle falling back from LocalStorage -> IndexedDB -> Memory to avoid quota-exceeded errors.
-4.  **Service Layer**: Keep services decoupled from the UI. Services should only know how to fetch/parse/transform data; they should not care about component state.
+1.  **Architecture First**: The proxy pattern (`server.ts`) is non-negotiable for security. This was correctly prioritized.
+2.  **Service-UI Decoupling**: Services are effectively decoupled. However, the manual management of loading/error states in components is now becoming complex.
+3.  **Storage Abstraction**: The layered storage approach is critical.
+
+### What I Would Implement Differently Next Time
+
+1.  **Data Fetching Library**: I implemented custom hooks like `useEnrichedPr` to handle data fetching, deduplication, and caching. For a more robust app, I would use **React Query (or SWR)** from the start. It handles race conditions, caching, revalidation, and loading/error states significantly better than manual `useEffect` management.
+2.  **Centralized Error Handling**: Currently, services and components are manually checking error messages (e.g., `e.message.includes('404')`). I would implement a standardized error response object from the backend proxy and a centralized Error Boundary component on the frontend to catch and gracefully handle API failures.
+3.  **Declarative State Machines**: For complex, multi-step asynchronous processes (like the discovery logic in `julesService.ts` or multi-stage audits), imperative `for` loops with `try/catch` become hard to manage. Using a lightweight state machine (like `XState`) would make these flows more predictable and easier to debug.
 
 ---
 
 ## Configuration & Secrets Management
 
-The application requires several secrets to function correctly. These should be managed via environment variables (in `.env` and `process.env`) on the server, *never* exposed to the client.
+The application requires several secrets to function correctly. These should be managed via environment variables on the server.
 
 | Variable | Usage | How to setup |
 | :--- | :--- | :--- |
 | `GEMINI_API_KEY` | Code reviews/AI Analysis | Generate via Google AI Studio. |
-| `GITHUB_TOKEN` | GitHub API access | Create a Fine-grained PAT with repo read/write access. |
+| `GITHUB_TOKEN` | GitHub API access | Create a Fine-grained PAT. |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI (Jules) | Set in GCP; requires Vertex AI API enablement. |
-
-*   **Setup Workflow**: Ensure these are defined in `.env.example`. The platform infrastructure will prompt for values upon deployment. For local development, manage locally in a `.env` file (ignored by git).
 
 ---
 
 ## Cost & Infrastructure Analysis
 
-### Infrastructure Costs (GCP)
-- **Cloud Run**: Scales to zero. Costs are purely request/duration based.
-- **Vertex AI (Jules)**: Costs based on model usage and session duration.
-- **Gemini API**: Cost per token (input/output).
-
-### Important vs. Unimportant
-*   **Highly Important**: **Caching (`storageService.ts`)**. This is the single biggest factor in both cost and speed. AI calls are expensive and slow; hitting the cache instead of the API saves both.
-*   **Highly Important**: **Strict JSON Parsing**. AI responses are brittle. Robust error handling (as implemented in `geminiService.ts` for HTML vs JSON detection) is critical.
-*   **Less Important (for MVP)**: Complex UI telemetry (animations, exhaustive logging). Focus on the core functionality first before worrying about highly detailed progress tracking.
-
 ### Cost Optimization Strategy
 1.  **Caching**: Aggressive caching is the only way to make this scalable.
-2.  **Model Selection**: Use the lightest model capable of the task (e.g., Flash for basic health checks, Pro for deep reviews).
-3.  **Batching**: As seen in `PullRequests.tsx`, batching operations is necessary to avoid API rate limits and improve user-perceived performance.
+2.  **Model Selection**: Use the lightest model capable of the task.
+3.  **Batching**: Batching operations is necessary to avoid API rate limits.
 
 ---
 
-## Redundancy & Optimization Analysis
+## Next Steps & Future Work
 
-### Identified Redundancies
-1.  **Logging**: Excessive `console.log` statements in `storageService.ts` and `githubService.ts` are redundant. They clog the console (445+ messages) and hurt performance in production.
-2.  **Storage Logic**: The fallback and scavenger logic for caching is duplicated and scattered across `storageService.ts`. It could be abstracted into a unified `StorageStrategy` class.
-3.  **Data Enrichment**: `enrichSinglePr` is being called across three different components (`PullRequests`, `JulesManagement`, `CodeReview`) with slight variations in cache parameters. This should be moved into a single hook, e.g., `useEnrichedPr(prId)`.
+1.  **Migrate remaining data-fetching hooks**: Continue migrating existing data-fetching logic (e.g., `useJulesSessions`, `useRepoSettings`) from manual `useEffect` management to `react-query` to improve consistency, caching, and loading state management.
+2.  **Centralize Error Handling**: Implement a standardized error response format from the backend proxy and create a global React Error Boundary component to catch and gracefully handle API failures.
+3.  **Refactor Storage Abstraction**: Re-engineer `storageService.ts` to use a formal `Strategy` pattern, making the fallback logic (LocalStorage -> IndexedDB -> Memory) more robust and easier to maintain.
+4.  **Fact-Based Grounding**: Implement real-time GitHub Action version checking to prevent hallucinations. Inject live release data into Gemini review prompts.
 
-### Architectural Flow (Text-Based)
+---
+
+## Architectural Flow (Text-Based)
 
 #### 1. Data Retrieval Flow (Proxy Pattern)
 `[User UI]` -> `[Proxy: server.ts]` -> `[External API: GitHub/Gemini]`

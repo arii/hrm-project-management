@@ -22,6 +22,7 @@ export const StorageKeys = {
   EXTRACTED_ISSUES: `${APP_PREFIX}extracted_issues_`, // Prefix for extracted issues per PR
   USAGE: `${APP_PREFIX}usage`,
   MODEL_HEALTH: `${APP_PREFIX}model_health`,
+  REPO_SOURCES: `${APP_PREFIX}repo_sources`,
 };
 
 export interface AppSettings {
@@ -375,13 +376,22 @@ export const storage = {
    * If the cached data has a head.sha that doesn't match the provided sha, it's considered invalid.
    */
   getCachedBySha<T>(key: string, sha: string): T | null {
-    const entry = this.getRaw(key, null as CacheEntry<T> | null);
+    const entry = this.getRaw(key, null as CacheEntry<any> | null);
     if (!entry) return null;
 
-    const data = entry.data as any;
-    const cachedSha = data?.head?.sha;
+    const data = entry.data;
+    if (!data) return null;
 
-    if (cachedSha && cachedSha !== sha) {
+    let cachedSha = data?.head?.sha;
+    let actualValue = data;
+
+    // Support both direct objects and objects wrapped in { head: { sha }, data }
+    if (!cachedSha && data && typeof data === 'object' && 'head' in data && 'data' in data) {
+      cachedSha = (data as any).head?.sha;
+      actualValue = (data as any).data;
+    }
+
+    if (cachedSha && sha && cachedSha !== sha) {
       return null;
     }
 
@@ -390,7 +400,7 @@ export const storage = {
       this.remove(key);
       return null;
     }
-    return entry.data;
+    return actualValue;
   },
 
   /**
@@ -617,6 +627,26 @@ export const storage = {
 
   getJulesSourceId(): string {
     return this.getSettings().julesSourceId || '';
+  },
+
+  getRepoSourceId(repo: string): string | null {
+    if (!repo) return null;
+    const map = this.getRaw(StorageKeys.REPO_SOURCES, {} as Record<string, string>);
+    return map[normalizeRepo(repo)] || null;
+  },
+
+  saveRepoSourceId(repo: string, sourceId: string): void {
+    if (!repo || !sourceId) return;
+    const map = this.getRaw(StorageKeys.REPO_SOURCES, {} as Record<string, string>);
+    map[normalizeRepo(repo)] = sourceId;
+    this.set(StorageKeys.REPO_SOURCES, map);
+  },
+
+  clearRepoSourceId(repo: string): void {
+    if (!repo) return;
+    const map = this.getRaw(StorageKeys.REPO_SOURCES, {} as Record<string, string>);
+    delete map[normalizeRepo(repo)];
+    this.set(StorageKeys.REPO_SOURCES, map);
   },
 
   saveSettings(updates: Partial<AppSettings>): void {

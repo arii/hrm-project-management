@@ -1,35 +1,25 @@
-import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { enrichSinglePr } from '../services/githubService';
 import { EnrichedPullRequest, GithubPullRequest } from '../types';
 
 export const useEnrichedPr = (repo: string, pr: GithubPullRequest, token: string, includeReviews = false) => {
-  const [enriched, setEnriched] = useState<EnrichedPullRequest | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!pr) {
-      setEnriched(null);
-      setLoading(false);
-      return;
-    }
-
-    const enrich = async () => {
-      setLoading(true);
-      setError(null);
+  const query = useQuery({
+    queryKey: ['enrichedPr', repo, pr?.number, pr?.head?.sha, includeReviews],
+    queryFn: async () => {
+      if (!pr) return null;
       try {
-        const result = await enrichSinglePr(repo, pr, token, includeReviews);
-        setEnriched(result);
+        return await enrichSinglePr(repo, pr, token, includeReviews);
       } catch (err: any) {
-        setError(err.message || 'Failed to enrich PR');
         // Fallback to unenriched on failure to keep the UI functional
-        setEnriched(pr as EnrichedPullRequest); 
-      } finally {
-        setLoading(false);
+        return pr as EnrichedPullRequest;
       }
-    };
-    enrich();
-  }, [repo, pr?.number, pr?.head?.sha, token, includeReviews]);
+    },
+    enabled: !!pr && !!token,
+  });
 
-  return { enriched, loading, error };
+  return { 
+    enriched: query.data || null, 
+    loading: query.isLoading, 
+    error: query.error ? (query.error as Error).message : null 
+  };
 };

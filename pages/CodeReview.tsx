@@ -94,6 +94,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [usage, setUsage] = useState(storage.getUsage());
 
   const { isDispatching, dispatchIssue, dispatchErrors } = useIssueDispatch(repoName, token);
+  const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
+
   const {
     allSessions,
     suggestedSessions,
@@ -104,8 +106,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     sourceId,
     verificationError: julesVerificationError
   } = useJulesSessions(julesApiKey, repoName);
-
-  const [workerModal, setWorkerModal] = useState<{ isOpen: boolean; finding: any | null }>({ isOpen: false, finding: null });
 
   const loadPrList = useCallback(async (skipCache = false) => {
     setLoading(true);
@@ -154,6 +154,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       for (let i = 0; i < toEnrich.length; i += chunkSize) {
         const chunk = toEnrich.slice(i, i + chunkSize);
         const enrichedResults = await Promise.all(chunk.map(async (pr) => {
+          if (!pr) return null;
           try {
             const enriched = await enrichSinglePr(repoName, pr, token, false);
             return enriched;
@@ -615,6 +616,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                 const isSelected = selectedPrIds.has(pr.number);
                 const status = statuses[pr.number] || 'idle';
                 
+                // Check if this PR has a Jules session
+                const sessionForPr = allSessions.find(session => 
+                  session.outputs?.some(output => {
+                    const outputUrl = output.pullRequest?.url;
+                    const normalizedOutputUrl = outputUrl?.replace('api.github.com/repos/', 'github.com/').replace('/pulls/', '/pull/');
+                    return outputUrl === pr.html_url || normalizedOutputUrl === pr.html_url;
+                  })
+                );
+
+                const isActive = sessionForPr && sessionForPr.state !== 'SUCCEEDED' && sessionForPr.state !== 'FAILED' && sessionForPr.state !== 'CANCELLED' && sessionForPr.state !== 'TERMINATED';
+                
                 return (
                   <div 
                     key={`pr-${pr.number}`}
@@ -639,6 +651,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                       <div className="flex justify-between items-start w-full">
                         <h4 className="font-medium text-sm line-clamp-1 pr-2 text-slate-300 group-hover:text-white">{pr.title}</h4>
                         <div className="shrink-0 flex items-center gap-1.5">
+                          {sessionForPr && <div className={clsx("w-2 h-2 rounded-full", isActive ? "bg-green-500 animate-pulse" : "bg-slate-500")} title={isActive ? "Active Jules Session" : "Inactive Jules Session"} />}
                           {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
                           {status === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
                           {(status === 'analyzing' || status === 'posting') && <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />}
@@ -975,7 +988,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                    </div>
                 )}
 
-                {reviews[selectedPr.number] && (currentStatus === 'completed' || currentStatus === 'idle') && (
+                {reviews[selectedPr.number] && (currentStatus === 'completed' || currentStatus === 'idle' || currentStatus === 'error') && (
                   <div className="space-y-4 animate-in fade-in duration-700">
                     <div className="flex items-center justify-between px-2">
                       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">

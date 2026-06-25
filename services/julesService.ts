@@ -114,7 +114,7 @@ const request = async <T>(
     // !silent && console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     
     // Implement a custom shorter timeout for connectivity fast-checks / noRetry
-    const timeoutDuration = options.noRetry ? 4000 : 20000;
+    const timeoutDuration = options.noRetry ? 4000 : 45000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
     
@@ -364,7 +364,8 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
         return allSessions;
       }
     } catch (e: any) {
-      if (!e.message.includes('404') && !e.message.includes('Failed to fetch')) {
+      const msg = e.message.toLowerCase();
+      if (!msg.includes('404') && !msg.includes('failed to fetch')) {
         console.warn(`[JulesService] Failed to list sessions with parent "${parent}": ${e.message}`);
       }
     }
@@ -615,10 +616,22 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
       return manualSourceId;
     }
 
+    // 0.5. Check for cached repo source ID mapping
+    const cachedRepoSourceId = storage.getRepoSourceId(repoName);
+    if (cachedRepoSourceId) {
+      // console.log(`[JulesService] Using cached source ID for "${repoName}": "${cachedRepoSourceId}"`);
+      return cachedRepoSourceId;
+    }
+
     const sources = await listSources(apiKey);
     if (sources.length === 0) {
       console.warn("[JulesService] No sources found in Jules account.");
-      return allowGuess ? `sources/${repoName.split('/').pop()?.toLowerCase()}` : null;
+      const defaultGuess = `sources/${repoName.split('/').pop()?.toLowerCase()}`;
+      if (allowGuess) {
+        storage.saveRepoSourceId(repoName, defaultGuess);
+        return defaultGuess;
+      }
+      return null;
     }
 
     // Normalize target repo name
@@ -662,7 +675,8 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     });
 
     if (match) {
-    // console.log(`[JulesService] Auto-detected source: "${repoName}" -> "${match.name}"`);
+      // console.log(`[JulesService] Auto-detected and cached source: "${repoName}" -> "${match.name}"`);
+      storage.saveRepoSourceId(repoName, match.name);
       return match.name;
     } 
 
@@ -670,6 +684,7 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
     if (allowGuess) {
       const guessId = `sources/${repoOnly}`;
       console.warn(`[JulesService] No source matched "${repoName}". Falling back to guess: "${guessId}"`);
+      storage.saveRepoSourceId(repoName, guessId);
       return guessId;
     }
 
@@ -677,7 +692,9 @@ export const findSourceForRepo = async (apiKey: string, repoName: string, allowG
   } catch (e: any) {
     console.error(`[JulesService] Error in findSourceForRepo for "${repoName}":`, e?.message || e);
     if (allowGuess) {
-      return `sources/${repoName.split('/').pop()?.toLowerCase()}`;
+      const fallbackId = `sources/${repoName.split('/').pop()?.toLowerCase()}`;
+      storage.saveRepoSourceId(repoName, fallbackId);
+      return fallbackId;
     }
     return null;
   }

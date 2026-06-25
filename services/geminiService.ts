@@ -3,6 +3,7 @@ import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis, ModelTier } from '../types';
 import { storage, StorageKeys } from './storageService';
 import { cleanJsonString, withRetry } from './aiUtils';
+import { fetchActionTags } from './githubService';
 
 let globalGeminiApiKey: string | null = null;
 let cachedModelsList: GeminiModelInfo[] | null = null;
@@ -376,6 +377,32 @@ If a job failed and the YAML shows a specific action version (e.g. actions/check
 Reason may be the run is from a fork PR. Proceed with job/step data only.)
 `;
 
+  // Action Grounding
+  let actionGrounding = '';
+  if (workflowFile) {
+    const actionUsages = Array.from(workflowFile.content.matchAll(/uses:\s*([^\/]+\/[^@\n]+)@/g)).map(m => m[1]);
+    const uniqueActions = Array.from(new Set(actionUsages));
+    const actionVersions: Record<string, string[]> = {};
+    const token = storage.getSettings().githubToken;
+    if (token) {
+      for (const action of uniqueActions) {
+        const tags = await fetchActionTags(action, token);
+        actionVersions[action] = tags;
+      }
+      actionGrounding = `
+## ACTION VERSION DATA (Ground Truth)
+The following are the actual available tags for the actions used in this workflow:
+${JSON.stringify(actionVersions, null, 2)}
+
+CRITICAL INSTRUCTIONS FOR ACTION VERSIONS:
+1. USE ONLY THE VERSIONS PROVIDED ABOVE.
+2. If the workflow uses a version NOT in this list, flag it as a CRITICAL ERROR, as it may be non-existent or inaccessible.
+3. DO NOT recommend changing the version of any action. Keep the version exactly as it is in the workflow file.
+4. Only flag as an error if the version is explicitly invalid (not in the list of available tags).
+`;
+    }
+  }
+
   const jobsSection = jobs.map(j => ({
     id: j.id,
     name: j.name,
@@ -415,6 +442,8 @@ Perform a DEEP TECHNICAL AUDIT of this specific workflow run.
 - Status: ${run.status}
 
 ${workflowSection}
+
+${actionGrounding}
 
 ## JOB AND STEP DATA (with annotations / compiler errors)
 ${JSON.stringify(jobsSection, null, 2)}
@@ -655,6 +684,7 @@ export const generateCodeReview = async (
     ### MANDATORY SECTIONS
     1. ## ANTI-AI-SLOP
     2. ## FINAL RECOMMENDATION (Approved | Approved with Minor Changes | Not Approved)
+    3. ## DEFINITION OF DONE (If recommendation is "Approved with Minor Changes", list concrete, non-ambiguous tasks required for approval).
     
     Return valid JSON matching the specified schema.`;
 
@@ -683,7 +713,7 @@ export const generateCodeReview = async (
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section and a 'FINAL RECOMMENDATION' section." },
+            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section, a 'FINAL RECOMMENDATION' section, and if applicable, a 'DEFINITION OF DONE' section." },
             labels: { 
               type: Type.ARRAY, 
               items: { 

@@ -76,8 +76,10 @@ export async function withRetry<T>(
                     e.status === 429 || 
                     e.statusCode === 429;
       
+      const isBillingIssue = errorMessage.includes('spending cap') || errorMessage.includes('billing');
+      
       let suggestedDelay = 0;
-      if (is429) {
+      if (is429 && !isBillingIssue) {
         try {
           const details = e.details || e.error?.details;
           if (Array.isArray(details)) {
@@ -115,7 +117,7 @@ export async function withRetry<T>(
       const isTransient = 
         errorMessage.includes('503') || 
         errorMessage.includes('UNAVAILABLE') || 
-        is429 ||
+        (is429 && !isBillingIssue) ||
         errorMessage.includes('Failed to fetch') ||
         e.name === 'AbortError';
 
