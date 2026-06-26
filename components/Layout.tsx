@@ -55,8 +55,10 @@ const Layout: React.FC<LayoutProps> = ({
     <>
       <div className="p-6 border-b border-slate-700 flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2 text-primary mb-1">
-            <GitMerge className="w-6 h-6" />
+          <div className="flex items-center gap-2 text-white mb-1">
+            <div className="bg-primary/20 p-1 rounded">
+              <GitMerge className="w-6 h-6 text-primary" />
+            </div>
             <span className="font-bold text-xl tracking-tight text-white">RepoAuditor AI</span>
           </div>
           <p className="text-xs text-slate-500 font-medium tracking-wider uppercase">DevAI workflow console</p>
@@ -75,8 +77,8 @@ const Layout: React.FC<LayoutProps> = ({
               clsx(
                 "flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all duration-200 text-sm",
                 isActive 
-                  ? "bg-primary/10 text-primary border border-primary/20 font-bold" 
-                  : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                  ? "bg-primary/20 text-white border-l-4 border-primary font-bold" 
+                  : "text-slate-400 hover:bg-slate-800 hover:text-white border-l-4 border-transparent"
               )
             }
           >
@@ -114,7 +116,7 @@ const Layout: React.FC<LayoutProps> = ({
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0 lg:ml-64">
-        <header className="h-16 border-b border-slate-700 bg-surface/50 backdrop-blur-sm sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between">
+        <header className="h-16 border-b border-slate-700 bg-surface sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}

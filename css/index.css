@@ -1,3 +1,5 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
 /* RepoAuditor Global Styles */
 
 body {
@@ -6,6 +8,7 @@ body {
     background-attachment: fixed;
     background-repeat: no-repeat;
     background-color: #0f172a; /* Fallback */
+    color: #f1f5f9; /* Guarantee highly-readable slate-100 color fallback */
 }
 
 /* Custom Scrollbar */

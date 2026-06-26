@@ -47,7 +47,7 @@ const AnalysisCard: React.FC<AnalysisCardProps> = ({ title, status, result, onAn
             <Bot className="w-5 h-5 text-primary" />
             {title}
           </h3>
-          <p className="text-sm text-secondary mt-1">{description}</p>
+          <p className="text-sm text-slate-400 mt-1">{description}</p>
         </div>
         <button
           onClick={onAnalyze}
@@ -75,7 +75,7 @@ const AnalysisCard: React.FC<AnalysisCardProps> = ({ title, status, result, onAn
       
       <div className="p-6">
         {status === AnalysisStatus.IDLE && !result && (
-          <div className="text-center py-12 text-slate-500 bg-slate-900/50 rounded-lg border border-dashed border-slate-700">
+          <div className="text-center py-12 text-slate-400 bg-slate-900/50 rounded-lg border border-dashed border-slate-700">
             <Bot className="w-12 h-12 mx-auto mb-3 opacity-20" />
             <p>Ready to analyze repository data.</p>
             <p className="text-sm">Click "Run Analysis" to generate insights with Gemini 2.5 Flash.</p>

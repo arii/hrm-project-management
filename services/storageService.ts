@@ -147,20 +147,33 @@ const loadAllFromIDB = async () => {
       
       valuesRequest.onsuccess = () => {
         const values = valuesRequest.result;
-        keys.forEach((key, index) => {
-          const kStr = String(key);
-          const vStr = String(values[index]);
-          memoryCache[kStr] = vStr;
+        
+        const processChunk = (startIndex: number) => {
+          const chunkSize = 50;
+          const endIndex = Math.min(startIndex + chunkSize, keys.length);
           
-          if (essentialKeys.includes(kStr)) {
-            try {
-              parsedMemoryCache[kStr] = JSON.parse(vStr);
-            } catch (e) {
-              console.warn(`[Storage] Failed to pre-parse IndexedDB key ${kStr}`);
+          for (let i = startIndex; i < endIndex; i++) {
+            const kStr = String(keys[i]);
+            const vStr = String(values[i]);
+            memoryCache[kStr] = vStr;
+            
+            if (essentialKeys.includes(kStr)) {
+              try {
+                parsedMemoryCache[kStr] = JSON.parse(vStr);
+              } catch (e) {
+                console.warn(`[Storage] Failed to pre-parse IndexedDB key ${kStr}`);
+              }
             }
           }
-        });
-        window.dispatchEvent(new CustomEvent('storage_cache_hydrated'));
+          
+          if (endIndex < keys.length) {
+            setTimeout(() => processChunk(endIndex), 0);
+          } else {
+            window.dispatchEvent(new CustomEvent('storage_cache_hydrated'));
+          }
+        };
+        
+        processChunk(0);
       };
     };
   } catch (err) {

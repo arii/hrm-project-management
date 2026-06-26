@@ -320,9 +320,52 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
       if (review.labels && review.labels.length > 0) {
         setMsg("Applying context labels...");
-        const labelsToRemove = pr.labels.map(l => l.name).filter(name => MANAGED_LABELS.has(name));
-        for (const label of labelsToRemove) { await removeLabel(repoName, token, pr.number, label).catch(() => {}); }
+        // Fetch freshest PR data to get accurate labels currently on GitHub
+        const freshPr = await enrichSinglePr(repoName, pr, token, false, true).catch(() => null);
+        const currentLabels = freshPr?.labels || pr.labels || [];
+        
+        // Find existing labels that match any of our managed labels
+        const labelsToRemove = currentLabels.filter(label => label && label.name && MANAGED_LABELS.has(label.name.toLowerCase()));
+        for (const label of labelsToRemove) { 
+          await removeLabel(repoName, token, pr.number, label.name).catch(() => {}); 
+        }
+        
+        // Apply the new review labels
         await addLabels(repoName, token, pr.number, review.labels).catch((e) => console.warn('[CodeReview] Failed to apply labels:', e));
+
+        // Format updated labels objects for local caching
+        const updatedLabelsObjects = review.labels.map((name, index) => ({
+          id: index,
+          name,
+          color: name === 'approved' ? '0e8a16' : name === 'approved with suggestions' ? 'fbca04' : 'd93f0b',
+          description: ''
+        }));
+
+        // Immediately sync local state caches to avoid UI staleness
+        setEnrichedMap(prev => {
+          if (!prev[pr.number]) return prev;
+          return {
+            ...prev,
+            [pr.number]: {
+              ...prev[pr.number],
+              labels: updatedLabelsObjects
+            }
+          };
+        });
+
+        setPrs(prev => prev.map(p => {
+          if (p.number === pr.number) {
+            return {
+              ...p,
+              labels: updatedLabelsObjects
+            };
+          }
+          return p;
+        }));
+
+        if (selectedPr && selectedPr.number === pr.number) {
+          setSelectedPr(prev => prev ? { ...prev, labels: updatedLabelsObjects } : null);
+        }
       }
 
       updateReviewedSha(pr.number, pr.head.sha);
@@ -412,6 +455,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setIsBulkAuditing(false);
       setSelectedPrIds(new Set());
       setBulkProgress({ total: 0, current: 0 });
+      
+      // Refresh the PR list to pull down all freshly applied labels and statuses from GitHub
+      const freshList = await loadPrList(true);
+      
+      // If a PR is currently selected in the detail view, reload its details so the reports display instantly
+      if (selectedPr && freshList) {
+        const freshSelected = freshList.find(p => p.number === selectedPr.number);
+        if (freshSelected) {
+          await handleSelectPr(freshSelected);
+        }
+      }
     }
   };
 

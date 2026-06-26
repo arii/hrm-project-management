@@ -52,6 +52,32 @@ The application requires several secrets to function correctly. These should be 
 
 ---
 
+## AI Model Management
+
+The application intelligently manages AI model selection to balance cost, performance, and reliability.
+
+### Model Usage
+The application currently uses the following core Gemini models as defaults:
+- **Pro**: `gemini-2.5-pro` (Complex reasoning tasks)
+- **Flash**: `gemini-3.5-flash` (Balanced performance)
+- **Lite**: `gemini-3.1-flash-lite` (Cost-optimized, high speed)
+
+### Model Selection & "Auto" Picker
+The application employs a dynamic "auto" selection logic within `services/geminiService.ts` to ensure stability:
+1. **Manual Override**: If a user selects a specific model on the **Model Intel** page, that model takes precedence.
+2. **Auto-Selection**: When set to 'auto', the service dynamically resolves the best model based on:
+   - The user's preferred **Model Tier** (Lite, Flash, or Pro).
+   - The **Health Status** of available models (via the connectivity diagnostic).
+   - Filtering to exclude restricted, underpowered, or unstable models.
+
+### Model Intel (GeminiStatus.tsx)
+The "Model Intel" module serves as a diagnostic dashboard:
+- **Connectivity Diagnostic**: Runs connectivity pings against available models, registering restricted/rate-limited models in local storage.
+- **Model Override**: Allows users to manually pin a specific model if the auto-picker is not performing optimally for their specific use case or if specific model quota is exhausted.
+- **Usage Tracking**: Displays real-time token consumption and estimated costs based on prompt/response activity.
+
+---
+
 ## Cost & Infrastructure Analysis
 
 ### Cost Optimization Strategy
