@@ -183,10 +183,16 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-96 bg-surface border border-slate-700 rounded-xl shadow-2xl p-6">
-          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-            <Settings className="w-5 h-5" /> Configuration
-          </h2>
+        <>
+          {/* Backdrop on mobile and desktop to prevent background click-through and dismiss the modal */}
+          <div 
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40" 
+            onClick={() => setIsOpen(false)}
+          />
+          <div className="fixed top-20 left-4 right-4 md:absolute md:top-auto md:left-auto md:right-0 md:mt-2 md:w-96 bg-surface border border-slate-700 rounded-xl shadow-2xl p-6 z-50">
+            <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+              <Settings className="w-5 h-5" /> Configuration
+            </h2>
           
           {errorMessage && (
             <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 text-red-400 text-xs">
@@ -393,6 +399,7 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
             </form>
           </div>
         </div>
+        </>
       )}
     </div>
   );

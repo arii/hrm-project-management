@@ -2,6 +2,12 @@
 @plugin "@tailwindcss/typography";
 /* RepoAuditor Global Styles */
 
+@theme {
+  --color-primary: #3b82f6;
+  --color-surface: #1e293b; /* Solid slate-800 opaque color */
+  --color-surface-hover: #334155; /* Slate-700 */
+}
+
 body {
     background-image: url('../images/background.jpg');
     background-size: cover;
