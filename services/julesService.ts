@@ -355,7 +355,7 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
         }
         nextToken = data.nextPageToken;
         pages++;
-      } while (nextToken && pages < 10);
+      } while (nextToken && pages < 3);
 
       if (allSessions.length > 0) {
         if (typeof window !== 'undefined') {

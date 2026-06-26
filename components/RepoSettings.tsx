@@ -38,25 +38,42 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
   const [localJulesSourceId, setLocalJulesSourceId] = useState(julesSourceId || '');
   const [localGeminiKey, setLocalGeminiKey] = useState(geminiApiKey || '');
   
-  const [availableSources, setAvailableSources] = useState<JulesSource[]>([]);
+  const [availableSources, setAvailableSources] = useState<JulesSource[]>(() => {
+    return storage.getRaw(`repo_auditor_sources_list`, []) as JulesSource[];
+  });
   const [loadingSources, setLoadingSources] = useState(false);
 
   const fetchSources = (key: string) => {
     if (!key) return;
     setLoadingSources(true);
     setErrorMessage(null);
+
+    // Timeout to prevent infinite "Loading sources..."
+    const timeout = setTimeout(() => {
+      if (loadingSources) {
+        setErrorMessage("Loading sources is taking too long. Check your network, API key, or enter the Source ID manually.");
+        setLoadingSources(false);
+      }
+    }, 10000); // 10s
+
     listSources(key)
       .then(sources => {
+        clearTimeout(timeout);
         setAvailableSources(sources);
+        storage.set(`repo_auditor_sources_list`, sources);
         if (sources.length === 0) {
           console.warn("[RepoSettings] No Jules sources found.");
         }
       })
       .catch(err => {
+        clearTimeout(timeout);
         console.error("[RepoSettings] Failed to fetch sources:", err);
         setErrorMessage(`Failed to load Jules sources: ${err.message || 'Unknown error'}`);
       })
-      .finally(() => setLoadingSources(false));
+      .finally(() => {
+        clearTimeout(timeout);
+        setLoadingSources(false);
+      });
   };
 
   // Fetch sources when key changes or modal opens

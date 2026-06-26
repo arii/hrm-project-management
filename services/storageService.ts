@@ -140,6 +140,9 @@ const loadAllFromIDB = async () => {
     
     keysRequest.onsuccess = () => {
       const keys = keysRequest.result;
+      // Only load essential items into memory on startup to save memory
+      const essentialKeys = [StorageKeys.SETTINGS, StorageKeys.JULES_SESSIONS];
+      
       const valuesRequest = store.getAll();
       
       valuesRequest.onsuccess = () => {
@@ -147,8 +150,9 @@ const loadAllFromIDB = async () => {
         keys.forEach((key, index) => {
           const kStr = String(key);
           const vStr = String(values[index]);
-          if (memoryCache[kStr] === undefined) {
-            memoryCache[kStr] = vStr;
+          memoryCache[kStr] = vStr;
+          
+          if (essentialKeys.includes(kStr)) {
             try {
               parsedMemoryCache[kStr] = JSON.parse(vStr);
             } catch (e) {
@@ -429,7 +433,7 @@ export const storage = {
    */
   clearCaches(aggressive = false): void {
     const keysToRemove: string[] = [];
-    const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS];
+    const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS, StorageKeys.REPO_SOURCES];
     
     // Items that are always safe to clear
     const transientKeys = [StorageKeys.GITHUB_CACHE, StorageKeys.JULES_CACHE, StorageKeys.TELEMETRY];

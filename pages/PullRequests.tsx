@@ -1,11 +1,12 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { fetchPullRequests, enrichSinglePr, updateIssue, addComment, addLabels, publishPullRequest, fetchPrDiff, updatePullRequestBranch, fetchComments, fetchReviewComments } from '../services/githubService';
 import { analyzePullRequests, analyzePrForRestart, analyzePrForSync } from '../services/geminiService';
 import { listSessions, createSession, findSourceForRepo, getSessionUrl } from '../services/julesService';
 import { storage } from '../services/storageService';
 import { EnrichedPullRequest, JulesSession, PrHealthAction, CodeReviewResult } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
+import { useJulesSessions } from '../hooks/useJulesSessions';
 import AnalysisCard from '../components/AnalysisCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -74,7 +75,9 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [batchStatus, setBatchStatus] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-  const [julesSessions, setJulesSessions] = useState<JulesSession[]>([]);
+  
+  const { allSessions: julesSessions } = useJulesSessions(julesApiKey, repoName);
+
   const [searchQuery, setSearchQuery] = useState('');
   
   const [repairStatuses, setRepairStatuses] = useState<Record<number, ActionStatus>>({});
@@ -85,6 +88,21 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   const [sessionLinks, setSessionLinks] = useState<Record<string, string>>({}); // Stores session name for deep links
   const [processingMessages, setProcessingMessages] = useState<Record<number, string>>({});
   const [errorMessages, setErrorMessages] = useState<Record<number, string>>({});
+
+  const sessionMap = useMemo(() => {
+    const map = new Map<string, JulesSession>();
+    julesSessions.forEach(session => {
+      session.outputs?.forEach(output => {
+        const outputUrl = output.pullRequest?.url;
+        if (outputUrl) {
+          const normalizedUrl = outputUrl.replace('api.github.com/repos/', 'github.com/').replace('/pulls/', '/pull/');
+          map.set(outputUrl, session);
+          map.set(normalizedUrl, session);
+        }
+      });
+    });
+    return map;
+  }, [julesSessions]);
 
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
@@ -119,11 +137,8 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       // Stop skeleton loader
       if (!silent) setLoading(false);
 
-      // 2. Jules sessions in parallel
-      if (julesApiKey && julesApiKey.trim()) {
-        listSessions(julesApiKey, skipCache).then(setJulesSessions).catch(console.error);
-      }
-
+      // 2. Jules sessions are managed by useJulesSessions hook now, so we remove the manual listSessions call here
+      
       // 3. Background Enrichment with incremental progress
       const toEnrich = initialPrs.slice(0, 30); // Enrich more here as it's the main list
       setListProgress({ total: toEnrich.length, current: 0 });
@@ -571,6 +586,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                       <div className="flex items-center gap-2">
                         <h4 className="font-bold text-white text-lg truncate hover:text-primary cursor-pointer transition-colors" onClick={() => navigate('/code-review', { state: { selectedPrNumber: pr.number } })}>{pr.title}</h4>
                         {hasAudit && <span title="Full Audit Context Available"><Bot className="w-4 h-4 text-blue-400 shrink-0" /></span>}
+                        {sessionMap.get(pr.html_url) && <div className={clsx("w-2 h-2 rounded-full", (sessionMap.get(pr.html_url) && sessionMap.get(pr.html_url)!.state !== 'SUCCEEDED' && sessionMap.get(pr.html_url)!.state !== 'FAILED' && sessionMap.get(pr.html_url)!.state !== 'CANCELLED' && sessionMap.get(pr.html_url)!.state !== 'TERMINATED') ? "bg-green-500 animate-pulse" : "bg-slate-500")} title={(sessionMap.get(pr.html_url) && sessionMap.get(pr.html_url)!.state !== 'SUCCEEDED' && sessionMap.get(pr.html_url)!.state !== 'FAILED' && sessionMap.get(pr.html_url)!.state !== 'CANCELLED' && sessionMap.get(pr.html_url)!.state !== 'TERMINATED') ? "Active Jules Session" : "Inactive Jules Session"} />}
                       </div>
                       <div className="text-xs text-slate-500 flex items-center gap-3 mt-1">
                         <span className="font-mono text-blue-400 font-bold">#{pr.number}</span>

@@ -61,12 +61,60 @@ The application requires several secrets to function correctly. These should be 
 
 ---
 
+## Component & Hook Reuse Strategy
+- **UI Components (`src/components/common/`)**: Refactor repetitive UI patterns into reusable components:
+    - `CheckboxList`: Support multi-select, range selection (shift+click), and keyboard interaction.
+    - `PRListItem`: Standardized display for PR titles, status, and activity indicators.
+    - `StatusBadge`: Standardized color-coding and sizing for PR/CI statuses.
+- **Data Hooks**: Move all manual `useEffect` data-fetching to TanStack Query hooks, centralizing loading/error handling.
+- **Utilities (`src/lib/utils.ts`)**: Centralize complex logic (e.g., normalizing PR URLs, filtering session states, deduplication).
+
+### Page-Specific Refactoring Plan
+- `Dashboard.tsx`: Adopt `PRListItem` and session hooks for high-level summaries.
+- `PullRequests.tsx`: Adopt `PRListItem` and `StatusBadge`; standardize data fetching with TanStack Query.
+- `CodeReview.tsx`: Adopt `CheckboxList` for bulk operations, `PRListItem`, `StatusBadge`, and centralize complex session/review hooks.
+- `WorkflowHealth.tsx`: Reuse `StatusBadge` and shared session hooks.
+- `BatchCreate.tsx`: Adopt `CheckboxList`.
+- `JulesManagement.tsx`, `GeminiStatus.tsx`, `UserGuide.tsx`: Standardize loading/error states using shared components.
+
+---
+
 ## Next Steps & Future Work
 
-1.  **Migrate remaining data-fetching hooks**: Continue migrating existing data-fetching logic (e.g., `useJulesSessions`, `useRepoSettings`) from manual `useEffect` management to `react-query` to improve consistency, caching, and loading state management.
-2.  **Centralize Error Handling**: Implement a standardized error response format from the backend proxy and create a global React Error Boundary component to catch and gracefully handle API failures.
-3.  **Refactor Storage Abstraction**: Re-engineer `storageService.ts` to use a formal `Strategy` pattern, making the fallback logic (LocalStorage -> IndexedDB -> Memory) more robust and easier to maintain.
-4.  **Fact-Based Grounding**: Implement real-time GitHub Action version checking to prevent hallucinations. Inject live release data into Gemini review prompts.
+1.  **Migrate remaining data-fetching hooks**:
+    - **Execution**: Install `@tanstack/react-query`. Create a `QueryClient`. Refactor one hook as a proof-of-concept (e.g., `useJulesSessions`), then iterate across all remaining data-fetching hooks.
+2.  **Centralize Error Handling**:
+    - **Status**: Completed. Implemented `ErrorContext` and `ErrorBoundary` component.
+3.  **Refactor Storage Abstraction**:
+    - **Status**: Completed. Created `StorageProvider` interface, `LocalStorageProvider`, `MemoryProvider`, and `StorageManager`.
+4.  **Fact-Based Grounding**:
+    - **Execution**: Create a utility in `githubService.ts` to fetch current action version data. Inject this JSON into Gemini prompts.
+5.  **Issue Triage & Dispatch Workflow**:
+    - **Execution**: Update Gemini prompt to require JSON classification `{ type: 'PR_SCOPED' | 'GENERAL', ... }`. Add a deduplication check against existing GitHub issues before creating. Update `IssueBuilder` UI to handle these categories.
+6.  **Advanced PR Status Management & Light Reviews**:
+    - **Execution**: Add a backend API endpoint to aggregate PR statuses. Build a `PRStatusBoard` UI component in `pages/CodeReview.tsx`. Add "Light Review" mode logic with specialized, lightweight prompts.
+7.  **Security, Privacy & Terms**:
+    - **Execution**: Create `Terms.tsx`. Ensure all sensitive inputs (`GitHubToken`, `JulesApiKey`) have clear transparency/safety labels. Implement secure local state cleanup on logout.
+8.  **"Lightweight" Mode**:
+    - **Execution**: Add conditional checks (`if (!julesApiKey) ...`) across services. Implement UI transitions to gracefully disable unavailable features and show credential prompts.
+
+---
+
+## UX/UI Enhancements & Accessibility
+9.  **Accessibility & Bulk Interactions**:
+    - **Shift+Click Range Selection**: Implement range-based selection for checkboxes to allow bulk actions (select/deselect multiple items).
+    - **Keyboard Navigation**: Enable keyboard arrow navigation (up/down) and selection triggers (Space/Enter) within the PR list.
+    - **Visual Feedback**: Enhance focus states and contrast for interactive elements to improve accessibility.
+10. **Auto-Send CI Fix Notifications**:
+    - **Status**: Implemented, currently undergoing refinement.
+    - **Issues**: Excessive polling logic, missing robust visual feedback, inconsistent state persistence, and performance degradation.
+    - **Refactoring Roadmap**:
+        1.  **Refactor `useAutoSendFix.ts`**: Extract business logic from `useEffect` into a dedicated service function to improve testability and reduce re-renders.
+        2.  **State Management**: Implement structured state for "fix requested" and use TanStack Query for efficient caching and UI binding.
+        3.  **UI Feedback**: Add a robust badge component reflecting 'pending', 'sent', or 'failed' states.
+        4.  **Logging**: Remove remaining `console.log` statements in favor of a centralized, structured logging utility to aid debugging.
+11. **Agent Handoff State Management**:
+    - **Execution**: Ensure Agent Handoff UI clears stale data (PR status, general status, available actions) immediately upon triggering a data reload, preventing the display of outdated information while new data is being fetched.
 
 ---
 

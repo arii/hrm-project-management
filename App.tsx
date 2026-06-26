@@ -12,6 +12,7 @@ import UserGuide from './pages/UserGuide';
 import GeminiStatus from './pages/GeminiStatus';
 import { storage, AppSettings } from './services/storageService';
 import { setGeminiApiKey } from './services/geminiService';
+import { useAutoSendFix } from './hooks/useAutoSendFix';
 import { ErrorProvider } from './context/ErrorContext';
 import GlobalErrorPopup from './components/ui/GlobalErrorPopup';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -62,6 +63,8 @@ const App: React.FC = () => {
     geminiApiKey = '',
     defaultModelTier
   } = settings;
+
+  useAutoSendFix(julesApiKey, repoName);
 
   return (
     <ErrorProvider>

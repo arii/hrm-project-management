@@ -9,6 +9,7 @@ import { enrichSinglePr } from '../services/githubService';
 import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import { useAutoSendFix } from '../hooks/useAutoSendFix';
 
 interface JulesManagementProps {
   julesApiKey: string;
@@ -74,7 +75,11 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       return;
     }
 
-    if (!silent) setLoading(true);
+    if (!silent) {
+      setLoading(true);
+      setCiStatuses({});
+      setActionLoading({});
+    }
     setError(null);
     try {
       const data = await listSessions(julesApiKey, force);
@@ -124,6 +129,8 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
       setLoading(false);
     }
   }, [julesApiKey]);
+
+  const { enabled, setEnabled, lastRun, nextRun, getSentTime } = useAutoSendFix(julesApiKey, storage.getRepo(), loadSessions);
 
   const fetchCiStatusesForSessions = async (sessionsList: JulesSession[], skipCache = false) => {
     const ghToken = storage.getGithubToken();
@@ -400,6 +407,20 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
         </div>
         
         <div className="flex items-center gap-3">
+          <Button
+            variant={enabled ? "secondary" : "primary"}
+            size="sm"
+            onClick={() => setEnabled(!enabled)}
+            className={clsx("flex items-center gap-2", enabled ? "text-emerald-400" : "")}
+          >
+            <Zap className="w-3 h-3" />
+            {enabled ? "Auto-Fix Enabled" : "Start Auto-Fix"}
+          </Button>
+          {enabled && nextRun && (
+            <span className="text-xs text-slate-500 border-l border-slate-600 pl-2">
+              Next: {nextRun.toLocaleTimeString()}
+            </span>
+          )}
           <Button 
             variant="secondary" 
             size="sm" 
@@ -547,6 +568,11 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                           >
                             {session.title || 'Untitled Session'}
                           </a>
+                          {getSentTime(session.name) && (
+                            <Badge variant="yellow" className="text-[10px] py-0 px-1.5">
+                              Request sent @ {new Date(getSentTime(session.name)!).toLocaleTimeString()}
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
                           <span className="flex items-center gap-1 opacity-70">
