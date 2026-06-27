@@ -49,6 +49,18 @@ const MANAGED_LABELS = new Set([
   'ready-for-approval'
 ]);
 
+function parsePrUrl(url: string | undefined): { repo: string; number: number } | null {
+  if (!url) return null;
+  const match = url.match(/(?:github\.com\/|api\.github\.com\/repos\/|^)?([^\/]+)\/([^\/]+)\/pulls?\/(\d+)/i);
+  if (match) {
+    return {
+      repo: `${match[1]}/${match[2]}`.toLowerCase(),
+      number: parseInt(match[3], 10)
+    };
+  }
+  return null;
+}
+
 const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey }) => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -127,7 +139,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       const newReviews: Record<number, CodeReviewResult> = {};
       
       initialPrs.forEach(pr => {
-        const existing = storage.getPrReview(repoName, pr.number);
+        const existing = storage.getPrReview(repoName, pr.number, pr.head?.sha);
         if (existing) {
           // console.log(`[CodeReview] Found cached review for #${pr.number}:`, existing);
           newStatuses[pr.number] = 'completed';
@@ -271,7 +283,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     setActionError(null);
 
     // Check storage for existing reviews and extracted issues
-    let review = storage.getPrReview(repoName, pr.number);
+    let review = storage.getPrReview(repoName, pr.number, pr.head?.sha);
     let storedIssues = storage.getExtractedIssues(repoName, pr.number);
     
     if (review) {
@@ -305,7 +317,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       
       setMsg(tier === ModelTier.PRO ? "AI Performing Deep Architectural Reasoning..." : "AI Analyzing patterns...");
       const review = await generateCodeReview(pr, diff, { ...options, modelTier: tier });
-      storage.savePrReview(repoName, pr.number, review);
+      storage.savePrReview(repoName, pr.number, review, pr.head?.sha);
       setReviews(prev => ({ ...prev, [pr.number]: review }));
       
       if (pr.number === selectedPr?.number && review.suggestedIssues) {
@@ -374,10 +386,14 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       // Auto-send to Jules if enabled
       if (autoSendToJules && review.suggestedIssues && review.suggestedIssues.length > 0) {
         const matchingSession = allSessions.find(session => 
-          session.outputs?.some(output => 
-            output.pullRequest?.url === pr.html_url || 
-            output.pullRequest?.url?.replace('api.github.com/repos', 'github.com').replace('/pulls/', '/pull/') === pr.html_url
-          )
+          session.outputs?.some(output => {
+            const outputUrl = output.pullRequest?.url;
+            if (!outputUrl) return false;
+            if (outputUrl === pr.html_url) return true;
+            const parsedOutput = parsePrUrl(outputUrl);
+            const parsedPr = parsePrUrl(pr.html_url);
+            return !!(parsedOutput && parsedPr && parsedOutput.repo === parsedPr.repo && parsedOutput.number === parsedPr.number);
+          })
         );
 
         if (matchingSession) {
@@ -674,8 +690,11 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                 const sessionForPr = allSessions.find(session => 
                   session.outputs?.some(output => {
                     const outputUrl = output.pullRequest?.url;
-                    const normalizedOutputUrl = outputUrl?.replace('api.github.com/repos/', 'github.com/').replace('/pulls/', '/pull/');
-                    return outputUrl === pr.html_url || normalizedOutputUrl === pr.html_url;
+                    if (!outputUrl) return false;
+                    if (outputUrl === pr.html_url) return true;
+                    const parsedOutput = parsePrUrl(outputUrl);
+                    const parsedPr = parsePrUrl(pr.html_url);
+                    return !!(parsedOutput && parsedPr && parsedOutput.repo === parsedPr.repo && parsedOutput.number === parsedPr.number);
                   })
                 );
 

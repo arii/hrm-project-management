@@ -25,15 +25,15 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
     isLoading: isListing, 
     isFetching: isEnriching 
   } = useQuery({
-    queryKey: ['julesSessions', julesApiKey, sourceId],
+    queryKey: ['julesSessions', julesApiKey],
     queryFn: async () => {
-      if (!julesApiKey || !sourceId) return [];
+      if (!julesApiKey) return [];
       const sessions = await listSessions(julesApiKey);
       const detailed = await enrichSessionsWithDetails(julesApiKey, sessions);
       storage.saveJulesSessions(detailed);
       return detailed;
     },
-    enabled: !!julesApiKey && !!sourceId,
+    enabled: !!julesApiKey,
     initialData: () => storage.getJulesSessions() || [],
   });
 

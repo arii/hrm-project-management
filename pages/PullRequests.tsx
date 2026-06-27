@@ -52,6 +52,18 @@ interface PullRequestsProps {
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
 type PrActionUI = PrHealthAction & { _id: string; status: 'idle' | 'processing' | 'success' | 'error' };
 
+function parsePrUrl(url: string | undefined): { repo: string; number: number } | null {
+  if (!url) return null;
+  const match = url.match(/(?:github\.com\/|api\.github\.com\/repos\/|^)?([^\/]+)\/([^\/]+)\/pulls?\/(\d+)/i);
+  if (match) {
+    return {
+      repo: `${match[1]}/${match[2]}`.toLowerCase(),
+      number: parseInt(match[3], 10)
+    };
+  }
+  return null;
+}
+
 const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKey }) => {
   const navigate = useNavigate();
   
@@ -95,6 +107,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       session.outputs?.forEach(output => {
         const outputUrl = output.pullRequest?.url;
         if (outputUrl) {
+          const parsed = parsePrUrl(outputUrl);
+          if (parsed) {
+            map.set(`${parsed.repo}_${parsed.number}`, session);
+          }
           const normalizedUrl = outputUrl.replace('api.github.com/repos/', 'github.com/').replace('/pulls/', '/pull/');
           map.set(outputUrl, session);
           map.set(normalizedUrl, session);
@@ -208,7 +224,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         fetchReviewComments(repoName, pr.number, token).catch(() => [])
       ]);
 
-      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
+      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number, pr.head?.sha);
       
       const auditPart = existingReview 
         ? `\n\n### AI AUDIT FEEDBACK (Principal Engineer Directives):\n${existingReview.reviewComment}` 
@@ -274,7 +290,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("A Jules Source ID is required.");
       
-      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
+      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number, pr.head?.sha);
       const auditPart = existingReview 
         ? `\n\nTECHNICAL ROADMAP FROM PREVIOUS AUDIT:\n${existingReview.reviewComment}` 
         : "";
@@ -323,7 +339,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const sourceId = await findSourceForRepo(julesApiKey, repoName);
       if (!sourceId) throw new Error("A Jules Source ID is required.");
 
-      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number);
+      const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number, pr.head?.sha);
       const auditPart = existingReview 
         ? `\n\nADDITIONAL AUDIT CONTEXT:\n${existingReview.reviewComment}` 
         : "";
@@ -570,7 +586,10 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
            ) : filteredPrs.length === 0 ? (
              <div className="bg-surface border border-slate-700 border-dashed rounded-xl p-20 flex flex-col items-center justify-center text-slate-500"><GitPullRequest className="w-12 h-12 mb-4 opacity-20" /><p>No open PRs found matching filters.</p></div>
            ) : filteredPrs.map(pr => {
-             const hasAudit = !!storage.getPrReview(repoName, pr.number);
+             const hasAudit = !!storage.getPrReview(repoName, pr.number, pr.head?.sha);
+             const prKey = `${repoName.toLowerCase()}_${pr.number}`;
+             const prSession = sessionMap.get(prKey) || sessionMap.get(pr.html_url);
+             const isSessionActive = prSession && prSession.state !== 'SUCCEEDED' && prSession.state !== 'FAILED' && prSession.state !== 'CANCELLED' && prSession.state !== 'TERMINATED';
              const repairSuccess = repairStatuses[pr.number] === 'success';
              const restartSuccess = restartStatuses[pr.number] === 'success';
              const syncSuccess = syncStatuses[pr.number] === 'success';
@@ -586,7 +605,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                       <div className="flex items-center gap-2">
                         <h4 className="font-bold text-white text-lg truncate hover:text-primary cursor-pointer transition-colors" onClick={() => navigate('/code-review', { state: { selectedPrNumber: pr.number } })}>{pr.title}</h4>
                         {hasAudit && <span title="Full Audit Context Available"><Bot className="w-4 h-4 text-blue-400 shrink-0" /></span>}
-                        {sessionMap.get(pr.html_url) && <div className={clsx("w-2 h-2 rounded-full", (sessionMap.get(pr.html_url) && sessionMap.get(pr.html_url)!.state !== 'SUCCEEDED' && sessionMap.get(pr.html_url)!.state !== 'FAILED' && sessionMap.get(pr.html_url)!.state !== 'CANCELLED' && sessionMap.get(pr.html_url)!.state !== 'TERMINATED') ? "bg-green-500 animate-pulse" : "bg-slate-500")} title={(sessionMap.get(pr.html_url) && sessionMap.get(pr.html_url)!.state !== 'SUCCEEDED' && sessionMap.get(pr.html_url)!.state !== 'FAILED' && sessionMap.get(pr.html_url)!.state !== 'CANCELLED' && sessionMap.get(pr.html_url)!.state !== 'TERMINATED') ? "Active Jules Session" : "Inactive Jules Session"} />}
+                        {prSession && <div className={clsx("w-2 h-2 rounded-full", isSessionActive ? "bg-green-500 animate-pulse" : "bg-slate-500")} title={isSessionActive ? "Active Jules Session" : "Inactive Jules Session"} />}
                       </div>
                       <div className="text-xs text-slate-300 flex items-center gap-3 mt-1">
                         <span className="font-mono text-blue-400 font-bold">#{pr.number}</span>

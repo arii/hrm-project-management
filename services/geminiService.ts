@@ -2,7 +2,7 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { GithubIssue, GithubPullRequest, ProposedIssue, EnrichedPullRequest, CodeReviewResult, GithubWorkflowRun, GithubWorkflowJob, WorkflowHealthResult, WorkflowQualitativeResult, GithubAnnotation, PrHealthAnalysisResult, WorkflowAnalysis, ModelTier } from '../types';
 import { storage, StorageKeys } from './storageService';
-import { cleanJsonString, withRetry } from './aiUtils';
+import { cleanJsonString, withRetry, formatGeminiError } from './aiUtils';
 import { fetchActionTags } from './githubService';
 
 let globalGeminiApiKey: string | null = null;
@@ -216,7 +216,7 @@ export const listAvailableModelsDetailed = async (forceRefresh = false): Promise
     return models;
   } catch (error) {
     console.error("[GeminiService] Failed to list models:", error);
-    throw error;
+    throw formatGeminiError(error);
   }
 };
 
@@ -268,7 +268,8 @@ export const testModelConnectivity = async (modelName: string): Promise<{ succes
     const errorMessage = typeof e === 'object' && e !== null ? (e.message || JSON.stringify(e)) : String(e);
     // Automatically register as restricted if it matches restriction keywords
     registerModelFailure(modelName, errorMessage);
-    return { success: false, error: errorMessage };
+    const formatted = formatGeminiError(e);
+    return { success: false, error: formatted.message };
   }
 };
 

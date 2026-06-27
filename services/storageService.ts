@@ -482,24 +482,28 @@ export const storage = {
     keysToRemove.forEach(k => this.remove(k));
   },
 
-  savePrReview(repo: string, prNumber: number, review: any): void {
+  savePrReview(repo: string, prNumber: number, review: any, sha?: string): void {
     const key = `${StorageKeys.PR_REVIEWS}${normalizeRepo(repo)}_${prNumber}`;
     // console.log(`[Storage] Saving review key: ${key}`);
     this.set(key, {
       ...review,
+      sha: sha || review.sha,
       timestamp: Date.now()
     });
   },
 
-  getPrReview(repo: string, prNumber: number): any | null {
+  getPrReview(repo: string, prNumber: number, currentSha?: string): any | null {
     const key = `${StorageKeys.PR_REVIEWS}${normalizeRepo(repo)}_${prNumber}`;
     const review = this.getRaw(key, null);
     if (!review) {
       // console.log(`[Storage] No review found for key: ${key}`);
-      const relevantKeys = Object.keys(localStorage).filter(k => k.startsWith(StorageKeys.PR_REVIEWS));
-      // console.log(`[Storage] Available review keys:`, relevantKeys);
-    } else {
-      // console.log(`[Storage] Found review for key: ${key}`);
+      return null;
+    }
+    
+    // Invalidate and remove if currentSha is provided and mismatching
+    if (currentSha && review.sha && review.sha !== currentSha) {
+      this.remove(key);
+      return null;
     }
     return review;
   },

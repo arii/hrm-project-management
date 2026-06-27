@@ -49,6 +49,58 @@ class ConcurrencyQueue {
 export const geminiQuotaQueue = new ConcurrencyQueue();
 
 /**
+ * Format Gemini API errors to make them user-friendly and actionable.
+ */
+export function formatGeminiError(e: any): Error {
+  if (!e) return new Error("Unknown Gemini API Error");
+  
+  // Extract error message from various structures
+  let message = "";
+  if (typeof e === 'string') {
+    message = e;
+  } else if (typeof e === 'object') {
+    message = e.message || JSON.stringify(e);
+  } else {
+    message = String(e);
+  }
+
+  // Check for monthly spending cap exceeded / billing issue
+  if (
+    message.includes("monthly spending cap") || 
+    message.includes("spending cap") || 
+    message.includes("RESOURCE_EXHAUSTED") || 
+    message.includes("QuotaExceeded") || 
+    message.includes("exceeded its monthly spending cap") ||
+    message.includes("billing")
+  ) {
+    return new Error(
+      "Gemini API Error (Monthly Spend Cap Exceeded): Your project has exceeded its monthly spending cap. Please go to AI Studio at https://ai.studio/spend to manage your project spend cap, or configure a custom Gemini API key in Settings."
+    );
+  }
+
+  // Check for general 429 quota exhaustion
+  if (message.includes("429") || message.includes("Quota exceeded") || message.includes("rate limit") || message.includes("LimitExceeded")) {
+    return new Error(
+      "Gemini API Error (Quota Exceeded): The standard rate limit or daily quota has been exceeded. Please wait a few moments or go to Google AI Studio (https://aistudio.google.com/) to check your quotas."
+    );
+  }
+
+  // Check for invalid API key
+  if (message.includes("API_KEY_INVALID") || message.includes("invalid API key") || message.includes("API key not valid")) {
+    return new Error(
+      "Gemini API Error (Invalid API Key): The configured Gemini API Key is invalid. Please verify and update your API key in Settings."
+    );
+  }
+
+  // If we already formatted or parsed it, don't double format
+  if (message.startsWith("Gemini API Error")) {
+    return e instanceof Error ? e : new Error(message);
+  }
+
+  return new Error(`Gemini API Error: ${message}`);
+}
+
+/**
  * Retry helper for transient API errors
  */
 export async function withRetry<T>(
@@ -111,7 +163,7 @@ export async function withRetry<T>(
       }
 
       if (suggestedDelay > 30000 && maxRetries < 5) {
-        throw new Error(`Rate limit exceeded. Try again in ${Math.round(suggestedDelay / 1000)} seconds. Detail: ${errorMessage.substring(0, 150)}`);
+        throw formatGeminiError(new Error(`Rate limit exceeded. Try again in ${Math.round(suggestedDelay / 1000)} seconds. Detail: ${errorMessage.substring(0, 150)}`));
       }
 
       const isTransient = 
@@ -121,7 +173,9 @@ export async function withRetry<T>(
         errorMessage.includes('Failed to fetch') ||
         e.name === 'AbortError';
 
-      if (!isTransient || i === maxRetries) throw e;
+      if (!isTransient || i === maxRetries) {
+        throw formatGeminiError(e);
+      }
       
       const delay = suggestedDelay > 0 
         ? suggestedDelay + (Math.random() * 1000) // jitter
@@ -137,7 +191,7 @@ export async function withRetry<T>(
       geminiQuotaQueue.release();
     }
   }
-  throw lastError;
+  throw formatGeminiError(lastError);
 }
 
 const IGNORED_FILES = [

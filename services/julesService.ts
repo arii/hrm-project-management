@@ -1,7 +1,6 @@
 
 import { JulesSession, JulesSource } from '../types';
 import { storage, StorageKeys } from './storageService';
-import { withRetry } from './aiUtils';
 
 const JULES_API_BASE = '/api/jules';
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
@@ -73,6 +72,43 @@ class ConcurrencyQueue {
 }
 
 const julesQueue = new ConcurrencyQueue(6);
+
+/**
+ * Retry helper for transient Jules API errors (completely decoupled from Gemini quota queue)
+ */
+async function withJulesRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  initialDelay = 1000,
+  silent = false
+): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastError = e;
+      const errorMessage = e?.message || String(e);
+      const isTransient = 
+        errorMessage.includes('503') || 
+        errorMessage.includes('UNAVAILABLE') || 
+        errorMessage.includes('429') ||
+        errorMessage.includes('Failed to fetch') ||
+        e.name === 'AbortError';
+
+      if (!isTransient || i === maxRetries) {
+        throw e;
+      }
+      
+      const delay = initialDelay * Math.pow(2, i);
+      if (!silent) {
+        console.warn(`[JulesService] Transient error (attempt ${i + 1}/${maxRetries + 1}): ${errorMessage.substring(0, 100)}... Retrying in ${Math.round(delay)}ms...`);
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
 
 const request = async <T>(
   endpoint: string, 
@@ -200,7 +236,7 @@ const request = async <T>(
   const retryDelay = options.noRetry ? 0 : 1000;
   
   return await julesQueue.run(async () => {
-    return await withRetry(runRequest, retries, retryDelay, 'JulesService', silent);
+    return await withJulesRetry(runRequest, retries, retryDelay, silent);
   });
 };
 
