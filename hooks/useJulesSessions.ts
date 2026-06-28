@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
-import { listSessions, sendMessage, enrichSessionsWithDetails, findSourceForRepo } from '../services/julesService';
+import { listSessions, sendMessage, enrichSessionsWithDetails, findSourceForRepo, createSession } from '../services/julesService';
 import { storage } from '../services/storageService';
 import { JulesSession } from '../types';
 
@@ -67,6 +67,59 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
     }
   }, [julesApiKey]);
 
+  const refetchSessions = useCallback(async (force = false) => {
+    if (!julesApiKey) return [];
+    const sessions = await listSessions(julesApiKey, force);
+    const detailed = await enrichSessionsWithDetails(julesApiKey, sessions);
+    storage.saveJulesSessions(detailed);
+    queryClient.setQueryData(['julesSessions', julesApiKey], detailed);
+    return detailed;
+  }, [julesApiKey, queryClient]);
+
+  const createSessionMutation = useMutation({
+    mutationFn: async ({ prompt, branch, title }: { prompt: string; branch: string; title: string }) => {
+      if (!julesApiKey) throw new Error('Jules API Key required');
+      if (!sourceId) throw new Error('Jules Source ID required');
+      return createSession(julesApiKey, prompt, sourceId, branch, title);
+    },
+    onMutate: async ({ branch, title }) => {
+      await queryClient.cancelQueries({ queryKey: ['julesSessions', julesApiKey] });
+
+      const previousSessions = queryClient.getQueryData<JulesSession[]>(['julesSessions', julesApiKey]) || [];
+
+      // Create an optimistic JulesSession
+      const owner = repo.split('/')[0] || '';
+      const repoOnly = repo.split('/')[1] || '';
+      const optimisticSession: JulesSession = {
+        name: `projects/dummy/locations/global/repositories/dummy/sessions/optimistic-${Date.now()}`,
+        state: 'PENDING',
+        createTime: new Date().toISOString(),
+        title: title,
+        sourceContext: {
+          githubRepoContext: {
+            owner,
+            repo: repoOnly,
+            startingBranch: branch
+          }
+        }
+      };
+
+      queryClient.setQueryData<JulesSession[]>(['julesSessions', julesApiKey], (old = []) => {
+        return [optimisticSession, ...old];
+      });
+
+      return { previousSessions };
+    },
+    onError: (err, variables, context) => {
+      if (context?.previousSessions) {
+        queryClient.setQueryData(['julesSessions', julesApiKey], context.previousSessions);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['julesSessions', julesApiKey] });
+    }
+  });
+
   return {
     allSessions,
     suggestedSessions,
@@ -78,10 +131,12 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
     verificationError: verificationError ? (verificationError as Error).message : null,
     julesReportStatus,
     onReportToJules,
+    refetchSessions,
+    createSessionMutation,
     refreshSessions: () => {
       storage.clearRepoSourceId(repo);
       queryClient.invalidateQueries({ queryKey: ['julesSource', julesApiKey, repo] });
-      queryClient.invalidateQueries({ queryKey: ['julesSessions', julesApiKey, sourceId] });
+      queryClient.invalidateQueries({ queryKey: ['julesSessions', julesApiKey] });
     }
   };
 }

@@ -23,6 +23,9 @@ export const StorageKeys = {
   USAGE: `${APP_PREFIX}usage`,
   MODEL_HEALTH: `${APP_PREFIX}model_health`,
   REPO_SOURCES: `${APP_PREFIX}repo_sources`,
+  AUTO_SEND_FIX_ENABLED: `${APP_PREFIX}auto_send_fix_enabled`,
+  AUTO_SEND_FIX_LAST_RUN: `${APP_PREFIX}auto_send_fix_last_run`,
+  AUTO_HEAL_LOGS: `${APP_PREFIX}auto_heal_logs`,
 };
 
 export interface AppSettings {
@@ -681,5 +684,17 @@ export const storage = {
     // Notify app with the full effective settings
     const fullEffective = this.getSettings();
     window.dispatchEvent(new CustomEvent('settings_updated', { detail: fullEffective }));
+  },
+
+  getItem(key: string): string | null {
+    return storage.getRaw<string | null>(key, null);
+  },
+
+  setItem(key: string, value: string): void {
+    storage.set(key, value);
+  },
+
+  removeItem(key: string): void {
+    storage.remove(key);
   }
 };

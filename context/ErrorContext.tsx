@@ -43,7 +43,9 @@ export const ErrorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
 
     const id = Math.random().toString(36).substr(2, 9);
-    setErrors(prev => [...prev, { id, message, stack, timestamp: Date.now() }]);
+    setTimeout(() => {
+      setErrors(prev => [...prev, { id, message, stack, timestamp: Date.now() }]);
+    }, 0);
   };
 
   const removeError = (id: string) => {

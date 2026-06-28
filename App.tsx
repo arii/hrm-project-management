@@ -93,7 +93,7 @@ const App: React.FC = () => {
             <Route path="code-review" element={<CodeReview repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
             <Route path="workflow-health" element={<WorkflowHealth repoName={repoName} token={githubToken} julesApiKey={julesApiKey} />} />
             <Route path="batch-create" element={<BatchCreate repoName={repoName} token={githubToken} />} />
-            <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} />} />
+            <Route path="jules-management" element={<JulesManagement julesApiKey={julesApiKey} repoName={repoName} />} />
             <Route path="user-guide" element={<UserGuide />} />
             <Route path="gemini-status" element={<GeminiStatus />} />
             <Route path="*" element={<Navigate to="/" replace />} />

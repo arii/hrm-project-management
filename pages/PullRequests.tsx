@@ -7,6 +7,7 @@ import { storage } from '../services/storageService';
 import { EnrichedPullRequest, JulesSession, PrHealthAction, CodeReviewResult } from '../types';
 import { useGeminiAnalysis } from '../hooks/useGeminiAnalysis';
 import { useJulesSessions } from '../hooks/useJulesSessions';
+import { usePullRequests } from '../hooks/usePullRequests';
 import AnalysisCard from '../components/AnalysisCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -82,13 +83,19 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     'pr_health_check_v4'
   );
 
-  const [prs, setPrs] = useState<EnrichedPullRequest[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
-  const [batchStatus, setBatchStatus] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
+  const {
+    prs,
+    isLoading: loading,
+    error: fetchError,
+    refetch,
+    listProgress,
+    batchStatus,
+    updateBranchMutation
+  } = usePullRequests(repoName, token);
+
+  const error = fetchError || (!token ? "GitHub Token is missing. Please add it in settings." : !repoName ? "Repository name is missing. Please add it in settings." : null);
   
-  const { allSessions: julesSessions } = useJulesSessions(julesApiKey, repoName);
+  const { allSessions: julesSessions, createSessionMutation } = useJulesSessions(julesApiKey, repoName);
 
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -134,75 +141,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     }
   }, [analysis.result, proposedActions.length, repoName]);
 
-  const loadPrs = async (silent = false, skipCache = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      // 1. Fetch BASIC PR list immediately
-      const list = await fetchPullRequests(repoName, token, 'open', skipCache);
-      const initialPrs = list.map(pr => ({
-        ...pr,
-        testStatus: 'unknown',
-        isApproved: false,
-        isBig: false,
-        isReadyToMerge: false,
-        isLeaderBranch: false
-      } as EnrichedPullRequest));
-      setPrs(initialPrs);
-      
-      // Stop skeleton loader
-      if (!silent) setLoading(false);
 
-      // 2. Jules sessions are managed by useJulesSessions hook now, so we remove the manual listSessions call here
-      
-      // 3. Background Enrichment with incremental progress
-      const toEnrich = initialPrs.slice(0, 30); // Enrich more here as it's the main list
-      setListProgress({ total: toEnrich.length, current: 0 });
-      
-      const chunkSize = 3; // Chunk size for stability & rate mitigation
-      let completedCount = 0;
-      
-      for (let i = 0; i < toEnrich.length; i += chunkSize) {
-        const chunk = toEnrich.slice(i, i + chunkSize);
-        const enrichedResults = await Promise.all(chunk.map(async (pr) => {
-          try {
-            const enriched = await enrichSinglePr(repoName, pr, token, false);
-            return enriched;
-          } catch (e) {
-            console.warn(`[PullRequests] Failed to enrich PR #${pr.number}`, e);
-            return pr; // Fallback to unenriched on failure
-          } finally {
-            completedCount++;
-          }
-        }));
-
-        // Apply state updates in chunks instead of per individual item
-        setPrs(prev => prev.map(p => {
-          const matchingEnriched = enrichedResults.find(er => er.number === p.number);
-          return matchingEnriched ? matchingEnriched : p;
-        }));
-        
-        setListProgress({ total: toEnrich.length, current: completedCount });
-        setBatchStatus(`Analyzing PRs ${i + 1}-${Math.min(i + chunkSize, toEnrich.length)} of ${toEnrich.length}...`);
-      }
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message || "Failed to load pull requests. Please check your connection and settings.");
-      if (!silent) setLoading(false);
-    } finally {
-      setListProgress({ total: 0, current: 0 });
-    }
-  };
-
-  useEffect(() => {
-    if (repoName && token) {
-      loadPrs();
-    } else {
-      setLoading(false);
-      if (!token) setError("GitHub Token is missing. Please add it in settings.");
-      else if (!repoName) setError("Repository name is missing. Please add it in settings.");
-    }
-  }, [repoName, token]);
 
   const updateProcessingMessage = (prNumber: number, msg: string) => {
     setProcessingMessages(prev => ({ ...prev, [prNumber]: msg }));
@@ -263,7 +202,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const branch = pr.head?.ref || 'main';
       if (!branch) throw new Error("Could not determine head branch for this PR.");
       
-      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Repair Audit: #${pr.number}`);
+      const session = await createSessionMutation.mutateAsync({
+        prompt,
+        branch,
+        title: `Repair Audit: #${pr.number}`
+      });
       setSessionLinks(prev => ({ ...prev, [`repair-${pr.number}`]: session.name }));
       setRepairStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
       updateProcessingMessage(pr.number, "Repair session dispatched successfully.");
@@ -287,13 +230,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       }
       
       updateProcessingMessage(pr.number, "Plan generated. Creating Jules session...");
-      const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("A Jules Source ID is required.");
       
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number, pr.head?.sha);
       const auditPart = existingReview 
-        ? `\n\nTECHNICAL ROADMAP FROM PREVIOUS AUDIT:\n${existingReview.reviewComment}` 
-        : "";
+          ? `\n\nTECHNICAL ROADMAP FROM PREVIOUS AUDIT:\n${existingReview.reviewComment}` 
+          : "";
 
       const prompt = `
         RESTART PR #${pr.number} FROM SCRATCH.
@@ -314,7 +255,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const branch = pr.base?.ref || 'main';
       if (!branch) throw new Error("Could not determine base branch for this PR.");
       
-      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Restart: ${title}`);
+      const session = await createSessionMutation.mutateAsync({
+        prompt,
+        branch,
+        title: `Restart: ${title}`
+      });
       
       setSessionLinks(prev => ({ ...prev, [`restart-${pr.number}`]: session.name }));
       setRestartStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
@@ -336,8 +281,6 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const { syncIssues } = await analyzePrForSync(pr, diff);
       
       updateProcessingMessage(pr.number, "Issues identified. Creating Jules session...");
-      const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("A Jules Source ID is required.");
 
       const existingReview: CodeReviewResult | null = storage.getPrReview(repoName, pr.number, pr.head?.sha);
       const auditPart = existingReview 
@@ -369,7 +312,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       const branch = pr.head?.ref || 'main';
       if (!branch) throw new Error("Could not determine head branch for this PR.");
       
-      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Sync & Conflict: #${pr.number}`);
+      const session = await createSessionMutation.mutateAsync({
+        prompt,
+        branch,
+        title: `Sync & Conflict: #${pr.number}`
+      });
       setSessionLinks(prev => ({ ...prev, [`sync-${pr.number}`]: session.name }));
       setSyncStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
       updateProcessingMessage(pr.number, "Synchronization session dispatched successfully.");
@@ -384,11 +331,9 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
     updateProcessingMessage(pr.number, "Updating branch from base...");
     try {
-      await updatePullRequestBranch(repoName, pr.number, token);
+      await updateBranchMutation.mutateAsync({ prNumber: pr.number });
       setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'success' }));
       updateProcessingMessage(pr.number, "Branch updated successfully.");
-      // Reload PRs to get fresh state
-      setTimeout(() => loadPrs(true, true), 2000);
     } catch (e: any) {
       setUpdateStatuses(prev => ({ ...prev, [pr.number]: 'error' }));
       setErrorMessages(prev => ({ ...prev, [pr.number]: e.message }));
@@ -399,8 +344,6 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     if (!julesApiKey) return;
     setDispatchStatuses(prev => ({ ...prev, [action._id]: 'loading' }));
     try {
-      const sourceId = await findSourceForRepo(julesApiKey, repoName);
-      if (!sourceId) throw new Error("Source not found.");
       const pr = prs.find(p => p.number === action.prNumber);
       const branch = pr?.head.ref || pr?.base.ref || 'main'; // Use main as a last resort if PR info is partially missing
       if (!pr) {
@@ -413,7 +356,11 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
         
         CRITICAL: Follow ANTI-AI-SLOP protocols. Reduce lines of code, remove redundant comments, and avoid complex abstractions.
       `;
-      const session = await createSession(julesApiKey, prompt, sourceId, branch, `Audit Fix: #${action.prNumber}`);
+      const session = await createSessionMutation.mutateAsync({
+        prompt,
+        branch,
+        title: `Audit Fix: #${action.prNumber}`
+      });
       setSessionLinks(prev => ({ ...prev, [action._id]: session.name }));
       setDispatchStatuses(prev => ({ ...prev, [action._id]: 'success' }));
     } catch (e: any) {
@@ -492,7 +439,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                 <Loader2 className="w-3 h-3 animate-spin" /> Progress: {bulkProgress.current} / {bulkProgress.total}
              </div>
           )}
-          <Button variant="secondary" onClick={() => loadPrs(false, true)} isLoading={loading} icon={RefreshCw}>Refresh</Button>
+          <Button variant="secondary" onClick={() => refetch({ skipCache: true })} isLoading={loading} icon={RefreshCw}>Refresh</Button>
         </div>
       </div>
 

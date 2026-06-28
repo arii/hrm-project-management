@@ -259,6 +259,7 @@ export const listSources = async (apiKey: string, options: RequestInit = {}): Pr
   const silentOptions = {
     ...options,
     silent: true,
+    noRetry: true, // Prevent exploratory retry storms
     headers: { ...options.headers, 'X-Ignore-Error': 'true' }
   };
 
@@ -379,10 +380,15 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
       
       do {
         const query = (nextToken ? `?pageToken=${nextToken}` : '');
+        const isCachedParent = parent === cachedParent;
         const data = await request<{ sessions: JulesSession[], nextPageToken?: string }>(
           `${sessionPath}${query}`, 
           apiKey, 
-          { headers: { 'X-Ignore-Error': 'true' } }, 
+          { 
+            noRetry: !isCachedParent,
+            silent: !isCachedParent,
+            headers: { 'X-Ignore-Error': 'true' } 
+          }, 
           forceRefresh
         );
         
@@ -415,11 +421,11 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
  * Opt-in for performance.
  */
 export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesSession[]): Promise<JulesSession[]> => {
-  // Fetch details for all sessions, with controlled concurrency via julesQueue
+  // Fetch details for all sessions (concurrency is controlled internally inside request() via julesQueue)
   const enriched = await Promise.all(
     sessions.map(async (s) => {
       try {
-        return await julesQueue.run(async () => await getSession(apiKey, s.name));
+        return await getSession(apiKey, s.name);
       } catch (e: any) {
         console.warn(`[JulesService] Failed to enrich session ${s.name}:`, e?.message || e);
         return s;

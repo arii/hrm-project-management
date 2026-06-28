@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   fetchPullRequests,
@@ -27,6 +27,8 @@ import WorkerSelectorModal from '../components/ui/WorkerSelectorModal';
 import { useIssueDispatch } from '../hooks/useIssueDispatch';
 import { useJulesSessions } from '../hooks/useJulesSessions';
 import { useEnrichedPr } from '../hooks/useEnrichedPr';
+import { usePullRequests } from '../hooks/usePullRequests';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface CodeReviewProps {
   repoName: string;
@@ -64,10 +66,23 @@ function parsePrUrl(url: string | undefined): { repo: string; number: number } |
 const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey }) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  const [prs, setPrs] = useState<GithubPullRequest[]>([]);
-  const [enrichedMap, setEnrichedMap] = useState<Record<number, EnrichedPullRequest>>({});
-  const [loading, setLoading] = useState(false);
+  const {
+    prs,
+    isLoading: loading,
+    refetch,
+    listProgress
+  } = usePullRequests(repoName, token);
+
+  const enrichedMap = useMemo(() => {
+    const map: Record<number, EnrichedPullRequest> = {};
+    prs.forEach(p => {
+      map[p.number] = p;
+    });
+    return map;
+  }, [prs]);
+
   const [selectedPr, setSelectedPr] = useState<EnrichedPullRequest | null>(null);
   const [baseSelectedPr, setBaseSelectedPr] = useState<GithubPullRequest | null>(null);
 
@@ -93,7 +108,6 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
   const [statuses, setStatuses] = useState<Record<number, ReviewStatus>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [loadingMessage, setLoadingMessage] = useState<string>("");
-  const [listProgress, setListProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [bulkProgress, setBulkProgress] = useState<{ total: number; current: number }>({ total: 0, current: 0 });
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -119,108 +133,54 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     verificationError: julesVerificationError
   } = useJulesSessions(julesApiKey, repoName);
 
-  const loadPrList = useCallback(async (skipCache = false) => {
-    setLoading(true);
-    try {
-      // 1. Fetch BASIC PR list immediately
-      const list = await fetchPullRequests(repoName, token, 'open', skipCache);
-      const initialPrs = list.map(pr => ({
-        ...pr,
-        testStatus: 'unknown',
-        isApproved: false,
-        isBig: false,
-        isReadyToMerge: false,
-        isLeaderBranch: false
-      } as EnrichedPullRequest));
-      setPrs(initialPrs);
-      
-      // Auto-detect already reviewed PRs and populate from storage
+  // Auto-detect already reviewed PRs and populate from storage
+  useEffect(() => {
+    if (prs && prs.length > 0) {
       const newStatuses: Record<number, ReviewStatus> = {};
       const newReviews: Record<number, CodeReviewResult> = {};
       
-      initialPrs.forEach(pr => {
+      prs.forEach(pr => {
         const existing = storage.getPrReview(repoName, pr.number, pr.head?.sha);
         if (existing) {
-          // console.log(`[CodeReview] Found cached review for #${pr.number}:`, existing);
           newStatuses[pr.number] = 'completed';
           newReviews[pr.number] = existing;
-        } else {
-          // console.log(`[CodeReview] No cached review for #${pr.number}`);
         }
       });
       
       if (Object.keys(newStatuses).length > 0) {
-        setStatuses(prev => ({ ...prev, ...newStatuses }));
-        setReviews(prev => ({ ...prev, ...newReviews }));
-      }
-      
-      // Stop skeleton loader immediately
-      setLoading(false);
-
-      // 2. Background Enrichment
-      const toEnrich = initialPrs.slice(0, 20);
-      setListProgress({ total: toEnrich.length, current: 0 });
-      const chunkSize = 2; // Reduced from 4 for stability
-      let completedCount = 0;
-      
-      for (let i = 0; i < toEnrich.length; i += chunkSize) {
-        const chunk = toEnrich.slice(i, i + chunkSize);
-        const enrichedResults = await Promise.all(chunk.map(async (pr) => {
-          if (!pr) return null;
-          try {
-            const enriched = await enrichSinglePr(repoName, pr, token, false);
-            return enriched;
-          } catch (e) {
-            console.warn(`[CodeReview] Failed to enrich PR #${pr.number}`, e);
-            return null;
-          } finally {
-            completedCount++;
-          }
-        }));
-
-        // Batch state updates once per chunk
-        const validEnriched = enrichedResults.filter((er): er is EnrichedPullRequest => er !== null);
-        if (validEnriched.length > 0) {
-          setEnrichedMap(prev => {
-            const nextMap = { ...prev };
-            validEnriched.forEach(er => {
-              nextMap[er.number] = er;
-            });
-            return nextMap;
+        setStatuses(prev => {
+          const merged = { ...prev };
+          let changed = false;
+          Object.keys(newStatuses).forEach(k => {
+            const num = parseInt(k, 10);
+            if (!merged[num]) {
+              merged[num] = newStatuses[num];
+              changed = true;
+            }
           });
-
-          setPrs(prev => prev.map(p => {
-            const matchingEnriched = validEnriched.find(er => er.number === p.number);
-            return matchingEnriched ? matchingEnriched : p;
-          }));
-        }
-        
-        setListProgress({ total: toEnrich.length, current: completedCount });
+          return changed ? merged : prev;
+        });
+        setReviews(prev => {
+          const merged = { ...prev };
+          let changed = false;
+          Object.keys(newReviews).forEach(k => {
+            const num = parseInt(k, 10);
+            if (!merged[num]) {
+              merged[num] = newReviews[num];
+              changed = true;
+            }
+          });
+          return changed ? merged : prev;
+        });
       }
-      
-      return initialPrs;
-    } catch (e: any) { 
-      console.error(e); 
-      setLoading(false); 
-    } finally {
-      setListProgress({ total: 0, current: 0 });
     }
-  }, [repoName, token]);
+  }, [prs, repoName]);
 
   useEffect(() => {
     if (repoName && token) {
-      loadPrList().then((list) => {
-        const storedState = storage.get<{selectedPrNumber?: number}>(StorageKeys.CODE_REVIEW_STATE);
-        const prNumber = location.state?.selectedPrNumber || storedState?.selectedPrNumber;
-        if (prNumber && list) {
-           const match = list.find(p => p.number === prNumber);
-           if (match) handleSelectPr(match);
-        }
-      });
       const stored = storage.getReviewedShas(repoName);
       setReviewedShas(stored);
     } else {
-      setLoading(false);
       setActionError("GitHub Token or Repository Name is missing. Please check your settings.");
     }
 
@@ -229,7 +189,21 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
     };
     window.addEventListener('usage_updated', handleUsageUpdate);
     return () => window.removeEventListener('usage_updated', handleUsageUpdate);
-  }, [repoName, token, loadPrList]);
+  }, [repoName, token]);
+
+  // Handle routing selection
+  useEffect(() => {
+    if (prs && prs.length > 0 && !selectedPr) {
+      const storedState = storage.get<{selectedPrNumber?: number}>(StorageKeys.CODE_REVIEW_STATE);
+      const prNumber = location.state?.selectedPrNumber || storedState?.selectedPrNumber;
+      if (prNumber) {
+        const match = prs.find(p => p.number === prNumber);
+        if (match) {
+          handleSelectPr(match);
+        }
+      }
+    }
+  }, [prs, location.state?.selectedPrNumber, selectedPr]);
 
   // Persist selected PR to storage
   useEffect(() => {
@@ -354,26 +328,17 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
         }));
 
         // Immediately sync local state caches to avoid UI staleness
-        setEnrichedMap(prev => {
-          if (!prev[pr.number]) return prev;
-          return {
-            ...prev,
-            [pr.number]: {
-              ...prev[pr.number],
-              labels: updatedLabelsObjects
+        queryClient.setQueryData<EnrichedPullRequest[]>(['pullRequests', repoName], (prev = []) => {
+          return prev.map(p => {
+            if (p.number === pr.number) {
+              return {
+                ...p,
+                labels: updatedLabelsObjects
+              };
             }
-          };
+            return p;
+          });
         });
-
-        setPrs(prev => prev.map(p => {
-          if (p.number === pr.number) {
-            return {
-              ...p,
-              labels: updatedLabelsObjects
-            };
-          }
-          return p;
-        }));
 
         if (selectedPr && selectedPr.number === pr.number) {
           setSelectedPr(prev => prev ? { ...prev, labels: updatedLabelsObjects } : null);
@@ -449,7 +414,9 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
           if (!fullPr || !fullPr.checkResults) {
             try {
               fullPr = await enrichSinglePr(repoName, pr, token, true);
-              setEnrichedMap(prev => ({ ...prev, [id]: fullPr }));
+              queryClient.setQueryData<EnrichedPullRequest[]>(['pullRequests', repoName], (prev = []) => {
+                return prev.map(p => p.number === id ? fullPr : p);
+              });
             } catch (e) {
               setErrors(prev => ({ ...prev, [id]: "Enrichment failed" }));
               setStatuses(prev => ({ ...prev, [id]: 'error' }));
@@ -473,7 +440,8 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
       setBulkProgress({ total: 0, current: 0 });
       
       // Refresh the PR list to pull down all freshly applied labels and statuses from GitHub
-      const freshList = await loadPrList(true);
+      const result = await refetch({ skipCache: true });
+      const freshList = result?.data;
       
       // If a PR is currently selected in the detail view, reload its details so the reports display instantly
       if (selectedPr && freshList) {
@@ -655,7 +623,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                    {isBulkAuditing ? 'Auditing...' : `Audit ${selectedPrIds.size}`}
                  </Button>
                )}
-               <Button variant="ghost" size="sm" onClick={() => loadPrList(true)} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
+               <Button variant="ghost" size="sm" onClick={() => refetch({ skipCache: true })} isLoading={loading} icon={RefreshCw} className="h-8 w-8 p-0" />
              </div>
           </div>
           {isBulkAuditing && (

@@ -667,20 +667,21 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
 
   // REST Fallback
   // Tier 1: Use 'pr' object directly, only fetch details if missing changed_files
-  const detailsPromise = (pr as any).changed_files !== undefined && !skipCache
-    ? Promise.resolve(pr as any) 
-    : fetchPrDetails(repo, pr.number, token, skipCache);
+  const details = (pr as any).changed_files !== undefined && !skipCache
+    ? (pr as any) 
+    : await fetchPrDetails(repo, pr.number, token, skipCache);
 
-  const [details, reviews, checkResults] = await Promise.all([
-    detailsPromise,
+  const headSha = pr.head?.sha || details.head?.sha || '';
+
+  const [reviews, checkResults] = await Promise.all([
     (token && includeReviews) ? fetchPrReviews(repo, pr.number, token) : Promise.resolve([]),
-    token ? fetchCheckRuns(repo, pr.head.sha, token) : Promise.resolve([])
+    (token && headSha) ? fetchCheckRuns(repo, headSha, token) : Promise.resolve([])
   ]);
 
   // Conditional fetching for commit status (only if check runs are empty)
   let commitStatus = { state: 'unknown', statuses: [] as any[] };
-  if (token && checkResults.length === 0) {
-    commitStatus = await fetchCombinedStatus(repo, pr.head.sha, token);
+  if (token && headSha && checkResults.length === 0) {
+    commitStatus = await fetchCombinedStatus(repo, headSha, token);
   }
 
   // Merge Check Runs and Statuses

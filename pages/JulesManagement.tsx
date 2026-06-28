@@ -10,9 +10,12 @@ import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import { useAutoSendFix } from '../hooks/useAutoSendFix';
+import { useJulesSessions } from '../hooks/useJulesSessions';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface JulesManagementProps {
   julesApiKey: string;
+  repoName: string;
 }
 
 const CiStatusBadge: React.FC<{ status?: string }> = ({ status }) => {
@@ -34,16 +37,22 @@ const CiStatusBadge: React.FC<{ status?: string }> = ({ status }) => {
   );
 };
 
-const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
-  const [sessions, setSessions] = useState<JulesSession[]>([]);
-  const [loading, setLoading] = useState(true);
+const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName }) => {
+  const queryClient = useQueryClient();
+  const {
+    allSessions: sessions,
+    isLoading: loading,
+    isEnriching,
+    refetchSessions
+  } = useJulesSessions(julesApiKey, repoName);
+
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [isEnriching, setIsEnriching] = useState(false);
   const [sortField, setSortField] = useState<'date' | 'status' | 'name' | 'prStatus'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'ARCHIVED'>('ALL');
@@ -71,66 +80,22 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   const loadSessions = useCallback(async (silent = false, force = false) => {
     if (!julesApiKey) {
       setError("Jules API Key is missing. Please check your settings.");
-      setLoading(false);
       return;
     }
 
-    if (!silent) {
-      setLoading(true);
-      setCiStatuses({});
-      setActionLoading({});
-    }
     setError(null);
+    setIsRefreshing(true);
     try {
-      const data = await listSessions(julesApiKey, force);
-      // Sort by creation time descending (most recent first)
-      const sorted = [...data].sort((a, b) => {
-        const timeA = a.createTime ? new Date(a.createTime).getTime() : 0;
-        const timeB = b.createTime ? new Date(b.createTime).getTime() : 0;
-        return timeB - timeA;
-      });
-      setSessions(sorted);
+      await refetchSessions(force);
       setSelectedIds(new Set()); // Reset selection on reload
-
-      // Background enrichment
-      setIsEnriching(true);
-      
-      // Separate the enrichment process to allow incremental updates
-      const enrichAll = async () => {
-        try {
-          const chunkSize = 5;
-          for (let i = 0; i < sorted.length; i += chunkSize) {
-            const chunk = sorted.slice(i, i + chunkSize);
-            await Promise.all(chunk.map(async (session) => {
-              try {
-                // Re-fetch individual session details
-                const enrichedDetails = await getSession(julesApiKey, session.name);
-                
-                setSessions(prev => prev.map(s => s.name === session.name ? enrichedDetails : s));
-                
-                // Fetch CI status for this enriched session if it has PRs
-                if (enrichedDetails.outputs) {
-                  fetchCiStatusesForSessions([enrichedDetails], force);
-                }
-              } catch (e: any) {
-                console.warn(`[JulesManagement] Enrichment failed for ${session.name}:`, e?.message || e);
-              }
-            }));
-          }
-        } finally {
-          setIsEnriching(false);
-        }
-      };
-      
-      enrichAll();
     } catch (e: any) {
       setError(e.message || "Failed to load sessions");
     } finally {
-      setLoading(false);
+      setIsRefreshing(false);
     }
-  }, [julesApiKey]);
+  }, [julesApiKey, refetchSessions]);
 
-  const { enabled, setEnabled, lastRun, nextRun, getSentTime } = useAutoSendFix(julesApiKey, storage.getRepo(), loadSessions);
+  const { enabled, setEnabled, lastRun, nextRun, isChecking, autoHealLogs, getSentTime } = useAutoSendFix(julesApiKey, storage.getRepo(), loadSessions);
 
   const fetchCiStatusesForSessions = async (sessionsList: JulesSession[], skipCache = false) => {
     const ghToken = storage.getGithubToken();
@@ -187,6 +152,12 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
   };
 
   useEffect(() => {
+    if (sessions && sessions.length > 0) {
+      fetchCiStatusesForSessions(sessions);
+    }
+  }, [sessions]);
+
+  useEffect(() => {
     loadSessions();
   }, [loadSessions]);
 
@@ -216,7 +187,9 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
         setDeletingIds(prev => new Set(prev).add(sessionName));
         try {
           await deleteSession(julesApiKey, sessionName);
-          setSessions(prev => prev.filter(s => s.name !== sessionName));
+          queryClient.setQueryData<JulesSession[]>(['julesSessions', julesApiKey], prev => {
+            return prev ? prev.filter(s => s.name !== sessionName) : [];
+          });
           setSelectedIds(prev => {
             const next = new Set(prev);
             next.delete(sessionName);
@@ -257,8 +230,10 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
           try {
             await deleteSession(julesApiKey, sessionName);
             successCount++;
-            // Update local state immediately for visual feedback
-            setSessions(prev => prev.filter(s => s.name !== sessionName));
+            // Update cache immediately for visual feedback
+            queryClient.setQueryData<JulesSession[]>(['julesSessions', julesApiKey], prev => {
+              return prev ? prev.filter(s => s.name !== sessionName) : [];
+            });
             setSelectedIds(prev => {
               const next = new Set(prev);
               next.delete(sessionName);
@@ -368,7 +343,12 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
     }
   };
 
-  const getPrStatusBadge = (sessionName: string, pr?: EnrichedPullRequest) => {
+  const getPrStatusBadge = (session: JulesSession, pr?: EnrichedPullRequest) => {
+    const hasPr = session.outputs?.some(o => o.pullRequest?.url);
+    if (!hasPr) {
+      return <span className="text-slate-500 font-mono text-xs">—</span>;
+    }
+
     if (isEnriching && !pr) {
         return <div className="flex items-center gap-1.5 text-xs text-slate-500"><Loader2 className="w-3 h-3 animate-spin text-purple-500" /> Loading...</div>;
     }
@@ -425,9 +405,9 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
             variant="secondary" 
             size="sm" 
             onClick={() => loadSessions(false, true)} 
-            disabled={loading || isDeletingBulk}
+            disabled={loading || isRefreshing || isDeletingBulk}
+            isLoading={isRefreshing}
             icon={RefreshCw}
-            className={loading ? 'animate-spin' : ''}
           >
             Refresh
           </Button>
@@ -435,7 +415,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
             variant="danger" 
             size="sm" 
             onClick={handleDeleteSelected} 
-            disabled={loading || isDeletingBulk || selectedIds.size === 0}
+            disabled={loading || isRefreshing || isDeletingBulk || selectedIds.size === 0}
             isLoading={isDeletingBulk}
             icon={Trash2}
           >
@@ -443,6 +423,39 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
           </Button>
         </div>
       </div>
+
+      {enabled && (
+        <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-25"></div>
+              <div className="relative w-3 h-3 bg-emerald-500 rounded-full"></div>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                Auto-Fix Daemon Active
+                {isChecking && (
+                  <span className="text-xs text-emerald-400 animate-pulse flex items-center gap-1 font-normal">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning checks...
+                  </span>
+                )}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Automatically heals Pull Requests with failing CI tests by prompting the Jules agent.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-slate-400">
+            <div>
+              <span className="text-slate-500">Last Run:</span> {lastRun ? new Date(lastRun).toLocaleTimeString() : 'Never'}
+            </div>
+            <div className="hidden md:block h-4 w-px bg-slate-800"></div>
+            <div>
+              <span className="text-slate-500">Next Run:</span> {nextRun ? nextRun.toLocaleTimeString() : 'Scheduled'}
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400">
@@ -614,7 +627,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey }) => {
                       {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown'}
                     </td>
                     <td className="p-4">
-                      {getPrStatusBadge(session.name, sessionCi?.prData)}
+                      {getPrStatusBadge(session, sessionCi?.prData)}
                     </td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
