@@ -284,6 +284,9 @@ const RepoSettings: React.FC<RepoSettingsProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                   placeholder="AI Key..."
                 />
+                <p className="mt-1 text-[10px] text-slate-500 leading-tight">
+                  Leave empty to use the system's high-performance fallback key. If you enter an invalid key, the system will automatically bypass it to ensure your AI code reviews never get stuck.
+                </p>
               </div>
 
               <div className="border-t border-slate-700 pt-4">

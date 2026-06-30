@@ -158,7 +158,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
       
       // Fetch diff and comments in parallel
       const [diff, issueComments, reviewComments] = await Promise.all([
-        fetchPrDiff(repoName, pr.number, token).catch(() => ""),
+        fetchPrDiff(repoName, pr.number, token, pr.head?.sha).catch(() => ""),
         fetchComments(repoName, pr.number, token).catch(() => []),
         fetchReviewComments(repoName, pr.number, token).catch(() => [])
       ]);
@@ -221,7 +221,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     setRestartStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
     updateProcessingMessage(pr.number, "Analyzing PR intent for fresh restart...");
     try {
-      const diff = await fetchPrDiff(repoName, pr.number, token);
+      const diff = await fetchPrDiff(repoName, pr.number, token, pr.head?.sha);
       if (!diff) throw new Error("Could not retrieve PR diff from GitHub.");
       
       const { plan, title } = await analyzePrForRestart(pr, diff);
@@ -275,7 +275,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
     setSyncStatuses(prev => ({ ...prev, [pr.number]: 'loading' }));
     updateProcessingMessage(pr.number, "Analyzing PR for synchronization issues...");
     try {
-      const diff = await fetchPrDiff(repoName, pr.number, token);
+      const diff = await fetchPrDiff(repoName, pr.number, token, pr.head?.sha);
       if (!diff) throw new Error("Could not retrieve PR diff from GitHub.");
 
       const { syncIssues } = await analyzePrForSync(pr, diff);

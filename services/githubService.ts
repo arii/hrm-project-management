@@ -236,6 +236,39 @@ export const fetchPrReviews = async (repo: string, number: number, token?: strin
   return request<any[]>(`/repos/${repo}/pulls/${number}/reviews`, token);
 };
 
+export const fetchPrDiffFromFiles = async (repo: string, number: number, token: string): Promise<string> => {
+  // Fetch files (up to 100 for safety, performance, and token limit reasons)
+  const files = await request<any[]>(`/repos/${repo}/pulls/${number}/files?per_page=100`, token);
+  if (!Array.isArray(files)) return "";
+  
+  let diffText = "";
+  for (const file of files) {
+    if (!file.patch) continue;
+    
+    // Pre-filtering high-noise files saves massive bandwidth, memory, and token limits
+    const filename = file.filename || "";
+    const lowerFilename = filename.toLowerCase();
+    const isLockfile = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'composer.lock', 'cargo.lock'].some(lock => lowerFilename.endsWith(lock));
+    if (isLockfile) continue;
+
+    diffText += `diff --git a/${filename} b/${filename}\n`;
+    if (file.status === 'added') {
+      diffText += `new file mode 100644\n`;
+      diffText += `--- /dev/null\n`;
+      diffText += `+++ b/${filename}\n`;
+    } else if (file.status === 'removed') {
+      diffText += `deleted file mode 100644\n`;
+      diffText += `--- a/${filename}\n`;
+      diffText += `+++ /dev/null\n`;
+    } else {
+      diffText += `--- a/${filename}\n`;
+      diffText += `+++ b/${filename}\n`;
+    }
+    diffText += `${file.patch}\n`;
+  }
+  return diffText;
+};
+
 export const fetchPrDiff = async (repo: string, number: number, token: string, sha?: string): Promise<string> => {
   const cacheKey = `${StorageKeys.GITHUB_CACHE}_diff_${repo}_${number}`;
   
@@ -244,9 +277,21 @@ export const fetchPrDiff = async (repo: string, number: number, token: string, s
     if (cached) return cached;
   }
 
-  const diff = await request<string>(`/repos/${repo}/pulls/${number}`, token, {
-    headers: { 'Accept': 'application/vnd.github.v3.diff' }
-  }, true);
+  let diff = "";
+  try {
+    // Try the JSON files endpoint first: highly stable, fast, pre-filtered, and does not hang the backend proxy
+    diff = await fetchPrDiffFromFiles(repo, number, token);
+  } catch (err) {
+    console.warn(`[GithubService] JSON files diff fetch failed, falling back to raw diff endpoint:`, err);
+    try {
+      diff = await request<string>(`/repos/${repo}/pulls/${number}`, token, {
+        headers: { 'Accept': 'application/vnd.github.v3.diff' }
+      }, true);
+    } catch (fallbackErr) {
+      console.error(`[GithubService] All diff fetching methods failed.`, fallbackErr);
+      throw fallbackErr;
+    }
+  }
 
   const pruned = pruneDiff(diff);
 
@@ -639,8 +684,37 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
   
   // Tier 3: SHA-based invalidation
   if (!skipCache) {
-    const cached = storage.getCachedBySha<EnrichedPullRequest>(cacheKey, pr.head.sha);
+    const cached = storage.getCachedBySha<EnrichedPullRequest>(cacheKey, pr.head?.sha);
     if (cached) return cached;
+  }
+
+  // Optimize: If we need reviews ('full' version) but we already have the 'lite' version (checks/statuses) cached or available,
+  // we do not need to re-fetch checks or perform complex GraphQL queries. Just fetch reviews and merge!
+  if (includeReviews && !skipCache && pr.head?.sha) {
+    const liteCacheKey = `${StorageKeys.GITHUB_CACHE}_pr_enrich_${repo}_${pr.number}_lite`;
+    const liteCached = storage.getCachedBySha<EnrichedPullRequest>(liteCacheKey, pr.head.sha);
+    const hasChecks = (pr as any).checkResults !== undefined;
+    const baseObj = liteCached || (hasChecks ? (pr as EnrichedPullRequest) : null);
+
+    if (baseObj) {
+      try {
+        const reviews = token ? await fetchPrReviews(repo, pr.number, token) : [];
+        const latestReviewsByUser: Record<string, string> = {};
+        reviews.forEach(r => { latestReviewsByUser[r.user.login] = r.state; });
+        const reviewStates = Object.values(latestReviewsByUser);
+        const isApproved = reviewStates.includes('APPROVED') && !reviewStates.includes('CHANGES_REQUESTED');
+
+        const enrichedPr = {
+          ...baseObj,
+          isApproved
+        } as EnrichedPullRequest;
+
+        storage.setCached(cacheKey, enrichedPr);
+        return enrichedPr;
+      } catch (e) {
+        console.warn(`[GithubService] Direct reviews enrichment failed, falling back to full pipeline:`, e);
+      }
+    }
   }
 
   // Try GraphQL first as it's much faster (1 request vs 4)
@@ -652,16 +726,8 @@ export const enrichSinglePr = async (repo: string, pr: GithubPullRequest, token?
     } catch (e: any) {
       const errorMsg = e?.message || String(e);
       console.warn(`[GithubService] GraphQL enrichment failed, falling back to REST: ${errorMsg}`);
-      if (
-        errorMsg.includes('Resource not accessible') ||
-        errorMsg.includes('Parse error') || 
-        errorMsg.includes('403') || 
-        errorMsg.includes('401') ||
-        errorMsg.includes('Permissions')
-      ) {
-        console.warn("[GithubService] Disabling GraphQL queries for remainder of session to protect rate limits.");
-        isGraphQLUnsupported = true;
-      }
+      console.warn("[GithubService] Disabling GraphQL queries for remainder of session to protect rate limits and prevent timeouts.");
+      isGraphQLUnsupported = true;
     }
   }
 

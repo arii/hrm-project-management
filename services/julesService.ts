@@ -421,9 +421,21 @@ export const listSessions = async (apiKey: string, forceRefresh = false): Promis
  * Opt-in for performance.
  */
 export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesSession[]): Promise<JulesSession[]> => {
+  const cachedSessions = storage.getJulesSessions() || [];
+  const cachedMap = new Map<string, JulesSession>();
+  cachedSessions.forEach(s => cachedMap.set(s.name, s));
+
   // Fetch details for all sessions (concurrency is controlled internally inside request() via julesQueue)
   const enriched = await Promise.all(
     sessions.map(async (s) => {
+      const cached = cachedMap.get(s.name);
+      const isFinalState = s.state === 'SUCCEEDED' || s.state === 'FAILED' || s.state === 'CANCELLED' || s.state === 'TERMINATED' || s.state === 'COMPLETED';
+      
+      if (cached && cached.outputs && (isFinalState || cached.state === s.state)) {
+        // Return cached detailed session to avoid redundant API call
+        return cached;
+      }
+
       try {
         return await getSession(apiKey, s.name);
       } catch (e: any) {

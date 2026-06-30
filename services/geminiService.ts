@@ -10,23 +10,38 @@ let cachedModelsList: GeminiModelInfo[] | null = null;
 let lastCacheTime = 0;
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
-export const setGeminiApiKey = (key: string) => {
-  globalGeminiApiKey = key;
+export const setGeminiApiKey = (key: string | null) => {
+  if (!key || key.trim() === "" || key === "null" || key === "undefined" || !key.trim().startsWith("AIzaS")) {
+    globalGeminiApiKey = null;
+  } else {
+    globalGeminiApiKey = key.trim();
+  }
 };
 
 const getClient = () => {
-  const settings = storage.getSettings();
+  let apiKey = globalGeminiApiKey;
   
-  let apiKey = globalGeminiApiKey || settings.geminiApiKey;
-  
-  if (!apiKey && typeof process !== 'undefined' && process.env) {
+  if (!apiKey && typeof window === 'undefined') {
     apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  }
+  
+  if (!apiKey) {
+    const settings = storage.getSettings();
+    apiKey = settings?.geminiApiKey;
   }
   
   if (!apiKey) {
     throw new Error("Gemini API Key is missing. Please check your settings.");
   }
-  return new GoogleGenAI({ apiKey });
+  
+  return new GoogleGenAI({ 
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
 };
 
 /**
@@ -35,7 +50,7 @@ const getClient = () => {
  */
 const ensureProApiKey = async () => {
   // @ts-ignore
-  if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+  if (typeof window !== 'undefined' && window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
     // @ts-ignore
     const hasKey = await window.aistudio.hasSelectedApiKey();
     if (!hasKey) {
@@ -43,6 +58,35 @@ const ensureProApiKey = async () => {
       window.aistudio.openSelectKey(); // Non-blocking
     }
   }
+};
+
+/**
+ * Helper to call server-side Gemini service when running in the browser
+ */
+const callServerService = async (methodName: string, args: any) => {
+  const settings = storage.getSettings();
+  const apiKey = settings?.geminiApiKey || '';
+  
+  const response = await fetch(`/api/gemini/${methodName}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Gemini-API-Key': apiKey,
+    },
+    body: JSON.stringify(args)
+  });
+  
+  if (!response.ok) {
+    const errText = await response.text();
+    let errMsg = `Server returned error status ${response.status}`;
+    try {
+      const parsed = JSON.parse(errText);
+      errMsg = parsed.error || parsed.message || errMsg;
+    } catch (e) {}
+    throw new Error(errMsg);
+  }
+  
+  return await response.json();
 };
 
 const DEPRECATED_MODELS = [
@@ -71,7 +115,7 @@ const isModelDeprecated = (name: string): boolean => {
   return false;
 };
 
-const PRO_MODEL = 'gemini-2.5-pro';
+const PRO_MODEL = 'gemini-3.1-pro-preview';
 const FLASH_MODEL = 'gemini-3.5-flash';
 const LITE_MODEL = 'gemini-3.1-flash-lite';
 
@@ -177,11 +221,21 @@ export interface GeminiModelInfo {
 }
 
 export const listAvailableModelsDetailed = async (forceRefresh = false): Promise<GeminiModelInfo[]> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('listAvailableModelsDetailed', { forceRefresh });
+  }
+
   if (!forceRefresh && cachedModelsList && (Date.now() - lastCacheTime < CACHE_TTL)) {
     return cachedModelsList;
   }
 
-  try {
+  // Create a strict 4-second timeout for the entire listing + lazy iteration operation
+  let timerId: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timerId = setTimeout(() => reject(new Error("Overall timeout in listAvailableModelsDetailed (listing or iteration took too long)")), 4000);
+  });
+
+  const fetchPromise = (async (): Promise<GeminiModelInfo[]> => {
     const ai = getClient();
     const availableModels = await ai.models.list();
     const models: GeminiModelInfo[] = [];
@@ -210,13 +264,47 @@ export const listAvailableModelsDetailed = async (forceRefresh = false): Promise
         });
       }
     }
-    
+    return models;
+  })();
+
+  try {
+    const models = await Promise.race([fetchPromise, timeoutPromise]);
+    if (timerId) clearTimeout(timerId);
     cachedModelsList = models;
     lastCacheTime = Date.now();
     return models;
   } catch (error) {
-    console.error("[GeminiService] Failed to list models:", error);
-    throw formatGeminiError(error);
+    if (timerId) clearTimeout(timerId);
+    console.warn("[GeminiService] Failed to list models or timed out, returning safe fallback models:", error);
+    const fallbacks = [
+      {
+        name: 'gemini-3.5-flash',
+        displayName: 'Gemini 3.5 Flash',
+        description: 'High-speed, multimodal model optimized for standard text tasks.',
+        inputTokenLimit: 1048576,
+        outputTokenLimit: 8192,
+        supportedActions: ['generateContent']
+      },
+      {
+        name: 'gemini-3.1-pro-preview',
+        displayName: 'Gemini 3.1 Pro (Preview)',
+        description: 'Deep reasoning and complex task capability.',
+        inputTokenLimit: 2097152,
+        outputTokenLimit: 8192,
+        supportedActions: ['generateContent']
+      },
+      {
+        name: 'gemini-3.1-flash-lite',
+        displayName: 'Gemini 3.1 Flash Lite',
+        description: 'Ultra-low latency model for simple checks.',
+        inputTokenLimit: 1048576,
+        outputTokenLimit: 8192,
+        supportedActions: ['generateContent']
+      }
+    ];
+    cachedModelsList = fallbacks;
+    lastCacheTime = Date.now();
+    return fallbacks;
   }
 };
 
@@ -255,6 +343,10 @@ export const registerModelFailure = (modelName: string, errorMessage: string) =>
 };
 
 export const testModelConnectivity = async (modelName: string): Promise<{ success: boolean; error?: string }> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('testModelConnectivity', { modelName });
+  }
+
   try {
     const ai = getClient();
     // Tiny request to test connectivity and quota using standard models.generateContent from @google/genai
@@ -275,9 +367,14 @@ export const testModelConnectivity = async (modelName: string): Promise<{ succes
 
 /**
  * Helper to determine thinking level for a request.
- * Disabling thinking configuration to avoid 400 ApiErrors on unsupported models.
  */
 const getThinkingConfig = (tier: ModelTier, options: { lowThinking?: boolean } = {}) => {
+  if (options.lowThinking) {
+    return { thinkingLevel: ThinkingLevel.LOW };
+  }
+  if (tier === ModelTier.PRO) {
+    return { thinkingLevel: ThinkingLevel.HIGH };
+  }
   return undefined;
 };
 
@@ -286,6 +383,10 @@ export const analyzeWorkflowBatch = async (
   runs: any[],
   geminiKey?: string
 ): Promise<WorkflowAnalysis> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzeWorkflowBatch', { repo, runs, geminiKey });
+  }
+
   const ai = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
   const model = await resolveAvailableModel(tier);
@@ -356,6 +457,10 @@ export const analyzeWorkflowHealth = async (
   workflowFile?: { path: string; ref: string; content: string } | null,
   tier: ModelTier = storage.getModelTier()
 ): Promise<WorkflowAnalysis> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzeWorkflowHealth', { run, jobs, annotations, workflowFile, tier });
+  }
+
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
   const model = await resolveAvailableModel(tier);
@@ -536,6 +641,10 @@ export const analyzeWorkflowQualitative = async (
   repoContext: { fileList: string, readmeSnippet: string, packageJson: string },
   tier: ModelTier = storage.getModelTier()
 ): Promise<WorkflowQualitativeResult> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzeWorkflowQualitative', { workflows, runs, repoContext, tier });
+  }
+
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
   const model = await resolveAvailableModel(tier);
@@ -605,6 +714,10 @@ export const analyzeWorkflowQualitative = async (
 };
 
 export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrHealthAnalysisResult> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzePullRequests', { prs });
+  }
+
   const client = getClient();
   const summary = prs.map(p => ({ number: p.number, title: p.title, bodySnippet: p.body?.substring(0, 200) }));
   const tier = storage.getModelTier() || ModelTier.LITE;
@@ -653,6 +766,10 @@ export const generateCodeReview = async (
   diff: string, 
   options: { modelTier?: ModelTier, lowThinking?: boolean } = {}
 ): Promise<CodeReviewResult> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('generateCodeReview', { pr, diff, options });
+  }
+
   const userTier = storage.getModelTier();
   const tier = options.modelTier || userTier;
   const modelName = await resolveAvailableModel(tier);
@@ -696,14 +813,14 @@ export const generateCodeReview = async (
     
     Diff: ${diff.substring(0, 45000)}`;
 
-  // Wrap in a timeout promise
-  const maxTimeout = tier === ModelTier.PRO ? 180000 : 60000;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`AI Analysis timed out after ${maxTimeout/1000}s. Pro models may take longer to think.`)), maxTimeout);
-  });
-
   const generatePromise = withRetry(async () => {
-    const response = await client.models.generateContent({
+    const maxTimeout = tier === ModelTier.PRO ? 180000 : 60000;
+    let timerId: any;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timerId = setTimeout(() => reject(new Error(`AI Analysis timed out after ${maxTimeout/1000}s. Pro models may take longer to think.`)), maxTimeout);
+    });
+
+    const apiCallPromise = client.models.generateContent({
       model: modelName,
       contents: prompt,
       config: {
@@ -714,7 +831,7 @@ export const generateCodeReview = async (
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section, a 'FINAL RECOMMENDATION' section, and if applicable, a 'DEFINITION OF DONE' section." },
+            reviewComment: { type: Type.STRING, description: "Comprehensive Markdown review with a mandatory 'Anti-AI-Slop' section, a 'FINAL RECOMMENDATION' section, and if applicable, a 'DEFINITION of DONE' section." },
             labels: { 
               type: Type.ARRAY, 
               items: { 
@@ -744,8 +861,17 @@ export const generateCodeReview = async (
         }
       }
     });
-    recordUsage(response, tier);
 
+    let response;
+    try {
+      response = await Promise.race([apiCallPromise, timeoutPromise]);
+      if (timerId) clearTimeout(timerId);
+    } catch (apiError) {
+      if (timerId) clearTimeout(timerId);
+      throw apiError;
+    }
+
+    recordUsage(response, tier);
     const text = response.text || "{}";
     
     // Check if the response is actually an error object before parsing as code review
@@ -780,10 +906,10 @@ export const generateCodeReview = async (
       labels: finalLabels,
       modelUsed: modelName
     };
-  }, 3, 1000, 'GeminiService-Review');
+  }, 3, 1000, 'GeminiService-Review', false, 180000);
 
   try {
-    return await Promise.race([generatePromise, timeoutPromise]);
+    return await generatePromise;
   } catch (e: any) {
     if (e.message?.includes("timed out")) throw e;
     
@@ -807,6 +933,10 @@ export const generateCodeReview = async (
 
 
 export const extractIssuesFromComments = async (comments: Array<{ id: number, user: string, body: string, url: string }>): Promise<ProposedIssue[]> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('extractIssuesFromComments', { comments });
+  }
+
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
   const model = await resolveAvailableModel(tier);
@@ -856,6 +986,10 @@ export const extractIssuesFromComments = async (comments: Array<{ id: number, us
 
 
 export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string, tier: ModelTier = storage.getModelTier()): Promise<{ plan: string; title: string }> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzePrForRestart', { pr, diff, tier });
+  }
+
   if (tier === ModelTier.PRO) await ensureProApiKey();
   const client = getClient();
   const model = await resolveAvailableModel(tier);
@@ -890,6 +1024,10 @@ export const analyzePrForRestart = async (pr: EnrichedPullRequest, diff: string,
 
 
 export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): Promise<{ syncIssues: string[] }> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('analyzePrForSync', { pr, diff });
+  }
+
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
   const model = await resolveAvailableModel(tier);
@@ -939,6 +1077,10 @@ export const analyzePrForSync = async (pr: EnrichedPullRequest, diff: string): P
 
 
 export const parseIssuesFromText = async (text: string): Promise<ProposedIssue[]> => {
+  if (typeof window !== 'undefined') {
+    return callServerService('parseIssuesFromText', { text });
+  }
+
   const client = getClient();
   const tier = storage.getModelTier() || ModelTier.LITE;
   const model = await resolveAvailableModel(tier);

@@ -425,34 +425,55 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
       </div>
 
       {enabled && (
-        <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-25"></div>
-              <div className="relative w-3 h-3 bg-emerald-500 rounded-full"></div>
+        <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex flex-col gap-4 animate-in fade-in slide-in-from-top-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <div className="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-25"></div>
+                <div className="relative w-3 h-3 bg-emerald-500 rounded-full"></div>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  Auto-Fix Daemon Active
+                  {isChecking && (
+                    <span className="text-xs text-emerald-400 animate-pulse flex items-center gap-1 font-normal">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning checks...
+                    </span>
+                  )}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Automatically heals Pull Requests with failing CI tests by prompting the Jules agent.
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                Auto-Fix Daemon Active
-                {isChecking && (
-                  <span className="text-xs text-emerald-400 animate-pulse flex items-center gap-1 font-normal">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning checks...
-                  </span>
-                )}
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Automatically heals Pull Requests with failing CI tests by prompting the Jules agent.
-              </p>
+            <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-slate-400">
+              <div>
+                <span className="text-slate-500">Last Run:</span> {lastRun ? new Date(lastRun).toLocaleTimeString() : 'Never'}
+              </div>
+              <div className="hidden md:block h-4 w-px bg-slate-800"></div>
+              <div>
+                <span className="text-slate-500">Next Run:</span> {nextRun ? nextRun.toLocaleTimeString() : 'Scheduled'}
+              </div>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-slate-400">
-            <div>
-              <span className="text-slate-500">Last Run:</span> {lastRun ? new Date(lastRun).toLocaleTimeString() : 'Never'}
-            </div>
-            <div className="hidden md:block h-4 w-px bg-slate-800"></div>
-            <div>
-              <span className="text-slate-500">Next Run:</span> {nextRun ? nextRun.toLocaleTimeString() : 'Scheduled'}
-            </div>
+
+          <div className="border-t border-emerald-500/20 pt-3">
+            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest block mb-2 font-mono">Daemon Activity Log</span>
+            {Object.keys(autoHealLogs).length === 0 ? (
+              <span className="text-xs text-slate-500 italic block">No auto-fix actions triggered in this session yet. Active monitoring in progress...</span>
+            ) : (
+              <div className="space-y-1.5 max-h-32 overflow-y-auto custom-scrollbar">
+                {Object.entries(autoHealLogs).map(([sessionName, timestamp]) => {
+                  const sessionId = sessionName.split('/').pop();
+                  return (
+                    <div key={sessionName} className="flex items-center justify-between text-xs font-mono text-emerald-300 bg-emerald-950/20 p-2 rounded border border-emerald-500/10">
+                      <span className="truncate">Auto-healed session <strong className="text-white">{sessionId}</strong></span>
+                      <span className="text-[10px] text-slate-500 shrink-0">{new Date(timestamp).toLocaleTimeString()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

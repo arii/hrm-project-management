@@ -95,6 +95,10 @@ export function useAutoSendFix(julesApiKey: string | undefined, repo: string, on
           const matchedRepo = match[1];
           const prNumber = parseInt(match[2], 10);
           
+          if (repo && matchedRepo.toLowerCase() !== repo.toLowerCase()) {
+            continue; // Only process sessions that match the active repository
+          }
+          
           if (ghToken) {
             try {
               const prObj = { number: prNumber, head: { sha: '' } } as any;

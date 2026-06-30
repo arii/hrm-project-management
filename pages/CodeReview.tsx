@@ -286,7 +286,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
     try {
       setMsg("Retrieving code diff...");
-      const diff = await fetchPrDiff(repoName, pr.number, token);
+      const diff = await fetchPrDiff(repoName, pr.number, token, pr.head?.sha);
       if (!diff) throw new Error("Could not retrieve diff.");
       
       setMsg(tier === ModelTier.PRO ? "AI Performing Deep Architectural Reasoning..." : "AI Analyzing patterns...");
@@ -696,7 +696,7 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                           {reviews[pr.number] && <Bot className="w-3.5 h-3.5 text-blue-400" />}
                           {status === 'completed' && <Badge variant="green" className="text-[8px]">Done</Badge>}
                           {(status === 'analyzing' || status === 'posting') && <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />}
-                          {status === 'error' && <AlertTriangle className="w-3 h-3 text-red-400" />}
+                          {status === 'error' && <span title={errors[pr.number] || 'AI Audit failed'}><AlertTriangle className="w-3 h-3 text-red-400" /></span>}
                         </div>
                       </div>
                       <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500 font-mono">
@@ -977,6 +977,55 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
                            </div>
                         </div>
                       )}
+                   </div>
+                )}
+
+                {currentStatus === 'error' && errors[selectedPr.number] && (
+                   <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 lg:p-8 space-y-4 animate-in fade-in slide-in-from-top-2">
+                      <div className="flex items-start gap-4 text-red-400">
+                         <AlertTriangle className="w-8 h-8 shrink-0 mt-0.5" />
+                         <div className="space-y-2">
+                            <h4 className="text-base font-bold text-white tracking-tight">AI Audit Encountered an Error</h4>
+                            <p className="text-sm leading-relaxed text-slate-300">
+                               {errors[selectedPr.number]}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                               Please verify your repository configuration, active GitHub token privileges, or try switching your Gemini model tier in settings.
+                            </p>
+                         </div>
+                      </div>
+                      <div className="pt-4 border-t border-slate-800 flex justify-end gap-3">
+                         <Button 
+                           variant="primary" 
+                           size="sm" 
+                           onClick={() => runFullCodeReview(selectedPr)} 
+                           icon={Send}
+                         >
+                           Retry Audit
+                         </Button>
+                      </div>
+                   </div>
+                )}
+
+                {!reviews[selectedPr.number] && currentStatus === 'idle' && (
+                   <div className="flex flex-col items-center justify-center py-24 text-slate-400 relative border border-dashed border-slate-800 rounded-2xl bg-slate-900/10">
+                      <Bot className="w-16 h-16 text-slate-600 mb-4 opacity-40 animate-pulse" />
+                      <div className="text-center space-y-2 max-w-sm">
+                        <h4 className="text-lg font-bold text-white tracking-tight">No Audit Executed Yet</h4>
+                        <p className="text-sm text-slate-400 leading-relaxed">
+                           Deploy the Principal AI Software Engineer to audit this PR for architectural patterns, code quality, and anti-patterns.
+                        </p>
+                        <div className="pt-4 flex justify-center">
+                           <Button 
+                             variant="primary" 
+                             size="sm" 
+                             onClick={() => runFullCodeReview(selectedPr)} 
+                             icon={Send}
+                           >
+                             Run AI Audit
+                           </Button>
+                        </div>
+                      </div>
                    </div>
                 )}
 

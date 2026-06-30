@@ -123,8 +123,8 @@ export function useJulesSessions(julesApiKey: string | undefined, repo: string) 
   return {
     allSessions,
     suggestedSessions,
-    isLoading: isListing || isVerifying,
-    isVerifying,
+    isLoading: (!!julesApiKey && isListing) || (!!julesApiKey && !!repo && isVerifying),
+    isVerifying: !!julesApiKey && !!repo && isVerifying,
     isEnriching,
     hasVerifiedSource: !!sourceId,
     sourceId,

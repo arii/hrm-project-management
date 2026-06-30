@@ -77,6 +77,10 @@ let dbInstance: IDBDatabase | null = null;
 
 const initDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error("IndexedDB is not available on server."));
+      return;
+    }
     if (dbInstance) {
       resolve(dbInstance);
       return;
@@ -105,6 +109,9 @@ const initDB = (): Promise<IDBDatabase> => {
 };
 
 const idbSet = async (key: string, value: string): Promise<void> => {
+  if (typeof indexedDB === 'undefined') {
+    return;
+  }
   try {
     const db = await initDB();
     return new Promise((resolve, reject) => {
@@ -120,6 +127,9 @@ const idbSet = async (key: string, value: string): Promise<void> => {
 };
 
 const idbRemove = async (key: string): Promise<void> => {
+  if (typeof indexedDB === 'undefined') {
+    return;
+  }
   try {
     const db = await initDB();
     return new Promise((resolve, reject) => {
@@ -198,7 +208,9 @@ export const storage = {
 
     let item: string | null = null;
     try {
-      item = localStorage.getItem(key);
+      if (typeof localStorage !== 'undefined') {
+        item = localStorage.getItem(key);
+      }
     } catch (e) {
       // console.warn(`[Storage] Failed to read "${key}" from localStorage:`, e);
     }
@@ -234,13 +246,18 @@ export const storage = {
     // Guard against oversized items that will definitely fail or lag LocalStorage
     if (itemSize > MAX_LOCALSTORAGE_ITEM_SIZE) {
       try {
-        localStorage.removeItem(key);
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem(key);
+        }
       } catch (e) {}
       return true; // We consider it success because it's safely stored in IndexedDB and memory
     }
 
     try {
-      localStorage.setItem(key, serialized);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, serialized);
+        return true;
+      }
       return true;
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
@@ -287,6 +304,9 @@ export const storage = {
   getSpaceUsage() {
     let total = 0;
     const usageByPrefix: Record<string, number> = {};
+    if (typeof localStorage === 'undefined') {
+      return { total, usageByPrefix };
+    }
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
@@ -304,6 +324,7 @@ export const storage = {
 
   emergencyReset(): void {
     console.warn('[Storage] EMERGENCY RESET: Clearing all application data except settings.');
+    if (typeof localStorage === 'undefined') return;
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -318,6 +339,7 @@ export const storage = {
    * Clears only items that have explicitly expired TTL
    */
   clearExpired(): void {
+    if (typeof localStorage === 'undefined') return;
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
@@ -345,6 +367,7 @@ export const storage = {
    * @param targetSpace Estimate of bytes needed
    */
   scavenge(targetSpace: number): void {
+    if (typeof localStorage === 'undefined') return;
     const candidates: { key: string, size: number, timestamp: number }[] = [];
     
     for (let i = 0; i < localStorage.length; i++) {
@@ -448,6 +471,7 @@ export const storage = {
    * @param aggressive If true, even persistent reviews and analysis data are cleared.
    */
   clearCaches(aggressive = false): void {
+    if (typeof localStorage === 'undefined') return;
     const keysToRemove: string[] = [];
     const absoluteKeep = [StorageKeys.SETTINGS, StorageKeys.REVIEWED_SHAS, StorageKeys.REPO_SOURCES];
     
@@ -590,7 +614,9 @@ export const storage = {
       timestamp: Date.now()
     };
     this.set(StorageKeys.USAGE, updated);
-    window.dispatchEvent(new CustomEvent('usage_updated', { detail: updated }));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('usage_updated', { detail: updated }));
+    }
   },
 
   getSettings(): AppSettings {
@@ -608,22 +634,24 @@ export const storage = {
     };
     
     // Migration helper for older individual keys if they exist
-    const legacyRepo = localStorage.getItem('audit_repo_name');
-    const legacyToken = localStorage.getItem('audit_gh_token');
-    const legacyJules = localStorage.getItem('audit_jules_key');
+    if (typeof localStorage !== 'undefined') {
+      const legacyRepo = localStorage.getItem('audit_repo_name');
+      const legacyToken = localStorage.getItem('audit_gh_token');
+      const legacyJules = localStorage.getItem('audit_jules_key');
 
-    if (legacyRepo || legacyToken || legacyJules) {
-      const migrated = {
-        ...settings,
-        repoName: legacyRepo || settings.repoName,
-        githubToken: legacyToken || settings.githubToken,
-        julesApiKey: legacyJules || settings.julesApiKey,
-      };
-      this.set(StorageKeys.SETTINGS, migrated);
-      localStorage.removeItem('audit_repo_name');
-      localStorage.removeItem('audit_gh_token');
-      localStorage.removeItem('audit_jules_key');
-      return migrated;
+      if (legacyRepo || legacyToken || legacyJules) {
+        const migrated = {
+          ...settings,
+          repoName: legacyRepo || settings.repoName,
+          githubToken: legacyToken || settings.githubToken,
+          julesApiKey: legacyJules || settings.julesApiKey,
+        };
+        this.set(StorageKeys.SETTINGS, migrated);
+        localStorage.removeItem('audit_repo_name');
+        localStorage.removeItem('audit_gh_token');
+        localStorage.removeItem('audit_jules_key');
+        return migrated;
+      }
     }
 
     return settings;

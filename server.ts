@@ -53,7 +53,14 @@ async function startServer() {
         fetchOptions.body = JSON.stringify(req.body);
       }
 
-      const response = await fetch(githubUrl, fetchOptions);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+      const response = await fetch(githubUrl, {
+        ...fetchOptions,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
       const data = await response.text();
 
       res.status(response.status).set('Content-Type', response.headers.get('content-type') || 'application/json').send(data);
@@ -196,6 +203,63 @@ async function startServer() {
           duration: Date.now() - startTime
         } 
       });
+    }
+  });
+
+  // Gemini API Proxy/Execution Endpoints
+  app.post("/api/gemini/:method", async (req, res) => {
+    const { method } = req.params;
+    const body = req.body || {};
+    const clientApiKey = req.headers['x-gemini-api-key'] as string;
+    
+    try {
+      const geminiService = await import("./services/geminiService");
+      
+      geminiService.setGeminiApiKey(clientApiKey || null);
+      
+      let result;
+      switch (method) {
+        case "listAvailableModelsDetailed":
+          result = await geminiService.listAvailableModelsDetailed(body.forceRefresh);
+          break;
+        case "testModelConnectivity":
+          result = await geminiService.testModelConnectivity(body.modelName);
+          break;
+        case "analyzeWorkflowBatch":
+          result = await geminiService.analyzeWorkflowBatch(body.repo, body.runs, body.geminiKey);
+          break;
+        case "analyzeWorkflowHealth":
+          result = await geminiService.analyzeWorkflowHealth(body.run, body.jobs, body.annotations, body.workflowFile, body.tier);
+          break;
+        case "analyzeWorkflowQualitative":
+          result = await geminiService.analyzeWorkflowQualitative(body.workflows, body.runs, body.repoContext, body.tier);
+          break;
+        case "analyzePullRequests":
+          result = await geminiService.analyzePullRequests(body.prs);
+          break;
+        case "generateCodeReview":
+          result = await geminiService.generateCodeReview(body.pr, body.diff, body.options);
+          break;
+        case "extractIssuesFromComments":
+          result = await geminiService.extractIssuesFromComments(body.comments);
+          break;
+        case "analyzePrForRestart":
+          result = await geminiService.analyzePrForRestart(body.pr, body.diff, body.tier);
+          break;
+        case "analyzePrForSync":
+          result = await geminiService.analyzePrForSync(body.pr, body.diff);
+          break;
+        case "parseIssuesFromText":
+          result = await geminiService.parseIssuesFromText(body.text);
+          break;
+        default:
+          return res.status(404).json({ error: `Unknown Gemini method: ${method}` });
+      }
+      
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[Server] Gemini execution error for method "${method}":`, error);
+      res.status(500).json({ error: error.message || 'Unknown Gemini Server Error' });
     }
   });
 

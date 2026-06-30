@@ -108,16 +108,23 @@ export async function withRetry<T>(
   maxRetries = 3, 
   initialDelay = 1000,
   loggerName = 'Service',
-  silent = false
+  silent = false,
+  timeoutMs = 90000
 ): Promise<T> {
   let lastError: any;
   for (let i = 0; i <= maxRetries; i++) {
     // Wait for slot allocation from the queue
     await geminiQuotaQueue.acquire();
+    let timerId: any;
     try {
-      const result = await fn();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => reject(new Error(`API request timed out after ${Math.round(timeoutMs / 1000)} seconds.`)), timeoutMs);
+      });
+      const result = await Promise.race([fn(), timeoutPromise]);
+      if (timerId) clearTimeout(timerId);
       return result;
     } catch (e: any) {
+      if (timerId) clearTimeout(timerId);
       lastError = e;
       
       // Determine transient nature and potential retry delay
@@ -219,16 +226,26 @@ const IGNORED_EXTENSIONS = [
 export const pruneDiff = (diff: string): string => {
   if (!diff) return "";
   
+  // Guard against massive diffs that will crash the browser tab or exceed memory limits
+  const maxDiffLength = 1.5 * 1024 * 1024; // 1.5MB limit
+  let isTruncated = false;
+  let processingDiff = diff;
+  if (diff.length > maxDiffLength) {
+    processingDiff = diff.substring(0, maxDiffLength);
+    isTruncated = true;
+  }
+
   // Split the diff into file sections
   // Each section starts with "diff --git"
-  const sections = diff.split(/^diff --git /m);
+  const sections = processingDiff.split(/^diff --git /m);
   
-  if (sections.length <= 1) return diff;
+  if (sections.length <= 1) return processingDiff;
 
   const header = sections[0]; // Usually empty
   const prunedSections = sections.slice(1).filter(section => {
-    const lines = section.split('\n');
-    const firstLine = lines[0];
+    // Optimization: Find first line without splitting the entire (potentially huge) section by '\n'
+    const firstNewLineIndex = section.indexOf('\n');
+    const firstLine = firstNewLineIndex === -1 ? section : section.slice(0, firstNewLineIndex);
     
     // First line looks like: a/package.json b/package.json
     // We care about the target file (b/)
@@ -249,5 +266,9 @@ export const pruneDiff = (diff: string): string => {
     return !isIgnoredFile && !isIgnoredExtension;
   });
 
-  return header + prunedSections.map(s => 'diff --git ' + s).join('');
+  let result = header + prunedSections.map(s => 'diff --git ' + s).join('');
+  if (isTruncated) {
+    result += "\n\n... [Diff Truncated at 1.5MB to prevent memory and browser crash] ...\n";
+  }
+  return result;
 };

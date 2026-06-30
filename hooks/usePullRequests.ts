@@ -159,8 +159,11 @@ export function usePullRequests(repoName: string, token: string) {
     runEnrichment();
 
     return () => {
-      // Do not abort on unmount of a single component because other pages might be active.
-      // The AbortController will be cleaned up on manual refetches or if the active loop finishes.
+      const active = activeEnrichments.get(repoKey);
+      if (active) {
+        active.abortController.abort();
+        activeEnrichments.delete(repoKey);
+      }
     };
   }, [repoName, token, prs, queryClient, repoKey, queryKey, progressKey]);
 
