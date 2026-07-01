@@ -208,15 +208,28 @@ const request = async <T>(
       data = JSON.parse(rawText);
     } catch (e) {
       const preview = rawText.trim().substring(0, 200);
-      console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
+      const lowerText = rawText.toLowerCase();
+      const isHtml = lowerText.includes('<!doctype') || 
+                     lowerText.includes('<html') || 
+                     lowerText.includes('<head') || 
+                     lowerText.includes('starting server') ||
+                     lowerText.includes('please wait while your application starts') ||
+                     lowerText.includes('warmup');
       
-      if (!useDirectJules && (rawText.includes('<!DOCTYPE html>') || rawText.includes('<html'))) {
+      if (!useDirectJules && isHtml) {
          console.warn(`[JulesService] Invalid JSON (HTML) from proxy. Retrying with direct Jules API routing...`);
          useDirectJules = true;
          if (typeof window !== 'undefined') {
            localStorage.setItem('jules_use_direct_api', 'true');
          }
          return runRequest();
+      }
+
+      if (isHtml) {
+        console.warn(`[JulesService] Received HTML response (likely server warming up or offline):`, preview);
+        throw new Error("The application server is warming up or starting. Please wait a few seconds and try again.");
+      } else {
+        console.error("[JulesService] JSON Parse Error on status", response.status, ":", rawText);
       }
 
       throw new Error(`Jules API returned invalid JSON (Status: ${response.status}). Preview: ${preview}...`);

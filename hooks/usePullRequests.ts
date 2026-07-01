@@ -157,7 +157,10 @@ export function usePullRequests(repoName: string, token: string) {
     };
 
     runEnrichment();
+  }, [repoName, token, prs, queryClient, repoKey, queryKey, progressKey]);
 
+  // Handle cleanup only when repository/token changes or component unmounts
+  useEffect(() => {
     return () => {
       const active = activeEnrichments.get(repoKey);
       if (active) {
@@ -165,7 +168,7 @@ export function usePullRequests(repoName: string, token: string) {
         activeEnrichments.delete(repoKey);
       }
     };
-  }, [repoName, token, prs, queryClient, repoKey, queryKey, progressKey]);
+  }, [repoKey]);
 
   const updateBranchMutation = useMutation({
     mutationFn: async ({ prNumber }: { prNumber: number }) => {
