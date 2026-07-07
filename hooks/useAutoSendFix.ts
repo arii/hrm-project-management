@@ -39,6 +39,21 @@ export function useAutoSendFix(julesApiKey: string | undefined, repo: string, on
     return storage.getRaw<Record<string, string>>(StorageKeys.AUTO_HEAL_LOGS, {});
   });
 
+  useEffect(() => {
+    const handleLogsUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<Record<string, string>>;
+      setAutoHealLogs(customEvent.detail || {});
+    };
+    window.addEventListener('auto_heal_logs_updated', handleLogsUpdate);
+    return () => window.removeEventListener('auto_heal_logs_updated', handleLogsUpdate);
+  }, []);
+
+  const clearLogs = () => {
+    storage.set(StorageKeys.AUTO_HEAL_LOGS, {});
+    setAutoHealLogs({});
+    window.dispatchEvent(new CustomEvent('auto_heal_logs_updated', { detail: {} }));
+  };
+
   const setEnabled = (val: boolean) => {
     storage.setItem(StorageKeys.AUTO_SEND_FIX_ENABLED, val ? 'true' : 'false');
     setEnabledState(val);
@@ -149,5 +164,5 @@ export function useAutoSendFix(julesApiKey: string | undefined, repo: string, on
     return () => clearInterval(interval);
   }, [julesApiKey, repo, onRefresh, enabled]);
 
-  return { enabled, setEnabled, lastRun, nextRun, isChecking, autoHealLogs, getSentTime };
+  return { enabled, setEnabled, lastRun, nextRun, isChecking, autoHealLogs, getSentTime, clearLogs };
 }

@@ -39,7 +39,8 @@ import {
   FileText,
   PlusSquare,
   MinusSquare,
-  ArrowUpCircle
+  ArrowUpCircle,
+  Trash2
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
@@ -129,6 +130,45 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
 
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
+
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [cleanMessage, setCleanMessage] = useState<string | null>(null);
+
+  const handleCleanClosedPrStorage = async () => {
+    if (!repoName || !token) return;
+    setIsCleaning(true);
+    setCleanMessage(null);
+    try {
+      // 1. Get all stored PR numbers from storage for this repo
+      const storedPrNumbers = storage.getStoredPrNumbers(repoName);
+      if (storedPrNumbers.length === 0) {
+        setCleanMessage("No cached reviews or extracted issues found for this repository.");
+        setTimeout(() => setCleanMessage(null), 4000);
+        return;
+      }
+
+      // 2. Fetch the 100 most recent closed/merged PRs
+      const closedPrs = await fetchPullRequests(repoName, token, 'closed', true);
+      const closedNumbers = closedPrs.map(p => p.number);
+
+      // 3. Find intersection of stored numbers and actually closed/merged numbers
+      const toClean = storedPrNumbers.filter(num => closedNumbers.includes(num));
+      
+      if (toClean.length === 0) {
+        setCleanMessage("All currently cached PRs are open. No old closed/merged data found to clean.");
+      } else {
+        storage.clearClosedPrsStorage(repoName, toClean);
+        setCleanMessage(`Successfully cleaned up storage for ${toClean.length} closed/merged PR(s) (#${toClean.join(', #')}).`);
+      }
+      setTimeout(() => setCleanMessage(null), 4000);
+    } catch (e: any) {
+      console.error('[CleanStorage] Error:', e);
+      setCleanMessage(`Error cleaning storage: ${e.message || e}`);
+      setTimeout(() => setCleanMessage(null), 5000);
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   // Initialize proposedActions from cached results if available
   useEffect(() => {
@@ -439,9 +479,32 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
                 <Loader2 className="w-3 h-3 animate-spin" /> Progress: {bulkProgress.current} / {bulkProgress.total}
              </div>
           )}
+          <Button 
+            variant="secondary" 
+            onClick={handleCleanClosedPrStorage} 
+            isLoading={isCleaning} 
+            disabled={loading || isCleaning}
+            icon={Trash2}
+            className="text-xs text-slate-400 border-slate-700 hover:text-white"
+            title="Clean up local storage and caches for closed or merged PRs"
+          >
+            Clean Storage
+          </Button>
           <Button variant="secondary" onClick={() => refetch({ skipCache: true })} isLoading={loading} icon={RefreshCw}>Refresh</Button>
         </div>
       </div>
+
+      {cleanMessage && (
+        <div className={clsx(
+          "p-4 rounded-xl flex items-center gap-3 text-sm border animate-in fade-in slide-in-from-top-2",
+          cleanMessage.includes("Error") 
+            ? "bg-red-500/10 border-red-500/30 text-red-400" 
+            : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+        )}>
+          <CheckCircle2 className="w-5 h-5 shrink-0" />
+          <p>{cleanMessage}</p>
+        </div>
+      )}
 
       {error && (
         <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-400 animate-in fade-in slide-in-from-top-2">

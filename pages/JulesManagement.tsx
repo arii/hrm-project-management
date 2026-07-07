@@ -95,7 +95,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
     }
   }, [julesApiKey, refetchSessions]);
 
-  const { enabled, setEnabled, lastRun, nextRun, isChecking, autoHealLogs, getSentTime } = useAutoSendFix(julesApiKey, storage.getRepo(), loadSessions);
+  const { enabled, setEnabled, lastRun, nextRun, isChecking, autoHealLogs, getSentTime, clearLogs } = useAutoSendFix(julesApiKey, storage.getRepo(), loadSessions);
 
   const fetchCiStatusesForSessions = async (sessionsList: JulesSession[], skipCache = false) => {
     const ghToken = storage.getGithubToken();
@@ -458,7 +458,17 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
           </div>
 
           <div className="border-t border-emerald-500/20 pt-3">
-            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest block mb-2 font-mono">Daemon Activity Log</span>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest font-mono">Daemon Activity Log</span>
+              {Object.keys(autoHealLogs).length > 0 && (
+                <button 
+                  onClick={clearLogs} 
+                  className="text-[9px] font-bold text-emerald-500/80 hover:text-emerald-400 uppercase tracking-wider font-mono bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/20 hover:border-emerald-500/40 transition-all cursor-pointer"
+                >
+                  Clear Logs
+                </button>
+              )}
+            </div>
             {Object.keys(autoHealLogs).length === 0 ? (
               <span className="text-xs text-slate-500 italic block">No auto-fix actions triggered in this session yet. Active monitoring in progress...</span>
             ) : (

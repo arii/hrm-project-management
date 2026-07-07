@@ -150,7 +150,7 @@ const request = async <T>(
     // !silent && console.log(`[JulesService] Requesting ${fullUrl} (method: ${options.method || 'GET'})`);
     
     // Implement a custom shorter timeout for connectivity fast-checks / noRetry
-    const timeoutDuration = options.noRetry ? 4000 : 45000;
+    const timeoutDuration = options.noRetry ? 4000 : 125000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
     
@@ -670,6 +670,34 @@ export const deleteSession = async (apiKey: string, sessionName: string): Promis
   await request<void>(endpoint, apiKey, { method: 'DELETE' });
   // Invalidate sessions list cache to ensure refresh on next load
   storage.remove(`${StorageKeys.JULES_CACHE}_sessions`);
+
+  // Clean up auto-heal logs for this session if it exists
+  try {
+    const logs = storage.getRaw<Record<string, string>>(StorageKeys.AUTO_HEAL_LOGS, {});
+    let modified = false;
+    
+    const resolvedName = sessionName.startsWith('sessions/') ? sessionName : `sessions/${sessionName}`;
+    const simpleName = sessionName.replace(/^sessions\//, '');
+    
+    for (const key of Object.keys(logs)) {
+      const resolvedKey = key.startsWith('sessions/') ? key : `sessions/${key}`;
+      const simpleKey = key.replace(/^sessions\//, '');
+      
+      if (resolvedKey === resolvedName || simpleKey === simpleName) {
+        delete logs[key];
+        modified = true;
+      }
+    }
+    
+    if (modified) {
+      storage.set(StorageKeys.AUTO_HEAL_LOGS, logs);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('auto_heal_logs_updated', { detail: logs }));
+      }
+    }
+  } catch (e) {
+    console.warn('[JulesService] Failed to clean up auto-heal logs on session delete:', e);
+  }
 };
 
 export const findSourceForRepo = async (apiKey: string, repoName: string, allowGuess = true): Promise<string | null> => {

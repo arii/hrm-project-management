@@ -133,9 +133,9 @@ async function startServer() {
         fetchOptions.body = bodyValue;
       }
 
-      // Add a 60s timeout for the internal fetch to Jules
+      // Add a 120s timeout for the internal fetch to Jules
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
       try {
         // console.log(`[Proxy] Target URL: ${julesUrl}`);
@@ -190,7 +190,7 @@ async function startServer() {
         clearTimeout(timeoutId);
         console.error(`[Proxy] Internal fetch error:`, fetchErr);
         if (fetchErr.name === 'AbortError') {
-          throw new Error("Target API request timed out after 60s.");
+          throw new Error("Target API request timed out after 120s.");
         }
         throw fetchErr;
       }

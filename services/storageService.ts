@@ -557,6 +557,63 @@ export const storage = {
     return this.getRaw(`${StorageKeys.REVIEWED_SHAS}_${normalizeRepo(repo)}`, {});
   },
 
+  getStoredPrNumbers(repo: string): number[] {
+    const normalized = normalizeRepo(repo);
+    const prNumbers: number[] = [];
+    const prefix1 = `${StorageKeys.PR_REVIEWS}${normalized}_`;
+    const prefix2 = `${StorageKeys.EXTRACTED_ISSUES}${normalized}_`;
+    
+    if (typeof localStorage !== 'undefined') {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          if (key.startsWith(prefix1)) {
+            const numStr = key.substring(prefix1.length);
+            const num = parseInt(numStr, 10);
+            if (!isNaN(num) && !prNumbers.includes(num)) {
+              prNumbers.push(num);
+            }
+          } else if (key.startsWith(prefix2)) {
+            const numStr = key.substring(prefix2.length);
+            const num = parseInt(numStr, 10);
+            if (!isNaN(num) && !prNumbers.includes(num)) {
+              prNumbers.push(num);
+            }
+          }
+        }
+      }
+    }
+    
+    for (const key of Object.keys(memoryCache)) {
+      if (key.startsWith(prefix1)) {
+        const numStr = key.substring(prefix1.length);
+        const num = parseInt(numStr, 10);
+        if (!isNaN(num) && !prNumbers.includes(num)) {
+          prNumbers.push(num);
+        }
+      } else if (key.startsWith(prefix2)) {
+        const numStr = key.substring(prefix2.length);
+        const num = parseInt(numStr, 10);
+        if (!isNaN(num) && !prNumbers.includes(num)) {
+          prNumbers.push(num);
+        }
+      }
+    }
+    
+    return prNumbers;
+  },
+
+  clearClosedPrsStorage(repo: string, closedPrNumbers: number[]): void {
+    if (!repo || !closedPrNumbers || closedPrNumbers.length === 0) return;
+    const normalized = normalizeRepo(repo);
+    closedPrNumbers.forEach(num => {
+      const reviewKey = `${StorageKeys.PR_REVIEWS}${normalized}_${num}`;
+      const issuesKey = `${StorageKeys.EXTRACTED_ISSUES}${normalized}_${num}`;
+      this.remove(reviewKey);
+      this.remove(issuesKey);
+    });
+  },
+
   saveWorkflowAudit(repo: string, audit: any): void {
     const key = `${StorageKeys.ANALYSIS_PREFIX}workflow_${normalizeRepo(repo)}`;
     this.set(key, {
