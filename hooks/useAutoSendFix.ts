@@ -87,7 +87,32 @@ export function useAutoSendFix(julesApiKey: string | undefined, repo: string, on
       setIsChecking(true);
       try {
         const sessions = await listSessions(julesApiKey, true);
-        const detailedSessions = await enrichSessionsWithDetails(julesApiKey, sessions);
+        
+        // Filter sessions BEFORE enriching to prevent API timeout storms
+        const sessionsToEnrich = sessions.filter(s => {
+          const isTargetState = s.state === 'COMPLETED' || s.state === 'SUCCEEDED';
+          if (!isTargetState) return false;
+          
+          if (getSentTime(s.name)) return false;
+          
+          // Only process sessions from the last 7 days to avoid wasting API calls on historical items
+          if (s.createTime) {
+            const created = new Date(s.createTime).getTime();
+            const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            if (created < sevenDaysAgo) return false;
+          }
+          
+          return true;
+        });
+
+        // Sort and slice to top 10 most recent to keep it ultra lightweight
+        const sortedFiltered = [...sessionsToEnrich].sort((a, b) => {
+          const aTime = a.createTime ? new Date(a.createTime).getTime() : 0;
+          const bTime = b.createTime ? new Date(b.createTime).getTime() : 0;
+          return bTime - aTime;
+        }).slice(0, 10);
+
+        const detailedSessions = await enrichSessionsWithDetails(julesApiKey, sortedFiltered);
         const ghToken = storage.getGithubToken();
         
         const targetSessions: JulesSession[] = [];

@@ -438,15 +438,38 @@ export const enrichSessionsWithDetails = async (apiKey: string, sessions: JulesS
   const cachedMap = new Map<string, JulesSession>();
   cachedSessions.forEach(s => cachedMap.set(s.name, s));
 
-  // Fetch details for all sessions (concurrency is controlled internally inside request() via julesQueue)
+  // Sort sessions by createTime descending to prioritize enriching recent sessions
+  const sortedSessions = [...sessions].sort((a, b) => {
+    const aTime = a.createTime ? new Date(a.createTime).getTime() : 0;
+    const bTime = b.createTime ? new Date(b.createTime).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  // Limit how many uncached, completed sessions we fetch in a single flow to prevent API timeout storms
+  let uncachedEnrichCount = 0;
+  const maxUncachedEnrichments = 25;
+
+  // Fetch details for sessions (concurrency is controlled internally inside request() via julesQueue)
   const enriched = await Promise.all(
-    sessions.map(async (s) => {
+    sortedSessions.map(async (s) => {
       const cached = cachedMap.get(s.name);
       const isFinalState = s.state === 'SUCCEEDED' || s.state === 'FAILED' || s.state === 'CANCELLED' || s.state === 'TERMINATED' || s.state === 'COMPLETED';
       
       if (cached && cached.outputs && (isFinalState || cached.state === s.state)) {
         // Return cached detailed session to avoid redundant API call
         return cached;
+      }
+
+      const isActiveState = s.state === 'RUNNING' || s.state === 'PENDING' || s.state === 'IN_PROGRESS' || s.state === 'AWAITING_USER_FEEDBACK' || s.state === 'AWAITING_PLAN_APPROVAL';
+      const shouldFetch = isActiveState || (uncachedEnrichCount < maxUncachedEnrichments);
+
+      if (!cached && !shouldFetch) {
+        // Return basic session metadata without making an API call
+        return s;
+      }
+
+      if (!cached) {
+        uncachedEnrichCount++;
       }
 
       try {

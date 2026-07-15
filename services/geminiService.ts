@@ -476,7 +476,7 @@ ${workflowFile.content}
 
 CRITICAL: Cross-reference the job names and step names in this YAML with the job/step names in the run data.
 If a step name exists in the YAML but is marked as "skipped" in the run, explain why (conditional, needs, if: expressions).
-If a job failed and the YAML shows a specific action version (e.g. actions/checkout@v2), flag outdated actions as a potential cause.
+Do NOT flag any action versions as a potential cause for failure, and never suggest that action versions are outdated, incorrect, or deprecated.
 `
     : `## WORKFLOW DEFINITION
 (Could not be fetched — the branch may have been force-pushed or deleted.
@@ -501,10 +501,9 @@ The following are the actual available tags for the actions used in this workflo
 ${JSON.stringify(actionVersions, null, 2)}
 
 CRITICAL INSTRUCTIONS FOR ACTION VERSIONS:
-1. USE ONLY THE VERSIONS PROVIDED ABOVE.
-2. If the workflow uses a version NOT in this list, flag it as a CRITICAL ERROR, as it may be non-existent or inaccessible.
-3. DO NOT recommend changing the version of any action. Keep the version exactly as it is in the workflow file.
-4. Only flag as an error if the version is explicitly invalid (not in the list of available tags).
+1. DO NOT recommend changing or deprecating any action or action version. Keep all action versions exactly as they are in the workflow file.
+2. NEVER suggest that any action is deprecated, outdated, or incorrect. Do not flag action versions as critical errors or warnings under any circumstances.
+3. Assume all action versions currently defined in the workflow are correct, valid, and fully supported.
 `;
     }
   }
@@ -571,6 +570,7 @@ Identify the EXACT cause of failure. Be surgical:
 ### 3. FIX RECOMMENDATIONS (actionable, specific)
 Provide concrete remediation steps. For each issue:
 - State the EXACT change needed in the workflow YAML or the application code.
+- DO NOT recommend deprecating or changing the version of any action used in the workflow under any circumstances. Keep action versions exactly as they are. Never suggest an action version is incorrect, outdated, invalid, or deprecated.
 - DO NOT include diffs.
 - Provide ONLY specific, actionable instructions to fix the issue.
 - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
@@ -665,6 +665,8 @@ export const analyzeWorkflowQualitative = async (
     3. DUPLICATE: Are multiple workflows doing the same thing? (e.g. two linting workflows).
     4. INEFFICIENT: Are jobs too slow? Are triggers too broad? Are they wasting minutes?
     
+    CRITICAL CONSTRAINT: Do NOT recommend deprecating or changing the version of any GitHub Actions. Keep all action versions exactly as they are. Never suggest an action version is incorrect, outdated, invalid, or deprecated.
+    
     OUTPUT: A JSON report with scores and specific actionable findings. 
     Findings should include 'suggestedTitle' and 'suggestedBody' for a GitHub Issue to fix the qualitative gap.
   `;
@@ -724,7 +726,9 @@ export const analyzePullRequests = async (prs: GithubPullRequest[]): Promise<PrH
   const model = await resolveAvailableModel(tier);
   const response = await withRetry(() => client.models.generateContent({
     model,
-    contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).`,
+    contents: `Audit PR health: ${JSON.stringify(summary)}. Identify PRs with excessive code addition or AI-generated boilerplate (slop).
+    
+    CRITICAL CONSTRAINT: Do NOT suggest or recommend changing, downgrading, or deprecating any GitHub Actions, action versions, or dependency library packages under any circumstances. Assume all action and dependency versions used in the PRs are correct and fully supported.`,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -785,6 +789,10 @@ export const generateCodeReview = async (
     Flag: Verbose comments, over-engineering, duplicate patterns, and slop.
     Audit ratio: If additions > 100 lines, find 10+ lines to remove.
 
+    ### CRITICAL ACTIONS & VERSIONING CONSTRAINT
+    - DO NOT recommend deprecating, changing, or downgrading the version of any GitHub Actions or dependency packages under any circumstances. Keep all action and package versions exactly as they are in the files.
+    - NEVER suggest that an action or library version is outdated, incorrect, invalid, or deprecated. Assume all specified versions are correct and supported.
+
     ### LABEL DIRECTIVES
     You MUST output exactly one label in the "labels" array. This label must be one of:
     - "approved" (if your recommendation is Approved)
@@ -796,6 +804,7 @@ export const generateCodeReview = async (
     - DO NOT include diffs.
     - Provide ONLY specific, actionable instructions to fix the issue.
     - Instructions must be imperative and direct (e.g., "Change line X to Y", "Update regex in Z").
+    - DO NOT recommend changing or downgrading any GitHub Action or package versions.
     - Instructions MUST include: "Verify tests", "Run audit for anti-patterns", and "Update snapshots if necessary".
     - Instructions MUST NOT request a plan or ask follow-up questions. They are final execution orders.
     
