@@ -50,6 +50,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -88,6 +89,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
     try {
       await refetchSessions(force);
       setSelectedIds(new Set()); // Reset selection on reload
+      setLastSelectedId(null);
     } catch (e: any) {
       setError(e.message || "Failed to load sessions");
     } finally {
@@ -267,12 +269,12 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
   const filteredSessions = sessions.filter(s => {
     const searchLow = searchTerm.toLowerCase();
     const hasPrMatch = s.outputs?.some(o => 
-      o.pullRequest?.url?.toLowerCase().includes(searchLow) || 
-      o.pullRequest?.title?.toLowerCase().includes(searchLow)
-    );
+      o.pullRequest?.url?.toLowerCase()?.includes(searchLow) || 
+      o.pullRequest?.title?.toLowerCase()?.includes(searchLow)
+    ) || false;
     const matchesSearch = (
-      s.title?.toLowerCase().includes(searchLow) || 
-      s.name.toLowerCase().includes(searchLow) ||
+      s.title?.toLowerCase()?.includes(searchLow) || 
+      (s.name || '').toLowerCase().includes(searchLow) ||
       hasPrMatch
     );
 
@@ -304,7 +306,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
       };
       comparison = getPrStatusValue(a) - getPrStatusValue(b);
     } else {
-      comparison = (a.title || a.name).localeCompare(b.title || b.name);
+      comparison = (a.title || a.name || '').localeCompare(b.title || b.name || '');
     }
     return sortOrder === 'desc' ? -comparison : comparison;
   });
@@ -327,12 +329,47 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
       }
     }
 
+    const isShiftKey = event?.shiftKey;
+
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      
+      if (isShiftKey && lastSelectedId) {
+        const names = filteredSessions.map(s => s.name);
+        const lastIdx = names.indexOf(lastSelectedId);
+        const currentIdx = names.indexOf(id);
+
+        if (lastIdx !== -1 && currentIdx !== -1) {
+          const start = Math.min(lastIdx, currentIdx);
+          const end = Math.max(lastIdx, currentIdx);
+          const rangeIds = names.slice(start, end + 1);
+
+          // If the lastSelectedId was selected (meaning it exists in the previous selectedIds set), 
+          // we select all in the range. Otherwise, we deselect all in the range.
+          const shouldSelect = prev.has(lastSelectedId);
+
+          rangeIds.forEach(rangeId => {
+            if (shouldSelect) {
+              next.add(rangeId);
+            } else {
+              next.delete(rangeId);
+            }
+          });
+          
+          return next;
+        }
+      }
+
+      // Default single select/deselect toggle behavior
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
+
+    setLastSelectedId(id);
   };
 
   const toggleSelectAll = () => {
@@ -341,6 +378,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
     } else {
       setSelectedIds(new Set(filteredSessions.map(s => s.name)));
     }
+    setLastSelectedId(null);
   };
 
   const getPrStatusBadge = (session: JulesSession, pr?: EnrichedPullRequest) => {
@@ -386,7 +424,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
           <p className="text-slate-400 mt-1">Manage your AI repair and analysis sessions.</p>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <Button
             variant={enabled ? "secondary" : "primary"}
             size="sm"
@@ -502,7 +540,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
         </div>
       )}
 
-      <div className="flex flex-col md:flex-row gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row gap-4 mb-6">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
           <input 
@@ -510,7 +548,7 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
             placeholder="Search sessions by title, ID, or PR URL..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all text-sm"
           />
           {isEnriching && (
             <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-[10px] text-purple-400 font-medium">
@@ -520,11 +558,11 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="grid grid-cols-2 sm:flex sm:items-center gap-3 w-full sm:w-auto">
           <select 
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 w-full"
           >
             <option value="ALL">All Statuses</option>
             <option value="ACTIVE">Active Only</option>
@@ -538,13 +576,16 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
               setSortField(field as any);
               setSortOrder(order as any);
             }}
-            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+            className="bg-slate-900 border border-slate-700 rounded-xl py-2 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 w-full"
           >
             <option value="date-desc">Newest First</option>
             <option value="date-asc">Oldest First</option>
-            <option value="status-asc">Status (A-Z)</option>
-            <option value="status-desc">Status (Z-A)</option>
-            <option value="name-asc">Name (A-Z)</option>
+            <option value="prStatus-desc">PR Status (Merged First)</option>
+            <option value="prStatus-asc">PR Status (Closed First)</option>
+            <option value="status-asc">Session Status (A-Z)</option>
+            <option value="status-desc">Session Status (Z-A)</option>
+            <option value="name-asc">Session Name (A-Z)</option>
+            <option value="name-desc">Session Name (Z-A)</option>
           </select>
         </div>
       </div>
@@ -561,165 +602,352 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
             <p>{searchTerm ? 'No sessions match your search.' : 'No active sessions found.'}</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-700 bg-slate-800/50">
-                  <th className="p-4 w-10">
-                    <input 
-                      type="checkbox" 
-                      className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer"
-                      checked={selectedIds.size === filteredSessions.length && filteredSessions.length > 0}
-                      onChange={toggleSelectAll}
-                    />
-                  </th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('name')}>Session</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('date')}>Created</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('prStatus')}>PR Status</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('status')}>Status</th>
-                  <th className="p-4 text-xs font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {filteredSessions.map((session) => {
-                  const sessionCi = ciStatuses[session.name];
-                  return (
-                    <tr 
-                      key={session.name} 
-                      onClick={(e) => toggleSelect(session.name, e)}
-                      className={clsx(
-                        "hover:bg-slate-800/30 transition-colors group cursor-pointer",
-                        selectedIds.has(session.name) && "bg-purple-500/5",
-                        isStale(session) && "opacity-60 grayscale-[0.5]"
-                      )}
-                    >
-                    <td className="p-4">
+          <>
+            {/* Desktop View */}
+            <div className="hidden md:block overflow-x-auto overflow-y-auto max-h-[600px] relative custom-scrollbar">
+              <table className="w-full text-left border-collapse min-w-[950px]">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="sticky left-0 top-0 z-30 bg-slate-800 p-4 w-10 border-r border-slate-700">
                       <input 
                         type="checkbox" 
-                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all"
-                        checked={selectedIds.has(session.name)}
-                        readOnly
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer"
+                        checked={selectedIds.size === filteredSessions.length && filteredSessions.length > 0}
+                        onChange={toggleSelectAll}
                       />
-                    </td>
-                    <td className="p-4">
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center gap-2">
+                    </th>
+                    <th className="sticky top-0 z-20 bg-slate-800 p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('name')}>Session</th>
+                    <th className="sticky top-0 z-20 bg-slate-800 p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('date')}>Created</th>
+                    <th className="sticky top-0 z-20 bg-slate-800 p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('prStatus')}>PR Status</th>
+                    <th className="sticky top-0 z-20 bg-slate-800 p-4 text-xs font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-white" onClick={() => handleSort('status')}>Status</th>
+                    <th className="sticky right-0 top-0 z-30 bg-slate-800 p-4 text-xs font-bold text-slate-400 uppercase tracking-widest text-right border-l border-slate-700 font-sans">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {filteredSessions.map((session) => {
+                    const sessionCi = ciStatuses[session.name];
+                    const isSelected = selectedIds.has(session.name);
+                    return (
+                      <tr 
+                        key={session.name} 
+                        onClick={(e) => toggleSelect(session.name, e)}
+                        className={clsx(
+                          "hover:bg-slate-800/30 transition-colors group cursor-pointer",
+                          isSelected && "bg-purple-500/5",
+                          isStale(session) && "opacity-60 grayscale-[0.5]"
+                        )}
+                      >
+                        <td className={clsx(
+                          "sticky left-0 z-10 p-4 border-r border-slate-800/50 transition-colors",
+                          isSelected ? "bg-purple-950/40" : "bg-slate-900 group-hover:bg-slate-800/80"
+                        )}>
+                          <input 
+                            type="checkbox" 
+                            className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer"
+                            checked={isSelected}
+                            readOnly
+                          />
+                        </td>
+                        <td className="p-4">
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <a 
+                                href={getSessionUrl(session.name)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={session.title || 'Untitled Session'}
+                                className="text-white font-medium hover:text-purple-400 transition-colors truncate max-w-[200px] sm:max-w-[280px] md:max-w-[340px] lg:max-w-[420px] inline-block font-sans"
+                              >
+                                {session.title || 'Untitled Session'}
+                              </a>
+                              {getSentTime(session.name) && (
+                                <Badge variant="yellow" className="text-[10px] py-0 px-1.5 font-sans">
+                                  Request sent @ {new Date(getSentTime(session.name)!).toLocaleTimeString()}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
+                              <span className="flex items-center gap-1 opacity-70">
+                                ID: {session.name.split('/').pop()}
+                              </span>
+                              {session.sourceContext?.githubRepoContext?.startingBranch && (
+                                <span className="flex items-center gap-1 text-purple-400/70">
+                                  <GitBranch className="w-3 h-3" />
+                                  {session.sourceContext.githubRepoContext.startingBranch}
+                                </span>
+                              )}
+                            </div>
+                            
+                            {session.outputs?.map((out, idx) => {
+                              const isDisplayPr = sessionCi && out.pullRequest?.url === sessionCi.url;
+                              return out.pullRequest && (
+                                <div key={idx} className="mt-1.5 flex flex-col gap-1">
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-400 w-fit max-w-[300px] font-sans">
+                                      <GitPullRequest className="w-3 h-3 shrink-0" />
+                                      <span className="truncate font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
+                                      <a 
+                                        href={out.pullRequest.url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="ml-1 hover:text-white transition-colors"
+                                      >
+                                        <ExternalLink className="w-3 h-3" />
+                                      </a>
+                                    </div>
+                                    {isDisplayPr && <CiStatusBadge status={sessionCi.status} />}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td className="p-4 text-sm text-slate-400 font-sans">
+                          {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown'}
+                        </td>
+                        <td className="p-4">
+                          {getPrStatusBadge(session, sessionCi?.prData)}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex items-center gap-2">
+                            <Badge variant={(session.state === 'IN_PROGRESS' || session.state === 'RUNNING') ? 'green' : 'gray'} className="font-sans">
+                              {session.state || 'UNKNOWN'}
+                            </Badge>
+                            {isStale(session) && (
+                              <span className="px-1.5 py-0.5 bg-slate-800 text-slate-500 rounded text-[8px] font-black uppercase tracking-widest border border-slate-700 font-mono">
+                                Stale
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className={clsx(
+                          "sticky right-0 z-10 p-4 text-right border-l border-slate-800/50 transition-colors",
+                          isSelected ? "bg-purple-950/40" : "bg-slate-900 group-hover:bg-slate-800/80"
+                        )}>
+                          <div className="flex items-center justify-end gap-2">
+                            <button 
+                              onClick={() => handleSendMessage(session.name, "Please publish your changes.", "Publish")}
+                              disabled={actionLoading[session.name] || deletingIds.has(session.name)}
+                              className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all disabled:opacity-50"
+                              title="Publish Changes"
+                            >
+                              {actionLoading[session.name] ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Rocket className="w-4 h-4" />
+                              )}
+                            </button>
+                            {sessionCi?.status === 'failed' && (
+                              <button 
+                                onClick={() => handleSendMessage(session.name, "Please fix the CI errors in this pull request.", "Fix CI")}
+                                disabled={actionLoading[session.name] || deletingIds.has(session.name)}
+                                className="p-2 text-yellow-400 hover:bg-yellow-400/10 rounded-lg transition-all disabled:opacity-50"
+                                title="Fix CI Errors"
+                              >
+                                {actionLoading[session.name] ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Zap className="w-4 h-4" />
+                                )}
+                              </button>
+                            )}
+                            <button 
+                              onClick={() => handleDeleteSession(session.name)}
+                              disabled={deletingIds.has(session.name) || isDeletingBulk}
+                              className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all disabled:opacity-50"
+                              title="Delete Session"
+                            >
+                              {deletingIds.has(session.name) ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile View */}
+            <div className="md:hidden flex flex-col p-4 max-h-[650px] overflow-y-auto custom-scrollbar gap-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800 sticky top-0 bg-slate-900/90 backdrop-blur-sm z-10">
+                <label className="flex items-center gap-3 cursor-pointer text-sm text-slate-300">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer"
+                    checked={selectedIds.size === filteredSessions.length && filteredSessions.length > 0}
+                    onChange={toggleSelectAll}
+                  />
+                  <span className="font-sans font-medium">Select All ({filteredSessions.length})</span>
+                </label>
+                {selectedIds.size > 0 && (
+                  <span className="text-xs text-purple-400 font-semibold font-sans">
+                    {selectedIds.size} selected
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-4">
+                {filteredSessions.map((session) => {
+                  const sessionCi = ciStatuses[session.name];
+                  const isSelected = selectedIds.has(session.name);
+                  return (
+                    <div 
+                      key={session.name}
+                      onClick={(e) => toggleSelect(session.name, e)}
+                      className={clsx(
+                        "p-4 bg-slate-900/60 border rounded-xl flex flex-col gap-3 transition-all cursor-pointer relative",
+                        isSelected ? "border-purple-500/80 bg-purple-950/15" : "border-slate-800 hover:border-slate-700 bg-slate-900/40",
+                        isStale(session) && "opacity-75 grayscale-[0.3]"
+                      )}
+                    >
+                      {/* Top bar: Checkbox, created date, state/stale badges */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="checkbox" 
+                            className="w-4.5 h-4.5 rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-purple-500/50 transition-all cursor-pointer shrink-0"
+                            checked={isSelected}
+                            readOnly
+                          />
+                          <span className="text-[11px] text-slate-500 font-mono">
+                            {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown Date'}
+                          </span>
+                        </div>
+                        
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge variant={(session.state === 'IN_PROGRESS' || session.state === 'RUNNING') ? 'green' : 'gray'} className="font-sans text-[10px]">
+                            {session.state || 'UNKNOWN'}
+                          </Badge>
+                          {isStale(session) && (
+                            <span className="px-1.5 py-0.5 bg-slate-800 text-slate-500 rounded text-[8px] font-black uppercase tracking-widest border border-slate-700 font-mono">
+                              Stale
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Title & metadata */}
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
                           <a 
                             href={getSessionUrl(session.name)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-white font-medium hover:text-purple-400 transition-colors truncate max-w-xs xl:max-w-md"
+                            title={session.title || 'Untitled Session'}
+                            className="text-white font-semibold hover:text-purple-400 transition-colors text-sm break-words font-sans"
                           >
                             {session.title || 'Untitled Session'}
                           </a>
                           {getSentTime(session.name) && (
-                            <Badge variant="yellow" className="text-[10px] py-0 px-1.5">
-                              Request sent @ {new Date(getSentTime(session.name)!).toLocaleTimeString()}
+                            <Badge variant="yellow" className="text-[9px] py-0 px-1.5 font-sans whitespace-nowrap">
+                              Sent @ {new Date(getSentTime(session.name)!).toLocaleTimeString()}
                             </Badge>
                           )}
                         </div>
-                        <div className="flex items-center gap-3 text-[10px] text-slate-500 font-mono">
-                          <span className="flex items-center gap-1 opacity-70">
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 font-mono">
+                          <span className="opacity-70">
                             ID: {session.name.split('/').pop()}
                           </span>
                           {session.sourceContext?.githubRepoContext?.startingBranch && (
                             <span className="flex items-center gap-1 text-purple-400/70">
-                              <GitBranch className="w-3 h-3" />
+                              <GitBranch className="w-3.5 h-3.5" />
                               {session.sourceContext.githubRepoContext.startingBranch}
                             </span>
                           )}
                         </div>
-                        
-                        {session.outputs?.map((out, idx) => {
-                          const isDisplayPr = sessionCi && out.pullRequest?.url === sessionCi.url;
-                          return out.pullRequest && (
-                            <div key={idx} className="mt-1.5 flex flex-col gap-1">
-                              <div className="flex items-center gap-2">
-                                <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-400 w-fit max-w-[300px]">
-                                  <GitPullRequest className="w-3 h-3 shrink-0" />
-                                  <span className="truncate font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
-                                  <a 
-                                    href={out.pullRequest.url} 
-                                    target="_blank" 
-                                    rel="noopener noreferrer"
-                                    className="ml-1 hover:text-white transition-colors"
-                                  >
-                                    <ExternalLink className="w-3 h-3" />
-                                  </a>
+                      </div>
+
+                      {/* PR Outputs and CI state */}
+                      {session.outputs && session.outputs.some(out => out.pullRequest) && (
+                        <div className="flex flex-col gap-2 mt-1 pt-2 border-t border-slate-800/40">
+                          {session.outputs.map((out, idx) => {
+                            const isDisplayPr = sessionCi && out.pullRequest?.url === sessionCi.url;
+                            return out.pullRequest && (
+                              <div key={idx} className="flex flex-col gap-1.5">
+                                <div className="flex items-center flex-wrap gap-2">
+                                  <div className="flex items-center gap-2 py-1 px-2 bg-blue-500/10 border border-blue-500/20 rounded text-[11px] text-blue-400 w-fit font-sans">
+                                    <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate max-w-[180px] font-bold tracking-tight">PR: {out.pullRequest.title || out.pullRequest.url.split('/').pop()}</span>
+                                    <a 
+                                      href={out.pullRequest.url} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      className="ml-1 hover:text-white transition-colors"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  </div>
+                                  {isDisplayPr && <CiStatusBadge status={sessionCi.status} />}
                                 </div>
-                                {isDisplayPr && <CiStatusBadge status={sessionCi.status} />}
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </td>
-                    <td className="p-4 text-sm text-slate-400">
-                      {session.createTime ? new Date(session.createTime).toLocaleString() : 'Unknown'}
-                    </td>
-                    <td className="p-4">
-                      {getPrStatusBadge(session, sessionCi?.prData)}
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={(session.state === 'IN_PROGRESS' || session.state === 'RUNNING') ? 'green' : 'gray'}>
-                          {session.state || 'UNKNOWN'}
-                        </Badge>
-                        {isStale(session) && (
-                          <span className="px-1.5 py-0.5 bg-slate-800 text-slate-500 rounded text-[8px] font-black uppercase tracking-widest border border-slate-700">
-                            Stale
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="p-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button 
-                          onClick={() => handleSendMessage(session.name, "Please publish your changes.", "Publish")}
-                          disabled={actionLoading[session.name] || deletingIds.has(session.name)}
-                          className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all disabled:opacity-50"
-                          title="Publish Changes"
-                        >
-                          {actionLoading[session.name] ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Rocket className="w-4 h-4" />
-                          )}
-                        </button>
-                        {sessionCi?.status === 'failed' && (
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* PR Status badge & Touch-friendly Actions bar */}
+                      <div className="flex items-center justify-between gap-4 mt-2 pt-3 border-t border-slate-800/60">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">PR Status</span>
+                          <div>
+                            {getPrStatusBadge(session, sessionCi?.prData)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 bg-slate-800/40 p-1 rounded-lg border border-slate-800">
                           <button 
-                            onClick={() => handleSendMessage(session.name, "Please fix the CI errors in this pull request.", "Fix CI")}
+                            onClick={() => handleSendMessage(session.name, "Please publish your changes.", "Publish")}
                             disabled={actionLoading[session.name] || deletingIds.has(session.name)}
-                            className="p-2 text-yellow-400 hover:bg-yellow-400/10 rounded-lg transition-all disabled:opacity-50"
-                            title="Fix CI Errors"
+                            className="p-2 text-emerald-400 hover:bg-emerald-400/10 active:bg-emerald-400/20 rounded-md transition-all disabled:opacity-50 flex items-center justify-center"
+                            title="Publish Changes"
                           >
                             {actionLoading[session.name] ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
                             ) : (
-                              <Zap className="w-4 h-4" />
+                              <Rocket className="w-4 h-4" />
                             )}
                           </button>
-                        )}
-                        <button 
-                          onClick={() => handleDeleteSession(session.name)}
-                          disabled={deletingIds.has(session.name) || isDeletingBulk}
-                          className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all disabled:opacity-50"
-                          title="Delete Session"
-                        >
-                          {deletingIds.has(session.name) ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4" />
+                          {sessionCi?.status === 'failed' && (
+                            <button 
+                              onClick={() => handleSendMessage(session.name, "Please fix the CI errors in this pull request.", "Fix CI")}
+                              disabled={actionLoading[session.name] || deletingIds.has(session.name)}
+                              className="p-2 text-yellow-400 hover:bg-yellow-400/10 active:bg-yellow-400/20 rounded-md transition-all disabled:opacity-50 flex items-center justify-center"
+                              title="Fix CI Errors"
+                            >
+                              {actionLoading[session.name] ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Zap className="w-4 h-4" />
+                              )}
+                            </button>
                           )}
-                        </button>
+                          <button 
+                            onClick={() => handleDeleteSession(session.name)}
+                            disabled={deletingIds.has(session.name) || isDeletingBulk}
+                            className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 active:text-red-400 active:bg-red-400/20 rounded-md transition-all disabled:opacity-50 flex items-center justify-center"
+                            title="Delete Session"
+                          >
+                            {deletingIds.has(session.name) ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
                       </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              </tbody>
-            </table>
-          </div>
+
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
         )}
       </div>
 

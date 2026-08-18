@@ -600,7 +600,8 @@ export const createSession = async (
           startingBranch: branch 
         }
       },
-      prompt: prompt
+      prompt: prompt,
+      automationMode: "AUTO_CREATE_PR"
     };
 
     if (title) payload.title = title;

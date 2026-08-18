@@ -823,10 +823,10 @@ export const generateCodeReview = async (
     Diff: ${diff.substring(0, 45000)}`;
 
   const generatePromise = withRetry(async () => {
-    const maxTimeout = tier === ModelTier.PRO ? 180000 : 60000;
+    const maxTimeout = 180000;
     let timerId: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timerId = setTimeout(() => reject(new Error(`AI Analysis timed out after ${maxTimeout/1000}s. Pro models may take longer to think.`)), maxTimeout);
+      timerId = setTimeout(() => reject(new Error(`AI Analysis timed out after ${Math.round(maxTimeout/1000)}s. Code reviews on large diffs may take longer.`)), maxTimeout);
     });
 
     const apiCallPromise = client.models.generateContent({

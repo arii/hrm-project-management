@@ -3,7 +3,7 @@ import { GithubIssue, GithubPullRequest, RepoStats, EnrichedPullRequest, GithubW
 import { storage, StorageKeys } from './storageService';
 import { pruneDiff } from './aiUtils';
 
-const BASE_URL = '/api/github';
+const BASE_URL = typeof window === 'undefined' ? 'https://api.github.com' : '/api/github';
 const CACHE_DURATION = 15 * 60 * 1000;
 
 // Global state to disable GraphQL if it failed recently for the current session/token

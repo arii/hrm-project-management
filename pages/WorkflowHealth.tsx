@@ -67,6 +67,7 @@ export default function WorkflowHealth({ repoName, token, julesApiKey }: Workflo
 
   const {
     isDispatching,
+    isSuccess,
     dispatchIssue
   } = useIssueDispatch(repo, token);
 
@@ -214,6 +215,26 @@ ${analysis.qualitativeAnalysis.recommendations.map((r, i) => `${i + 1}. ${r}`).j
       body,
       ['workflow-audit', 'report']
     );
+  };
+
+  const dispatchSingleFinding = async (finding: any, idx: number) => {
+    const issueId = `finding-${idx}`;
+    const title = `[Workflow Audit] ${finding.title}`;
+    const body = `## 🔍 Workflow Health Finding: ${finding.title}
+
+### 📋 Description
+${finding.description}
+
+### 📍 Location
+\`${finding.location || 'N/A'}\`
+
+### 🛠️ Remediation
+${finding.remediation || 'No specific remediation recommended.'}
+
+---
+*Reported via RepoAuditor Workflow Health Audit*`;
+
+    await dispatchIssue(issueId, title, body, ['workflow-audit', finding.type || 'finding']);
   };
 
   const openWorkerModal = (finding: any) => {
@@ -550,13 +571,32 @@ ${analysis.qualitativeAnalysis.recommendations.map((r, i) => `${i + 1}. ${r}`).j
                             )}
                           </div>
                         </div>
-                        <div className="flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex flex-col gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0">
                           <button
                             onClick={() => openWorkerModal(finding)}
-                            className="p-2 text-slate-500 hover:text-emerald-400 hover:bg-slate-700 rounded-lg transition-all"
+                            className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-700/50 rounded-lg transition-all"
                             title="Send to Remediation Worker"
                           >
-                            <Send className="w-5 h-5" />
+                            <Send className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => dispatchSingleFinding(finding, idx)}
+                            disabled={isDispatching(`finding-${idx}`) || isSuccess(`finding-${idx}`)}
+                            className={cn(
+                              "p-2 rounded-lg transition-all",
+                              isSuccess(`finding-${idx}`) 
+                                ? "text-emerald-400 bg-emerald-500/10" 
+                                : "text-slate-400 hover:text-indigo-400 hover:bg-slate-700/50 disabled:opacity-50"
+                            )}
+                            title={isSuccess(`finding-${idx}`) ? "Dispatched successfully" : "Dispatch as GitHub Issue"}
+                          >
+                            {isDispatching(`finding-${idx}`) ? (
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                            ) : isSuccess(`finding-${idx}`) ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              <Github className="w-4 h-4" />
+                            )}
                           </button>
                         </div>
                       </div>

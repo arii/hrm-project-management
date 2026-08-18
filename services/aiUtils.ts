@@ -109,7 +109,7 @@ export async function withRetry<T>(
   initialDelay = 1000,
   loggerName = 'Service',
   silent = false,
-  timeoutMs = 90000
+  timeoutMs = 180000
 ): Promise<T> {
   let lastError: any;
   for (let i = 0; i <= maxRetries; i++) {

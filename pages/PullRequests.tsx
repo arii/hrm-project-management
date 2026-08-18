@@ -436,7 +436,7 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
   };
 
   const filteredPrs = prs.filter(pr => {
-    const titleMatch = pr.title?.toLowerCase().includes(searchQuery.toLowerCase()) || false;
+    const titleMatch = pr.title?.toLowerCase()?.includes(searchQuery.toLowerCase()) || false;
     const numberMatch = pr.number?.toString().includes(searchQuery) || false;
     return titleMatch || numberMatch;
   });
