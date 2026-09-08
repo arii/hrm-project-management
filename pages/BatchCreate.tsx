@@ -6,6 +6,7 @@ import { createIssue } from '../services/githubService';
 import { parseIssuesFromText } from '../services/geminiService';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
+import SEO from '../components/SEO';
 
 interface BatchCreateProps {
   repoName: string;
@@ -71,6 +72,23 @@ const BatchCreate: React.FC<BatchCreateProps> = ({ repoName, token }) => {
 
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-20">
+      <SEO
+        title="Issue Builder & Batch Task Generator"
+        description="Convert raw task notes, markdown specs, and error dumps into structured, labeled GitHub issues with one-click batch creation."
+        keywords="GitHub issue generator, batch issues, AI task extraction, markdown to issues, project planning, GitHub automation"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Issue Builder', path: '/batch-create' }
+        ]}
+        schema={{
+          '@type': 'SoftwareApplication',
+          name: 'RepoAuditor AI Issue Builder',
+          applicationCategory: 'DeveloperApplication',
+          operatingSystem: 'Web',
+          description: 'Convert raw task notes, markdown specs, and error dumps into structured, labeled GitHub issues with one-click batch creation.',
+          url: 'https://repo-auditor-ai.vercel.app/#/batch-create'
+        }}
+      />
       <div>
         <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
           <BrainCircuit className="text-purple-400 w-8 h-8" /> AI Batch Creator

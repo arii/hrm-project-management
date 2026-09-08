@@ -26,6 +26,7 @@ import {
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
+import SEO from '../components/SEO';
 
 interface ModelHealth {
   name: string;
@@ -358,6 +359,21 @@ export default function GeminiStatus() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
+      <SEO
+        title="Model Intel & Gemini Diagnostic Cluster"
+        description="Live diagnostic cluster, availability monitoring, token consumption tracking, and fallback telemetry for Google Gemini models."
+        keywords="Gemini model status, AI token usage, Gemini 2.5 Flash, Gemini Pro diagnostics, latency monitor, AI developer tooling"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Model Intel', path: '/gemini-status' }
+        ]}
+        schema={{
+          '@type': 'TechArticle',
+          headline: 'Google Gemini Model Intelligence & Diagnostic Telemetry',
+          description: 'Live diagnostic cluster, availability monitoring, token consumption tracking, and fallback telemetry for Google Gemini models.',
+          url: 'https://repo-auditor-ai.vercel.app/#/gemini-status'
+        }}
+      />
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-3xl font-bold text-white flex items-center gap-3 tracking-tight">

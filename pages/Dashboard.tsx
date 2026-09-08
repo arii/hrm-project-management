@@ -2,6 +2,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { GitPullRequest, Eye, Activity, PlusCircle, ArrowRight, Github, Terminal } from 'lucide-react';
+import SEO from '../components/SEO';
 
 interface DashboardProps {
   repoName: string;
@@ -58,6 +59,25 @@ const Dashboard: React.FC<DashboardProps> = ({ repoName }) => {
 
   return (
     <div className="max-w-6xl mx-auto py-12 px-4">
+      <SEO
+        title="Overview & DevAI Control Center"
+        description="DevAI developer control center for GitHub repository maintenance, pull request review, CI/CD workflow health monitoring, and AI coding agent orchestration."
+        keywords="RepoAuditor AI, GitHub control center, pull requests, AI code review, CI CD health, developer tools"
+        breadcrumbs={[{ name: 'Home', path: '/' }]}
+        schema={{
+          '@type': 'WebApplication',
+          name: 'RepoAuditor AI - Overview Dashboard',
+          applicationCategory: 'DeveloperApplication',
+          operatingSystem: 'Web',
+          description: 'DevAI developer control center for GitHub repository maintenance, pull request review, CI/CD workflow health monitoring, and AI coding agent orchestration.',
+          featureList: [
+            'GitHub Pull Request Review & AI Diff Triage',
+            'CI/CD Workflow Health Pulse & RCA Diagnosis',
+            'Batch Issue Creator from Raw Text',
+            'Autonomous Coding Agent Session Handoff'
+          ]
+        }}
+      />
       <div className="text-center mb-16">
         <div className="inline-flex items-center justify-center p-3 bg-slate-800 rounded-2xl mb-6 border border-slate-700 shadow-xl">
           <Github className="w-10 h-10 text-white" />

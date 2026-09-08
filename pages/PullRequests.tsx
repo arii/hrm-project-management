@@ -11,6 +11,7 @@ import { usePullRequests } from '../hooks/usePullRequests';
 import AnalysisCard from '../components/AnalysisCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
+import SEO from '../components/SEO';
 import { 
   GitPullRequest, 
   GitMerge, 
@@ -464,6 +465,26 @@ const PullRequests: React.FC<PullRequestsProps> = ({ repoName, token, julesApiKe
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-8 pb-20">
+      <SEO
+        title="Pull Request Triage & Review Center"
+        description="Inspect open GitHub pull requests, analyze merge readiness, check branch CI statuses, and trigger AI reviews or autonomous repairs."
+        keywords="GitHub pull requests, PR audit, merge readiness, CI checks, automated code repair, developer workspace"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Pull Requests', path: '/pull-requests' }
+        ]}
+        schema={{
+          '@type': 'CollectionPage',
+          name: 'RepoAuditor AI - Pull Request Command Center',
+          description: 'Inspect open GitHub pull requests, analyze merge readiness, check branch CI statuses, and trigger AI reviews or autonomous repairs.',
+          url: 'https://repo-auditor-ai.vercel.app/#/pull-requests',
+          about: {
+            '@type': 'SoftwareSourceCode',
+            name: repoName || 'Target Repository',
+            programmingLanguage: 'TypeScript'
+          }
+        }}
+      />
       <div className="flex justify-between items-end">
         <div>
           <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2"><GitPullRequest className="text-blue-500 w-8 h-8" /> PR Command Center</h2>

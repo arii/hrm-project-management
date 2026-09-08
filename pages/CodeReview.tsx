@@ -24,6 +24,7 @@ import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import CredentialsRequired from '../components/ui/CredentialsRequired';
 import WorkerSelectorModal from '../components/ui/WorkerSelectorModal';
+import SEO from '../components/SEO';
 import { useIssueDispatch } from '../hooks/useIssueDispatch';
 import { useJulesSessions } from '../hooks/useJulesSessions';
 import { useEnrichedPr } from '../hooks/useEnrichedPr';
@@ -527,6 +528,30 @@ const CodeReview: React.FC<CodeReviewProps> = ({ repoName, token, julesApiKey })
 
   return (
     <div className="max-w-[1600px] mx-auto h-auto lg:h-[calc(100vh-8rem)] flex flex-col">
+      <SEO
+        title="AI Code Review & Diff Analysis (Anti-Slop)"
+        description="Deep architectural analysis of GitHub pull request diffs using Gemini with strict Anti-Slop quality constraints, automated issue extraction, and review labels."
+        keywords="AI code review, pull request diff, Gemini code review, anti-slop, software quality, automated PR audit"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'AI Review', path: '/code-review' }
+        ]}
+        schema={{
+          '@type': 'TechArticle',
+          headline: 'Anti-Slop AI Code Review for GitHub Pull Requests',
+          description: 'Deep architectural analysis of GitHub pull request diffs using Gemini with strict Anti-Slop quality constraints, automated issue extraction, and review labels.',
+          url: 'https://repo-auditor-ai.vercel.app/#/code-review',
+          author: {
+            '@type': 'Organization',
+            name: 'RepoAuditor AI'
+          },
+          about: {
+            '@type': 'SoftwareApplication',
+            name: 'RepoAuditor AI Code Review Engine',
+            applicationCategory: 'DeveloperApplication'
+          }
+        }}
+      />
       <div className="mb-6 shrink-0 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
            <h2 className="text-xl lg:text-2xl font-bold text-white mb-2 flex items-center gap-2">

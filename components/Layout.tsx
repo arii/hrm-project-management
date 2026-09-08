@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, BookOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, GitPullRequest, GitMerge, Upload, Eye, Menu, X, Activity, Terminal, BookOpen, ShieldCheck, Globe, Rss } from 'lucide-react';
 import clsx from 'clsx';
 import RepoSettings from './RepoSettings';
 import Footer from './Footer';
@@ -88,10 +88,31 @@ const Layout: React.FC<LayoutProps> = ({
         ))}
       </nav>
 
-      <div className="p-4 border-t border-slate-700">
+      <div className="p-4 border-t border-slate-700 space-y-3">
          <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Active Repo</p>
             <p className="text-xs font-mono text-blue-400 truncate" title={repoName}>{repoName}</p>
+         </div>
+         <div className="flex items-center justify-between px-1 text-[11px] font-medium text-slate-400">
+            <a 
+              href="https://arii.github.io" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
+            >
+              <Globe className="w-3 h-3 text-indigo-400/80" />
+              arii.github.io
+            </a>
+            <span className="text-slate-600">•</span>
+            <a 
+              href="https://boomtick.blog" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
+            >
+              <Rss className="w-3 h-3 text-indigo-400/80" />
+              BoomTick.blog
+            </a>
          </div>
       </div>
     </>

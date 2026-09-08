@@ -1,9 +1,67 @@
 import React from 'react';
 import { BookOpen, User, Globe, Rss, ArrowUpRight } from 'lucide-react';
+import SEO from '../components/SEO';
 
 export default function UserGuide() {
   return (
     <div className="max-w-4xl mx-auto p-8 space-y-8 text-slate-300">
+      <SEO
+        title="User Guide & Architecture Documentation"
+        description="Step-by-step setup guide for RepoAuditor AI, zero-retention security architecture, GitHub PAT and Gemini API configuration, and best practices."
+        keywords="RepoAuditor AI guide, GitHub setup, Gemini API key, zero-retention privacy, code review documentation, how to audit GitHub repo"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'User Guide', path: '/user-guide' }
+        ]}
+        schema={[
+          {
+            '@type': 'TechArticle',
+            headline: 'RepoAuditor AI User Guide & Security Architecture',
+            description: 'Step-by-step setup guide for RepoAuditor AI, zero-retention security architecture, GitHub PAT and Gemini API configuration, and best practices.',
+            url: 'https://repo-auditor-ai.vercel.app/#/user-guide',
+            author: {
+              '@type': 'Person',
+              name: 'Ariel Anders PhD',
+              url: 'https://arii.github.io',
+              sameAs: [
+                'https://arii.github.io',
+                'https://boomtick.blog'
+              ]
+            }
+          },
+          {
+            '@type': 'HowTo',
+            name: 'How to Connect and Audit a GitHub Repository with RepoAuditor AI',
+            description: 'Step-by-step instructions to configure GitHub credentials and execute DevAI code audits.',
+            step: [
+              {
+                '@type': 'HowToStep',
+                position: 1,
+                name: 'Open Configuration Settings',
+                text: 'Click the Gear icon in the top right header of the RepoAuditor AI console.'
+              },
+              {
+                '@type': 'HowToStep',
+                position: 2,
+                name: 'Mount Target Repository',
+                text: 'Input the GitHub repository owner and name in owner/repo format.'
+              },
+              {
+                '@type': 'HowToStep',
+                position: 3,
+                name: 'Configure API Credentials',
+                text: 'Enter your GitHub Personal Access Token (PAT) and Gemini API Key to enable zero-retention client-side analysis.'
+              },
+              {
+                '@type': 'HowToStep',
+                position: 4,
+                name: 'Run AI Code Review and Workflow Audits',
+                text: 'Navigate to AI Review or Workflow Health to audit pull request diffs and CI/CD runs.'
+              }
+            ]
+          }
+        ]}
+      />
       <header className="space-y-4">
         <h1 className="text-4xl font-bold text-white flex items-center gap-3">
           <BookOpen className="w-10 h-10 text-indigo-400" />
@@ -70,7 +128,7 @@ export default function UserGuide() {
                 rel="noopener noreferrer" 
                 className="text-indigo-400 hover:underline inline-flex items-center gap-1 font-medium"
               >
-                boomtick.blog <ArrowUpRight className="w-3.5 h-3.5" />
+                BoomTick.blog <ArrowUpRight className="w-3.5 h-3.5" />
               </a>.
               She is an expert in robotics, agentic systems engineering, multi-agent orchestrations, and intelligent lifecycle control loops.
             </p>
@@ -91,7 +149,7 @@ export default function UserGuide() {
                 className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg text-sm text-slate-300 hover:text-white transition"
               >
                 <Rss className="w-4 h-4 text-indigo-400" />
-                boomtick.blog
+                BoomTick.blog
               </a>
             </div>
           </div>

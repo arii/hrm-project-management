@@ -1,6 +1,6 @@
 {
   "name": "RepoAuditor AI",
-  "description": "A focused toolkit for GitHub repository maintenance, featuring Code Review, PR Health, Workflow Monitoring, and Batch Issue Creation.",
+  "description": "DevAI workspace console for automated GitHub repository maintenance, AI pull request code review, CI/CD workflow health diagnostics, and autonomous coding agent orchestration.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

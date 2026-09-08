@@ -9,6 +9,7 @@ import { enrichSinglePr } from '../services/githubService';
 import Badge from '../components/ui/Badge';
 import clsx from 'clsx';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import SEO from '../components/SEO';
 import { useAutoSendFix } from '../hooks/useAutoSendFix';
 import { useJulesSessions } from '../hooks/useJulesSessions';
 import { useQueryClient } from '@tanstack/react-query';
@@ -418,6 +419,23 @@ const JulesManagement: React.FC<JulesManagementProps> = ({ julesApiKey, repoName
 
   return (
     <div className="max-w-6xl mx-auto py-8 px-4">
+      <SEO
+        title="Agent Handoff & Autonomous Session Manager"
+        description="Coordinate, audit, and clean autonomous Jules coding-agent repair branches, review generated pull requests, and optimize quota."
+        keywords="autonomous coding agents, Jules sessions, agent handoff, automated PR repair, SWE agent orchestration, GitHub loop"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Agent Handoff', path: '/jules-management' }
+        ]}
+        schema={{
+          '@type': 'SoftwareApplication',
+          name: 'RepoAuditor AI Agent Handoff Console',
+          applicationCategory: 'DeveloperApplication',
+          operatingSystem: 'Web',
+          description: 'Coordinate, audit, and clean autonomous Jules coding-agent repair branches, review generated pull requests, and optimize quota.',
+          url: 'https://repo-auditor-ai.vercel.app/#/jules-management'
+        }}
+      />
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Jules Sessions</h1>

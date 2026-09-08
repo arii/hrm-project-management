@@ -25,6 +25,7 @@ import { twMerge } from 'tailwind-merge';
 import Button from '../components/ui/Button';
 import CredentialsRequired from '../components/ui/CredentialsRequired';
 import WorkerSelectorModal from '../components/ui/WorkerSelectorModal';
+import SEO from '../components/SEO';
 import { useManualAudit } from '../hooks/useManualAudit';
 import { useIssueDispatch } from '../hooks/useIssueDispatch';
 import { useJulesSessions } from '../hooks/useJulesSessions';
@@ -247,6 +248,26 @@ ${finding.remediation || 'No specific remediation recommended.'}
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+      <SEO
+        title="CI/CD Workflow Health & Failure Diagnostics"
+        description="Monitor GitHub Actions workflow runs, diagnose build and test failures with Gemini root-cause analysis, and auto-dispatch fix issues."
+        keywords="GitHub Actions health, CI CD diagnostics, workflow audit, failure root-cause analysis, continuous integration, DevAI"
+        breadcrumbs={[
+          { name: 'Home', path: '/' },
+          { name: 'Workflow Health', path: '/workflow-health' }
+        ]}
+        schema={{
+          '@type': 'TechArticle',
+          headline: 'GitHub Actions CI/CD Pipeline Health & Failure Analysis',
+          description: 'Automated auditing of GitHub Actions continuous integration pipelines with Gemini AI root cause analysis and issue triage.',
+          url: 'https://repo-auditor-ai.vercel.app/#/workflow-health',
+          about: {
+            '@type': 'SoftwareApplication',
+            name: 'RepoAuditor AI Workflow Pulse',
+            applicationCategory: 'DeveloperApplication'
+          }
+        }}
+      />
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>

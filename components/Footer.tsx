@@ -7,29 +7,62 @@ export default function Footer() {
   const closeModal = () => setActiveModal(null);
 
   return (
-    <footer className="mt-auto border-t border-slate-800 bg-slate-950/20 py-12 px-6 lg:px-8">
+    <footer itemScope itemType="https://schema.org/WPFooter" className="mt-auto border-t border-slate-800 bg-slate-950/20 py-12 px-6 lg:px-8">
       <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
         {/* Branding & Attribution */}
         <div className="flex flex-col items-center md:items-start text-center md:text-left space-y-2">
-          <p className="text-slate-300 font-semibold text-sm">
+          <p itemProp="name" className="text-slate-300 font-semibold text-sm">
             RepoAuditor AI v2.0
           </p>
           <p className="text-xs text-slate-500">
             DevAI Agent Orchestration • Crafted by{' '}
             <a 
+              itemProp="author"
+              itemScope
+              itemType="https://schema.org/Person"
               href="https://arii.github.io" 
               className="text-indigo-400 hover:underline font-medium hover:text-indigo-300 transition-colors inline-flex items-center gap-0.5"
               target="_blank" 
               rel="noopener noreferrer"
             >
-              Ariel Anders PhD
+              <span itemProp="name">Ariel Anders PhD</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </a>
+            {' '}• DevAI Notes on{' '}
+            <a 
+              href="https://boomtick.blog" 
+              className="text-indigo-400 hover:underline font-medium hover:text-indigo-300 transition-colors inline-flex items-center gap-0.5"
+              target="_blank" 
+              rel="noopener noreferrer"
+            >
+              BoomTick.blog
               <ArrowUpRight className="w-3 h-3" />
             </a>
           </p>
         </div>
 
         {/* Navigation Links */}
-        <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+          <a 
+            href="https://arii.github.io" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
+          >
+            <Globe className="w-3.5 h-3.5 text-indigo-400/80" />
+            arii.github.io
+          </a>
+
+          <a 
+            href="https://boomtick.blog" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
+          >
+            <Rss className="w-3.5 h-3.5 text-indigo-400/80" />
+            BoomTick.blog
+          </a>
+
           <button 
             onClick={() => setActiveModal('contact')} 
             className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
@@ -53,16 +86,6 @@ export default function Footer() {
             <Shield className="w-3.5 h-3.5 text-indigo-400/80" />
             Privacy Policy
           </button>
-
-          <a 
-            href="https://boomtick.blog" 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className="hover:text-indigo-400 transition-colors flex items-center gap-1.5"
-          >
-            <Rss className="w-3.5 h-3.5 text-indigo-400/80" />
-            boomtick.blog
-          </a>
         </div>
       </div>
 
@@ -125,7 +148,7 @@ export default function Footer() {
                         rel="noopener noreferrer" 
                         className="text-indigo-400 hover:underline inline-flex items-center gap-1"
                       >
-                        boomtick.blog <ArrowUpRight className="w-3.5 h-3.5" />
+                        BoomTick.blog <ArrowUpRight className="w-3.5 h-3.5" />
                       </a>
                     </p>
                   </div>
