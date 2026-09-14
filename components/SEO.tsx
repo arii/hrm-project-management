@@ -10,6 +10,7 @@ export interface SEOProps {
   description: string;
   keywords?: string;
   canonical?: string;
+  robots?: string;
   breadcrumbs?: BreadcrumbItem[];
   schema?: Record<string, any> | Array<Record<string, any>>;
   type?: 'website' | 'article' | 'application';
@@ -22,6 +23,7 @@ export const SEO: React.FC<SEOProps> = ({
   description,
   keywords,
   canonical,
+  robots = 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1',
   breadcrumbs,
   schema,
   type = 'application'
@@ -42,10 +44,25 @@ export const SEO: React.FC<SEOProps> = ({
       element.setAttribute('content', content);
     };
 
+    // Helper to update or create link tags
+    const setLink = (rel: string, href: string, attributes: Record<string, string> = {}) => {
+      let link = document.querySelector(`link[rel="${rel}"]`) as HTMLLinkElement | null;
+      if (!link) {
+        link = document.createElement('link');
+        link.setAttribute('rel', rel);
+        document.head.appendChild(link);
+      }
+      link.setAttribute('href', href);
+      Object.entries(attributes).forEach(([k, v]) => link!.setAttribute(k, v));
+    };
+
     // 2. Primary Meta Tags
     setMeta('meta[name="description"]', 'name', 'description', description);
     if (keywords) {
       setMeta('meta[name="keywords"]', 'name', 'keywords', keywords);
+    }
+    if (robots) {
+      setMeta('meta[name="robots"]', 'name', 'robots', robots);
     }
 
     // 3. Open Graph Tags
@@ -57,12 +74,10 @@ export const SEO: React.FC<SEOProps> = ({
     setMeta('meta[name="twitter:title"]', 'name', 'twitter:title', fullTitle);
     setMeta('meta[name="twitter:description"]', 'name', 'twitter:description', description);
 
-    // 5. Canonical Link
+    // 5. Canonical & Sitemap Link
     const targetUrl = canonical || (typeof window !== 'undefined' ? window.location.href : DEFAULT_ORIGIN);
-    let canonicalLink = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
-    if (canonicalLink) {
-      canonicalLink.setAttribute('href', targetUrl);
-    }
+    setLink('canonical', targetUrl);
+    setLink('sitemap', '/sitemap.xml', { type: 'application/xml', title: 'Sitemap' });
 
     // 6. Structured Data (JSON-LD)
     const scriptId = 'page-structured-data';
@@ -114,7 +129,7 @@ export const SEO: React.FC<SEOProps> = ({
         '@graph': schemaList
       }, null, 2);
     }
-  }, [title, description, keywords, canonical, breadcrumbs, schema, type]);
+  }, [title, description, keywords, canonical, robots, breadcrumbs, schema, type]);
 
   return null;
 };

@@ -30,6 +30,7 @@
     
     <!-- Canonical & Sitemap -->
     <link rel="canonical" href="https://repo-auditor-ai.vercel.app/" />
+    <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/css/index.css">
 
@@ -47,7 +48,11 @@
           "inLanguage": "en-US",
           "publisher": {
             "@id": "https://repo-auditor-ai.vercel.app/#organization"
-          }
+          },
+          "sameAs": [
+            "https://arii.github.io",
+            "https://boomtick.blog"
+          ]
         },
         {
           "@type": "Organization",
@@ -77,6 +82,15 @@
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "Web, Cross-platform",
           "description": "DevAI workspace console for automated GitHub repository maintenance, AI pull request code review, CI/CD workflow health diagnostics, and autonomous coding agent orchestration.",
+          "author": {
+            "@type": "Person",
+            "name": "Ariel Anders PhD",
+            "url": "https://arii.github.io",
+            "sameAs": [
+              "https://arii.github.io",
+              "https://boomtick.blog"
+            ]
+          },
           "offers": {
             "@type": "Offer",
             "price": "0",
@@ -89,6 +103,69 @@
             "Autonomous Coding Agent (Jules) Task Handoff & Session Management",
             "Zero-Retention Local Browser Storage Architecture",
             "Multi-tier Google Gemini Intelligence (Flash, Pro, Flash-Lite)"
+          ]
+        },
+        {
+          "@type": "ItemList",
+          "@id": "https://repo-auditor-ai.vercel.app/#navigation",
+          "name": "RepoAuditor AI Navigation Hierarchy",
+          "itemListElement": [
+            {
+              "@type": "SiteNavigationElement",
+              "position": 1,
+              "name": "Overview",
+              "description": "Repository telemetry, open pull request triage, and CI/CD workflow health status",
+              "url": "https://repo-auditor-ai.vercel.app/"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 2,
+              "name": "Pull Requests",
+              "description": "Multi-tier pull request review, diff examination, and status tracking",
+              "url": "https://repo-auditor-ai.vercel.app/pull-requests"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 3,
+              "name": "AI Review",
+              "description": "Deep Gemini code review, slop detection, architectural security analysis, and actionable suggestions",
+              "url": "https://repo-auditor-ai.vercel.app/code-review"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 4,
+              "name": "Workflow Health",
+              "description": "GitHub Actions CI/CD run diagnostic logs, failure root cause analysis, and automated fix dispatches",
+              "url": "https://repo-auditor-ai.vercel.app/workflow-health"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 5,
+              "name": "Issue Builder",
+              "description": "Structured issue generator converting technical specs or error traces into GitHub issues",
+              "url": "https://repo-auditor-ai.vercel.app/batch-create"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 6,
+              "name": "Agent Handoff",
+              "description": "Autonomous Jules agent session orchestration, task delegation, and PR generation",
+              "url": "https://repo-auditor-ai.vercel.app/jules-management"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 7,
+              "name": "User Guide",
+              "description": "Security protocols, zero-retention storage policies, API setup, and operating manual",
+              "url": "https://repo-auditor-ai.vercel.app/user-guide"
+            },
+            {
+              "@type": "SiteNavigationElement",
+              "position": 8,
+              "name": "Model Intel",
+              "description": "Gemini model status, latency benchmarking, and tier capabilities overview",
+              "url": "https://repo-auditor-ai.vercel.app/gemini-status"
+            }
           ]
         }
       ]

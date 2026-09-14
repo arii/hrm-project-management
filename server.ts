@@ -268,6 +268,29 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  // SEO Crawling endpoints: robots.txt and sitemap.xml
+  app.get("/robots.txt", (req, res) => {
+    res.type("text/plain");
+    const distFile = path.join(process.cwd(), "dist", "robots.txt");
+    const publicFile = path.join(process.cwd(), "public", "robots.txt");
+    res.sendFile(distFile, (err) => {
+      if (err) {
+        res.sendFile(publicFile);
+      }
+    });
+  });
+
+  app.get("/sitemap.xml", (req, res) => {
+    res.type("application/xml");
+    const distFile = path.join(process.cwd(), "dist", "sitemap.xml");
+    const publicFile = path.join(process.cwd(), "public", "sitemap.xml");
+    res.sendFile(distFile, (err) => {
+      if (err) {
+        res.sendFile(publicFile);
+      }
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

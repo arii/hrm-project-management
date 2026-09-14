@@ -1,0 +1,37 @@
+# Robots.txt for RepoAuditor AI
+# https://repo-auditor-ai.vercel.app/
+
+User-agent: *
+Allow: /
+Allow: /sitemap.xml
+Allow: /favicon.svg
+Allow: /css/
+Allow: /images/
+
+# Search Engine Crawlers
+User-agent: Googlebot
+Allow: /
+
+User-agent: Googlebot-Image
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Slurp
+Allow: /
+
+User-agent: DuckDuckBot
+Allow: /
+
+User-agent: Baiduspider
+Allow: /
+
+User-agent: YandexBot
+Allow: /
+
+# Prevent crawlers from indexing raw internal proxy APIs
+Disallow: /api/
+
+# Sitemap Declaration
+Sitemap: https://repo-auditor-ai.vercel.app/sitemap.xml
