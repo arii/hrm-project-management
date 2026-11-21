@@ -1,5 +1,7 @@
 # RepoAuditor AI
 
+> Development is inactive. This repository preserves an early repository-review and Jules automation experiment. It is not the actively maintained [HRM application](https://github.com/arii/hrm). The [historical demo](https://arii.github.io/hrm-project-management/) remains available for reference. For newer work, see [Ariel Anders' portfolio](https://arii.github.io/).
+
 **AI-assisted repository review, workflow triage, and coding-agent handoff.**
 
 RepoAuditor AI is a GitHub-focused DevAI workflow console for inspecting pull requests, analyzing workflow health, generating structured AI-assisted review output, creating follow-up issues, and coordinating Jules coding-agent sessions.

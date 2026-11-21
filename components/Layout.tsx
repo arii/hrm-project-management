@@ -90,7 +90,7 @@ const Layout: React.FC<LayoutProps> = ({
 
       <div className="p-4 border-t border-slate-700 space-y-3">
          <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
-            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Active Repo</p>
+            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Archived project</p>
             <p className="text-xs font-mono text-blue-400 truncate" title={repoName}>{repoName}</p>
          </div>
          <div className="flex items-center justify-between px-1 text-[11px] font-medium text-slate-400">
@@ -165,6 +165,11 @@ const Layout: React.FC<LayoutProps> = ({
             updateSettings={updateSettings}
           />
         </header>
+
+        <div role="note" className="border-b border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-200 lg:px-8">
+          <strong>Archived project.</strong> Development is inactive. This historical RepoAuditor and Jules experiment is separate from the active HRM app.{' '}
+          <a href="https://arii.github.io/" className="text-blue-300 underline underline-offset-2">See Ariel Anders' portfolio for newer work.</a>
+        </div>
 
         <div className="flex-1 flex flex-col justify-between p-4 lg:p-8">
           <div className="flex-1 pb-8">
