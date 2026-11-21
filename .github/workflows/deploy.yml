@@ -30,7 +30,7 @@ jobs:
           test -f site/site/2-index-DROI4gML.css
           test -f site/site/3-index-sunset-8f2096f9e7.js
           test "$(find site/site -type f | wc -l)" -eq 3
-          echo 'e2f3929688ca1cc077efd1e57946b16d0dcf4f483dee73a134c5afe3701c8943  site/site/index.html' | sha256sum --check
+          echo 'e9cdc23f650a034cb01c5881d4bb24994b55fdd950f22dba0369048ec64e8817  site/site/index.html' | sha256sum --check
           echo '6a7fd73a537697033bc7acd6bebe879925f9f2607f11898bee50b36d39cab0dc  site/site/2-index-DROI4gML.css' | sha256sum --check
           echo '8f2096f9e7c0252eb4a744dd65d78156ef80948372be90ac93ec414ebf5ebae5  site/site/3-index-sunset-8f2096f9e7.js' | sha256sum --check
       - name: Setup Pages
