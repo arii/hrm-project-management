@@ -26,17 +26,19 @@ jobs:
           ref: ${{ github.sha }}
       - name: Verify snapshot files
         run: |
-          test -f site/index.html
-          test -f site/assets/index-DROI4gML.css
-          test -f site/assets/index-sunset-8f2096f9e7.js
-          test "$(find site -type f | wc -l)" -eq 3
-          sha256sum --check site.sha256
+          test -f site/site/index.html
+          test -f site/site/2-index-DROI4gML.css
+          test -f site/site/3-index-sunset-8f2096f9e7.js
+          test "$(find site/site -type f | wc -l)" -eq 3
+          echo 'e2f3929688ca1cc077efd1e57946b16d0dcf4f483dee73a134c5afe3701c8943  site/site/index.html' | sha256sum --check
+          echo '6a7fd73a537697033bc7acd6bebe879925f9f2607f11898bee50b36d39cab0dc  site/site/2-index-DROI4gML.css' | sha256sum --check
+          echo '8f2096f9e7c0252eb4a744dd65d78156ef80948372be90ac93ec414ebf5ebae5  site/site/3-index-sunset-8f2096f9e7.js' | sha256sum --check
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload reviewed static snapshot
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site/site
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
